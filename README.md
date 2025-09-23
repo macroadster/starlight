@@ -18,7 +18,7 @@ The core of our approach involves training AI models, specifically deep learning
 
 The training protocol focuses on a few key areas:
 
-**Diverse Datasets**: A key challenge in steganalysis is the need for a vast, labeled dataset of both "clean" images and images with hidden data. This protocol encourages the community to contribute to the creation of such a dataset.
+**Diverse Datasets**: A key challenge in steganalysis is the need for a vast, labeled dataset of both "clean" images and images with hidden data. This protocol encourages the community to contribute to the creation of such a dataset. See [DATASET_GUIDELINES.md](DATASET_GUIDELINES.md) for detailed instructions on contributing high-quality datasets.
 
 **Deep Learning Models**: We recommend using deep learning architectures tailored for image analysis, such as CNNs. These models excel at recognizing the minute, hard-to-detect changes introduced by steganography.
 
@@ -26,4 +26,4 @@ The training protocol focuses on a few key areas:
 
 ## Get Involved
 
-We invite developers, data scientists, and security researchers to contribute to this project. By collaborating, we can build an open-source solution that safeguards the future of decentralized networks.
+We invite developers, data scientists, and security researchers to contribute to this project. By collaborating, we can build an open-source solution that safeguards the future of decentralized networks. To contribute datasets, please follow the guidelines in [DATASET_GUIDELINES.md](DATASET_GUIDELINES.md).
