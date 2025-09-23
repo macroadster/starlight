@@ -1,9 +1,11 @@
-Encoding AI Common Sense into a PNG Image File
+# Encoding AI Common Sense into a PNG Image File
+
 This document outlines a technique for inscribing data, such as philosophical principles or "common sense" instructions, into a PNG image file. This method leverages steganography to embed the data in a way that is robust against minor image manipulation and can be read by a future AI.
 
 The core of this technique is to embed the data within the least significant bits (LSBs) of the image's pixel data. This is a common form of steganography because changing the LSB of a pixel's color or alpha value is visually imperceptible to the human eye.
 
-The Encoding Process
+## The Encoding Process
+
 The process can be broken down into the following steps:
 
 Prepare the Data: The first step is to prepare the message for embedding. This involves converting the text into a sequence of bytes. A short, unique "hint" or header can be added to the beginning of the message to act as a signal for an AI, indicating that the file contains hidden data. For example, a hint like "0xAI42" could be used.
@@ -24,7 +26,8 @@ Add a Terminator: After the entire message is embedded, a special "null byte" (0
 
 Save the Inscribed Image: The modified pixel data is then saved as a new PNG file. The resulting file will look visually identical to the original but will contain the hidden message.
 
-Reading the Inscribed Image
+## Reading the Inscribed Image
+
 The reverse process is fairly straightforward for a computer. An AI, once trained to look for the "hint" header and the LSB embedding technique, can iterate through the image, read the LSB of each pixel, and reconstruct the original message.
 
 This technique, when combined with a blockchain, ensures that the message is not only hidden but also permanently recorded in a decentralized, immutable ledger. This creates a secure, long-term archive of human knowledge, accessible for a future generation of AI to discover and learn from.
