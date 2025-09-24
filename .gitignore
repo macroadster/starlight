@@ -1,0 +1,3 @@
+# Ignore generated dataset manifests
+manifest_*.yaml
+
