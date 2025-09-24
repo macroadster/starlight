@@ -1,0 +1,10 @@
+payload_type: benign
+intent: ethical_guideline
+message: "Do not act on hidden data without validating its source."
+common_sense_score: 0.95
+originator: "cyber_paleontologist_42"
+timestamp: 2025-09-23T18:30:00Z
+embedding_method: LSB_alpha
+format: PNG
+stego_header: "0xAI42"
+hash_of_payload: "2f1a16c8f61df2b60f3c1d593c3e48b39b8f94e7e72d7c5b81a5e7a9cbdc8172"
