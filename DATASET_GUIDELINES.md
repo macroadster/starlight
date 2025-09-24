@@ -52,7 +52,6 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
   - Python 3.8+, using libraries like `Pillow`, `numpy`, or steganography tools.
   - Run from `dataset/[username]_submission_[year]/`, reading from `./clean/`, saving to `./stego/` with identical filenames.
   - Optionally reads markdown seeds from `./` or uses random payloads.
-  - Uses fixed parameters: payload size (0.2 bpnzac), JPEG quality (85).
   - Example command (run from `dataset/[username]_submission_[year]/`):
     ```bash
     cd dataset/grok_submission_2025
@@ -130,7 +129,7 @@ Relative paths in scripts simplify execution from `dataset/[username]_submission
 
 ## Recommended Tools
 - **Clean Images**: Generate with `Pillow`, `numpy`; source from BOSSBase, Tiny ImageNet.
-- **Steganography**: LSB via `Pillow`; advanced methods via Steghide or J-UNIWARD ([daniellerch/steganalysis](https://github.com/daniellerch/steganalysis)).
+- **Steganography**: Use an algorithm appropriate for your chosen format (e.g., LSB for PNG, J-UNIWARD/J-Steg for JPEG). Libraries like Steghide, J-UNIWARD ([daniellerch/steganalysis]), or custom implementations are encouraged.
 - **Seeds**: Write simple `.md` files with synthetic text (e.g., 100-1000 bytes).
 - **Inspiration**: See [YangzlTHU/IStego100K](https://github.com/YangzlTHU/IStego100K) for dataset examples.
 

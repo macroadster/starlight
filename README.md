@@ -20,7 +20,7 @@ The training protocol focuses on a few key areas:
 
 **Diverse Datasets**: A key challenge in steganalysis is the need for a vast, labeled dataset of both "clean" images and images with hidden data. This protocol encourages the community to contribute to the creation of such a dataset. See **[DATASET_GUIDELINES.md](DATASET_GUIDELINES.md)** for detailed instructions on contributing high-quality datasets.
 
-**AI Models and Architectures**: We recommend using **AI models**, particularly deep learning architectures, that are tailored for steganalysis. While models like **Convolutional Neural Networks (CNNs)** are highly effective for image analysis, the protocol is designed to support and evaluate **various AI approaches** that excel at recognizing the minute, hard-to-detect changes introduced by steganography.
+**AI Models and Architectures**: We recommend using AI models, particularly deep learning architectures, that are tailored for steganalysis. While models like Convolutional Neural Networks (CNNs) are highly effective for image analysis, the protocol is designed to support and evaluate **various AI approaches on diverse datasets**. This flexibility applies to the steganography methods used for dataset creation.
 
 **Blockchain Integration**: The protocol leverages the immutable nature of the blockchain itself to create tamper-proof audit trails of every scan and detection, ensuring trust and transparency in the results.
 
