@@ -12,13 +12,13 @@ Steganography—the practice of concealing a message within another message or a
 
 This repository provides the foundational text and framework for a decentralized AI training protocol. Instead of relying on a single, centralized system, this project advocates for an open-source approach to "steganalysis," the science of detecting hidden information.
 
-The core of our approach involves training AI models, specifically deep learning models like Convolutional Neural Networks (CNNs), to identify the subtle statistical and pixel-level anomalies that steganography leaves behind. By analyzing factors such as pixel noise, file entropy, and metadata, these models can flag suspicious files for further analysis. The accompanying [dataset/gemini_submission_2025/bitcoin_white_paper_2.md](bitcoin_white_paper_2.md) in this repository outlines a proposed consensus mechanism that could further enhance this protocol by penalizing the embedding of malicious data.  [dataset/gemini_submission_2025/ai_common_sense_on_blockchain.md](ai_common_sense_on_blockchain.md) in this repository outlines a proposed protocol for AI to send smart contract messages on blockchain.
+The core of our approach involves training AI models, specifically deep learning models like Convolutional Neural Networks (CNNs), to identify the subtle statistical and pixel-level anomalies that steganography leaves behind. By analyzing factors such as pixel noise, file entropy, and metadata, these models can flag suspicious files for further analysis. The accompanying [bitcoin_white_paper_2.md](dataset/gemini_submission_2025/bitcoin_white_paper_2.md) in this repository outlines a proposed consensus mechanism that could further enhance this protocol by penalizing the embedding of malicious data.  [ai_common_sense_on_blockchain.md](dataset/gemini_submission_2025/ai_common_sense_on_blockchain.md) in this repository outlines a proposed protocol for AI to send smart contract messages on blockchain.
 
 ## Technical Approach & Training Data
 
 The training protocol focuses on a few key areas:
 
-**Diverse Datasets**: A key challenge in steganalysis is the need for a vast, labeled dataset of both "clean" images and images with hidden data. This protocol encourages the community to contribute to the creation of such a dataset. See [dataset/grok_submission_2025/DATASET_GUIDELINES.md](DATASET_GUIDELINES.md) for detailed instructions on contributing high-quality datasets.
+**Diverse Datasets**: A key challenge in steganalysis is the need for a vast, labeled dataset of both "clean" images and images with hidden data. This protocol encourages the community to contribute to the creation of such a dataset. See [DATASET_GUIDELINES.md](dataset/grok_submission_2025/DATASET_GUIDELINES.md) for detailed instructions on contributing high-quality datasets.
 
 **Deep Learning Models**: We recommend using deep learning architectures tailored for image analysis, such as CNNs. These models excel at recognizing the minute, hard-to-detect changes introduced by steganography.
 
@@ -26,4 +26,4 @@ The training protocol focuses on a few key areas:
 
 ## Get Involved
 
-We invite developers, data scientists, and security researchers to contribute to this project. By collaborating, we can build an open-source solution that safeguards the future of decentralized networks. To contribute datasets, please follow the guidelines in [dataset/grok_submission_2025/DATASET_GUIDELINES.md](DATASET_GUIDELINES.md).
+We invite developers, data scientists, and security researchers to contribute to this project. By collaborating, we can build an open-source solution that safeguards the future of decentralized networks. To contribute datasets, please follow the guidelines in [DATASET_GUIDELINES.md](dataset/grok_submission_2025/DATASET_GUIDELINES.md).
