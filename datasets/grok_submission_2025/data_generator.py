@@ -67,7 +67,7 @@ def embed_lsb_jpeg(clean_img_path, stego_img_path, payload, payload_size=0.2, fo
     Args:
         clean_img_path (str): Path to clean image.
         stego_img_path (str): Path to save stego image.
-        payload (str): Text from markdown seed to embed (empty for random).
+        payload (str or None): Text from markdown seed to embed (None for random).
         payload_size (float): Bits per pixel (fixed: 0.2 bpnzAC approximation).
         format (str): 'JPEG' or 'PNG'.
     """
@@ -75,12 +75,14 @@ def embed_lsb_jpeg(clean_img_path, stego_img_path, payload, payload_size=0.2, fo
         img = Image.open(clean_img_path).convert('RGB')
         img_array = np.array(img)
 
-        # Prepare payload (random if empty)
-        if payload:
+        # Prepare payload (random if None or empty)
+        if payload and isinstance(payload, str) and len(payload) > 0:
+            print(f"Embedding provided payload: {len(payload)} chars")
             binary_payload = ''.join(format(ord(c), '08b') for c in payload)
         else:
+            print("No payload provided; generating random payload")
             total_bits = int(payload_size * img_array.size)
-            binary_payload = ''.join(np.random.randint(0, 2, total_bits).astype(str))
+            binary_payload = ''.join(map(str, np.random.randint(0, 2, total_bits)))
         
         total_bits = int(payload_size * img_array.size)
         binary_payload = binary_payload[:total_bits]
@@ -157,9 +159,9 @@ def generate_images(num_images=1, format='JPEG', method='J-UNIWARD'):
             stego_path = os.path.join(stego_dir, img_name)
             generate_clean_image(clean_path, seed=i, format=format)
             if method == 'J-UNIWARD':
-                embed_juniward(clean_path, stego_path, payload="", rate=payload_size)
+                embed_juniward(clean_path, stego_path, payload=None, rate=payload_size)
             else:
-                embed_lsb_jpeg(clean_path, stego_path, payload="", payload_size=payload_size, format=format)
+                embed_lsb_jpeg(clean_path, stego_path, payload=None, payload_size=payload_size, format=format)
     else:
         for seed_file in seed_files:
             seed_basename = os.path.splitext(seed_file)[0]
