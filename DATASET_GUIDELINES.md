@@ -29,7 +29,7 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
 - **What to Submit**:
   - Clean images in `dataset/[username]_submission_[year]/clean/` (e.g., `dataset/grok_submission_2025/clean/cover_001.jpeg`).
   - A Python script (`data_generator.py`) in `dataset/[username]_submission_[year]/` to generate stego images.
-  - Optional: Markdown seed files in `dataset/[username]_submission_[year]/` (e.g., `dataset/grok_submission_2025/sample_seed.md`) for payload content.
+  - Optional: Any markdown seed file (e.g., dataset/grok_submission_2025/[payload_name].md) for payload content.
 - **Clean Image Requirements**:
   - Format: JPEG or PNG, 512x512.
   - Source: Public datasets or synthetic (e.g., via `Pillow`, `numpy`).
@@ -41,7 +41,7 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
     Image.fromarray(img).save('dataset/grok_submission_2025/clean/cover_001.jpeg', 'JPEG', quality=85)
     ```
 - **Seed File Requirements** (Optional):
-  - Place markdown files (`.md`) in `dataset/[username]_submission_[year]/` with synthetic text to embed.
+  - Place markdown files (`.md`) in `dataset/[username]_submission_[year]/` with synthetic text to embed.  The script must identify all .md files and iterate over them, generating a separate batch of stego images for each individual file, using the markdown filename to label the output images.
   - Example seed file (`dataset/grok_submission_2025/sample_seed.md`):
     ```markdown
     # Sample Seed Payload
@@ -66,10 +66,11 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
   - A single Python script (`data_generator.py`) in `dataset/[username]_submission_[year]/` that generates both clean and stego images.
   - Optional: Markdown seed files in `dataset/[username]_submission_[year]/` for payloads.
 - **Script Requirements**:
+  - Place markdown files (`.md`) in `dataset/[username]_submission_[year]/` with synthetic text to embed.  The script must identify all .md files and iterate over them, generating a separate batch of stego images for each individual file, using the markdown filename to label the output images.
   - Run from `dataset/[username]_submission_[year]/`, generating clean images in `./clean/` and stego images in `./stego/` with identical filenames.
   - Optionally uses markdown seeds from `./` or random payloads.
-  - Format: JPEG or PNG, 512x512; JPEG quality 75-95.
-  - Uses fixed parameters: payload size (0.2 bpnzac), JPEG quality (85).
+  - Format: JPEG (Q75-95) or PNG (lossless), 512x512. The format and quality must be appropriate for the steganography method used.
+  - Uses fixed parameters: payload size (e.g., 0.2 bpnzac). All parameters (e.g., JPEG Quality, Stego Key, or Custom Settings) must be documented in the script and be appropriate for the steganography algorithm used.
   - Example structure:
     ```python
     import os, numpy as np, PIL.Image
