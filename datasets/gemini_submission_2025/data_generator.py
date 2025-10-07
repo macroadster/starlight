@@ -3,33 +3,44 @@ import numpy as np
 from PIL import Image
 
 # --- CONFIGURATION ---
-NUM_IMAGES_PER_PAYLOAD = 10      # Number of image pairs to generate for each .md file
+NUM_IMAGES_PER_PAYLOAD = 5      # Number of image pairs to generate for each .md file
 RESOLUTION = 512
-IMAGE_FORMAT = 'PNG'             # Using PNG for lossless LSB steganography
-HINT_BYTES = b'0xAI42'           # The multi-byte sequence to signal hidden data
-TERMINATOR_BYTES = b'\x00'       # A null byte to signal the end of the message
+HINT_BYTES = b'0xAI42'           # Sequence to signal hidden data
+TERMINATOR_BYTES = b'\x00'       # Byte to signal the end of the message
+
+# --- PNG (LSB) CONFIGURATION ---
+PNG_FORMAT = 'PNG'
+# Steganography Method: Least Significant Bit (LSB) on RGBA channels.
+# Image Format: PNG (Lossless).
+
+# --- JPEG (EOI APPEND) CONFIGURATION ---
+JPEG_FORMAT = 'JPEG'
+JPEG_QUALITY = 90
+EOI_MARKER = b'\xFF\xD9'         # JPEG End of Image (EOI) marker
+# Steganography Method: Append payload data after the JPEG EOI marker.
+# Image Format: JPEG (Quality 90).
+
+# --- PAYLOAD LOADING ---
 
 def load_all_payloads(submission_dir="."):
     """
-    Identifies all markdown seed files and loads their content,
-    returning a list of (base_filename, bitstream) tuples.
+    Identifies all markdown seed files and loads their content.
+    Returns a list of (base_filename, full_byte_payload) tuples.
     """
     all_payload_data = []
-    # Identify all files ending with .md in the current directory
     seed_filenames = [f for f in os.listdir(submission_dir) if f.endswith('.md')]
 
     if not seed_filenames:
         print("No markdown seed files found. Using random payload as fallback for 1 batch.")
-        # Fallback to a single batch of random data
-        # Using 0.2 bpnzac as a default for capacity check
-        random_size = int((RESOLUTION * RESOLUTION * 4 * 0.2) / 8) 
-        random_bits = [bit for byte in os.urandom(random_size) for bit in [(byte >> i) & 1 for i in range(7, -1, -1)]]
-        return [("random_fallback", random_bits)]
+        # Fallback to 2KB random data
+        random_size = 2048
+        full_data = HINT_BYTES + os.urandom(random_size) + TERMINATOR_BYTES
+        return [("random_fallback", full_data)]
 
     print(f"Found {len(seed_filenames)} unique seed file(s) to process.")
     
-    for filename in sorted(seed_filenames): # Process files in alphabetical order for consistency
-        base_name = filename.replace('.md', '').replace('.', '_') # e.g., 'ai_common_sense'
+    for filename in sorted(seed_filenames):
+        base_name = filename.replace('.md', '').replace('.', '_')
         
         try:
             with open(os.path.join(submission_dir, filename), 'r', encoding='utf-8') as f:
@@ -40,22 +51,26 @@ def load_all_payloads(submission_dir="."):
             
         # Final data structure: [Hint Bytes] + [Payload Bytes] + [Terminator Byte]
         full_data = HINT_BYTES + payload_bytes + TERMINATOR_BYTES
-        
-        # Convert to a flat list of bits
-        payload_bits = []
-        for byte in full_data:
-            for i in range(7, -1, -1):
-                payload_bits.append((byte >> i) & 1)
                 
-        all_payload_data.append((base_name, payload_bits))
-        print(f"  - Loaded '{filename}' ({len(payload_bytes)} bytes of source content). Total {len(payload_bits)} bits.")
+        all_payload_data.append((base_name, full_data))
+        print(f"  - Loaded '{filename}' ({len(payload_bytes)} bytes of source content). Total {len(full_data)} bytes.")
 
     return all_payload_data
 
-def embed_stego_lsb(clean_img_path, stego_path_target, payload_bits):
-    """
-    Implements the LSB steganography using bitwise operations, saving to a specified path.
-    """
+# --- PNG (LSB) IMPLEMENTATION ---
+
+def get_payload_bits(full_byte_payload):
+    """Converts a byte payload into a flat list of bits."""
+    payload_bits = []
+    for byte in full_byte_payload:
+        for i in range(7, -1, -1):
+            payload_bits.append((byte >> i) & 1)
+    return payload_bits
+
+def embed_stego_lsb(clean_img_path, stego_path_target, full_byte_payload):
+    """LSB steganography for PNG (RGBA)."""
+    
+    payload_bits = get_payload_bits(full_byte_payload)
     
     # Image must be converted to RGBA before NumPy conversion to ensure 4 channels
     clean_img = Image.open(clean_img_path).convert('RGBA') 
@@ -63,7 +78,7 @@ def embed_stego_lsb(clean_img_path, stego_path_target, payload_bits):
     color_channels = img_array.flatten()
     
     if len(payload_bits) > len(color_channels):
-        print("ERROR: Payload size exceeds image embedding capacity. Skipping image.")
+        print("ERROR: LSB Payload size exceeds image capacity (RGBA). Skipping.")
         return False
 
     # LSB Embedding
@@ -79,25 +94,17 @@ def embed_stego_lsb(clean_img_path, stego_path_target, payload_bits):
 
     # Reconstruct and Save the Image
     tainted_array = embedded_channels.reshape(img_array.shape).astype(np.uint8)
-    
     stego_img = Image.fromarray(tainted_array) 
-
-    # Save the stego image as a lossless PNG
-    stego_img.save(stego_path_target, IMAGE_FORMAT)
+    stego_img.save(stego_path_target, PNG_FORMAT)
     
-    return True # Return True on successful embed
-
-# --- EXTRACTION HELPER FUNCTION ---
+    return True
 
 def extract_lsb(stego_img_path, num_bits):
-    """
-    Helper function to extract the first N LSB bits from an image.
-    """
+    """Extract the first N LSB bits from a PNG (RGBA) image."""
     stego_img = Image.open(stego_img_path).convert('RGBA')
     img_array = np.array(stego_img)
     color_channels = img_array.flatten()
     
-    # Check if there are enough channels to extract the requested bits
     if num_bits > len(color_channels):
         raise ValueError(f"Not enough channels ({len(color_channels)}) to extract {num_bits} bits.")
     
@@ -105,36 +112,89 @@ def extract_lsb(stego_img_path, num_bits):
     extracted_bits = [(channel_val & 0x01) for channel_val in color_channels[:num_bits]]
     return extracted_bits
 
-# --- VERIFICATION TEST FUNCTION ---
-
-def test_lsb_steganography_on_image(stego_path_target, base_name, expected_payload_bits):
-    """
-    Runs a test on a generated stego image to ensure the embedded payload is intact.
-    Prints a success/failure message for each verification.
-    """
-    num_test_bits = len(expected_payload_bits)
+def test_lsb_steganography_on_image(stego_path_target, expected_byte_payload):
+    """Verifies LSB embedding."""
+    expected_bits = get_payload_bits(expected_byte_payload)
+    num_test_bits = len(expected_bits)
     
-    # 1. Extract the payload from the generated image
     try:
         extracted_bits = extract_lsb(stego_path_target, num_test_bits)
     except Exception as e:
-        print(f" [X] Verification FAILED for {os.path.basename(stego_path_target)}: Extraction error: {e}")
+        print(f" [X] LSB Verification FAILED: Extraction error: {e}")
         return False
 
-    # 2. Verify that the extracted bits match the original payload bits
-    test_passed = extracted_bits == expected_payload_bits
+    test_passed = extracted_bits == expected_bits
     
-    if test_passed:
-        print(f" [✔] Verification SUCCESS for {os.path.basename(stego_path_target)}")
-    else:
-        mismatched_count = sum(1 for a, b in zip(extracted_bits, expected_payload_bits) if a != b)
-        print(f" [X] Verification FAILED for {os.path.basename(stego_path_target)}: {mismatched_count} bits mismatched.")
+    if not test_passed:
+        mismatched_count = sum(1 for a, b in zip(extracted_bits, expected_bits) if a != b)
+        print(f" [X] LSB Verification FAILED: {mismatched_count} bits mismatched.")
         
     return test_passed
 
+# --- JPEG (EOI APPEND) IMPLEMENTATION ---
+
+def embed_stego_eoi_append(clean_img_path, stego_path_target, full_byte_payload):
+    """EOI Append steganography for JPEG."""
+    
+    try:
+        with open(clean_img_path, 'rb') as f:
+            clean_data = f.read()
+    except FileNotFoundError:
+        print("ERROR: Clean image not found. Skipping.")
+        return False
+        
+    eoi_pos = clean_data.rfind(EOI_MARKER)
+    
+    if eoi_pos == -1:
+        print("ERROR: Could not find JPEG EOI marker (0xFFD9). Skipping.")
+        return False
+
+    # The new stego file is: [Data before EOI] + [EOI Marker] + [Payload]
+    stego_data = clean_data[:eoi_pos + len(EOI_MARKER)] + full_byte_payload
+    
+    try:
+        with open(stego_path_target, 'wb') as f:
+            f.write(stego_data)
+    except Exception as e:
+        print(f"ERROR: Failed to save stego image. Error: {e}")
+        return False
+    
+    return True
+
+def extract_eoi_append(stego_img_path):
+    """Extract the appended data from a JPEG file."""
+    try:
+        with open(stego_img_path, 'rb') as f:
+            stego_data = f.read()
+    except FileNotFoundError:
+        return b''
+    
+    eoi_pos = stego_data.rfind(EOI_MARKER)
+    
+    if eoi_pos == -1:
+        return b''
+        
+    # Appended data starts immediately after the EOI marker (length 2)
+    appended_data = stego_data[eoi_pos + len(EOI_MARKER):]
+    
+    return appended_data
+
+def test_eoi_append_steganography_on_image(stego_path_target, expected_byte_payload):
+    """Verifies EOI Append embedding."""
+    
+    extracted_bytes = extract_eoi_append(stego_path_target)
+    
+    test_passed = extracted_bytes == expected_byte_payload
+    
+    if not test_passed:
+        print(" [X] EOI Append Verification FAILED. Size mismatch or content changed.")
+        
+    return test_passed
+
+# --- MAIN GENERATION LOOP ---
 
 def generate_images(num_images_per_payload=NUM_IMAGES_PER_PAYLOAD, resolution=RESOLUTION):
-    """Generates a batch of clean and stego images for every unique markdown payload."""
+    """Generates clean/stego pairs for both PNG (LSB) and JPEG (EOI Append)."""
     
     clean_dir = "clean"
     stego_dir = "stego"
@@ -142,41 +202,61 @@ def generate_images(num_images_per_payload=NUM_IMAGES_PER_PAYLOAD, resolution=RE
     os.makedirs(clean_dir, exist_ok=True)
     os.makedirs(stego_dir, exist_ok=True)
     
-    # Load all payloads
     all_payload_data = load_all_payloads()
     
     print("-" * 50)
-    print(f"Starting image generation and **full verification** for {len(all_payload_data)} unique payload(s)...")
+    print(f"Starting generation for {len(all_payload_data)} unique payload(s)...")
 
     total_images_generated = 0
     total_verifications_failed = 0
     
-    for payload_index, (base_name, payload_bits) in enumerate(all_payload_data):
-        print(f"\nBatch {payload_index + 1}: Generating and verifying {num_images_per_payload} images using payload '{base_name}'...")
+    # Iterate over both formats for diversity
+    for current_format, quality, embed_func, test_func in [
+        (PNG_FORMAT, None, embed_stego_lsb, test_lsb_steganography_on_image),
+        (JPEG_FORMAT, JPEG_QUALITY, embed_stego_eoi_append, test_eoi_append_steganography_on_image)
+    ]:
+        print(f"\n--- Generating {current_format} Images ({'Q'+str(quality) if quality else 'Lossless'})... ---")
         
-        for i in range(num_images_per_payload):
-            filename = f'{base_name}_{i:03d}.{IMAGE_FORMAT.lower()}'
-            clean_path = os.path.join(clean_dir, filename)
-            stego_path = os.path.join(stego_dir, filename)
-            
-            # 1. Generate Synthetic Clean Image
-            img_data_rgb = np.random.randint(0, 256, (resolution, resolution, 3), dtype=np.uint8)
-            alpha_channel = np.full((resolution, resolution, 1), 255, dtype=np.uint8)
-            img_data_rgba = np.concatenate((img_data_rgb, alpha_channel), axis=2)
-            
-            # 2. Save Clean Image
-            Image.fromarray(img_data_rgba).save(clean_path, IMAGE_FORMAT)
-            
-            # 3. Generate Stego Image
-            embed_result = embed_stego_lsb(clean_path, stego_path, payload_bits)
-            
-            if embed_result:
-                # 4. Perform verification on the saved file
-                verification_success = test_lsb_steganography_on_image(stego_path, base_name, payload_bits)
-                if not verification_success:
-                    total_verifications_failed += 1
+        for payload_index, (base_name, full_byte_payload) in enumerate(all_payload_data):
+            for i in range(num_images_per_payload):
                 
-                total_images_generated += 1
+                # 1. Create unique filenames without redundant format in the base name
+                # Filename will be like: payloadname_001.png or payloadname_001.jpeg
+                filename_base = f'{base_name}_{i:03d}'
+                # Cleaned-up filename generation: just the base name and the lowercase extension
+                filename = f'{filename_base}.{current_format.lower()}'
+                
+                clean_path = os.path.join(clean_dir, filename)
+                stego_path = os.path.join(stego_dir, filename)
+                
+                # 2. Generate Synthetic Clean Image
+                img_data_rgb = np.random.randint(0, 256, (resolution, resolution, 3), dtype=np.uint8)
+                
+                # Prepare image data based on format requirements
+                if current_format == PNG_FORMAT:
+                    # PNG/LSB requires RGBA for max capacity and lossless saving
+                    alpha_channel = np.full((resolution, resolution, 1), 255, dtype=np.uint8)
+                    img_data_rgba = np.concatenate((img_data_rgb, alpha_channel), axis=2)
+                    Image.fromarray(img_data_rgba).save(clean_path, current_format)
+                
+                elif current_format == JPEG_FORMAT:
+                    # JPEG uses RGB and fixed quality
+                    Image.fromarray(img_data_rgb).save(clean_path, current_format, quality=quality)
+                
+                # 3. Generate Stego Image
+                embed_result = embed_func(clean_path, stego_path, full_byte_payload)
+                
+                if embed_result:
+                    # 4. Perform verification
+                    verification_success = test_func(stego_path, full_byte_payload)
+                    
+                    if verification_success:
+                        print(f" [✔] {current_format} SUCCESS: {filename}")
+                    else:
+                        print(f" [X] {current_format} FAILED: {filename} 🚨")
+                        total_verifications_failed += 1
+                    
+                    total_images_generated += 1
             
     print("-" * 50)
     print("Verification and Generation Summary:")
