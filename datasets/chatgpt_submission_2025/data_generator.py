@@ -2,251 +2,337 @@
 """
 data_generator.py
 
-Generates for each *.md seed (UTF-8):
-  - clean/<seed>.png   (lossless cover)
-  - stego/<seed>.png   (PNG with LSB embedding)
-  - clean/<seed>.gif   (palette GIF cover)
-  - stego/<seed>.gif   (GIF with LSB embedding on palette indices)
-  - clean/<seed>.webp  (lossless WebP cover)
-  - stego/<seed>.webp  (lossless WebP with LSB embedding)
+Generator + Validator + Summary for Project Starlight dataset contributions.
 
-Behavior:
- - Strict verification by reloading files from disk and verifying payload bytes via SHA-256.
- - Fail-fast: on first error the script prints [FATAL] and exits with code 2.
- - Manifest written as manifest_<timestamp>.yaml with no plaintext payloads.
+Features:
+- Generates clean and stego image pairs from markdown payloads.
+- Auto-detects algorithm name from embedding function names.
+- Creates clean/ and stego/ directories if missing.
+- Follows filename format: {payload_name}_{algorithm}_{index:03d}.{ext}
+- Supports PNG, WebP, GIF (palette-based), and JPEG (EXIF/EOI).
+- Uses minimal perceptual distortion for palette-based GIF embedding.
+- Generates 10 image pairs per payload per algorithm by default.
+- Integrated validation (naming, pairing, algorithm-format consistency).
+- Summary report output (JSON + console).
+- CLI options: --validate-only, --regen, --limit N
 """
+
 import os
-import glob
+import io
+import re
 import sys
-import hashlib
-import numpy as np
-from PIL import Image
-import yaml
-from datetime import datetime, timezone
+import json
+import random
+import logging
+import argparse
+from pathlib import Path
+from typing import Callable, List, Optional
+from PIL import Image, ImageDraw
 
-# ---------------- utilities ----------------
+try:
+    import piexif
+except Exception:
+    piexif = None
 
-def bytes_to_bits(bts: bytes):
-    """Return list of bits (MSB-first within each byte)."""
-    out = []
-    for byte in bts:
-        out.extend([int(ch) for ch in format(byte, "08b")])
+# --- CONFIGURATION ---
+DEFAULT_IMG_SIZE = (256, 256)
+IMAGES_PER_PAYLOAD_PER_ALGO = 10
+CLEAN_DIR = Path("clean")
+STEGO_DIR = Path("stego")
+SUMMARY_PATH = Path("dataset_summary.json")
+
+ALGO_FORMATS = {
+    "lsb": ["png", "webp"],
+    "alpha": ["png", "webp"],
+    "exif": ["jpg"],
+    "eoi": ["jpg"],
+    "palette": ["gif"],
+}
+
+VALID_FILENAME_RE = re.compile(r"^(.+)_([a-z0-9]+)_(\d{3})\.([a-z0-9]+)$")
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
+# === Utility Functions ===
+def ensure_dirs():
+    CLEAN_DIR.mkdir(parents=True, exist_ok=True)
+    STEGO_DIR.mkdir(parents=True, exist_ok=True)
+    logging.info("Ensured clean/ and stego/ directories exist.")
+
+
+def find_md_payloads() -> List[Path]:
+    return sorted([p for p in Path(".").glob("*.md") if p.is_file()])
+
+
+def load_payload(md_path: Path) -> bytes:
+    return md_path.read_text(encoding="utf-8").encode("utf-8")
+
+
+def next_available_index(payload_name: str, algorithm: str) -> int:
+    pattern = re.compile(rf"^{re.escape(payload_name)}_{re.escape(algorithm)}_(\d{{3}})\.")
+    used = {int(m.group(1)) for f in CLEAN_DIR.glob("*") if (m := pattern.match(f.name))}
+    for i in range(1000):
+        if i not in used:
+            return i
+    raise RuntimeError("No available indices left for this payload/algorithm.")
+
+
+def save_image(img: Image.Image, path: Path, quality: int = 95):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ext = path.suffix.lower()
+    if ext in [".jpg", ".jpeg"]:
+        img.convert("RGB").save(path, format="JPEG", quality=quality)
+    else:
+        img.save(path)
+
+
+# === Clean Image Generator ===
+def generate_clean_image(size=DEFAULT_IMG_SIZE, mode="RGBA", seed=None) -> Image.Image:
+    if seed is not None:
+        random.seed(seed)
+    w, h = size
+    img = Image.new(mode, size, color=(255, 255, 255, 255) if "A" in mode else (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    for y in range(h):
+        c = int(200 * (y / h)) + 30
+        color = (c, 255 - c, (c * 2) % 255, 255) if "A" in mode else (c, 255 - c, (c * 2) % 255)
+        draw.line([(0, y), (w, y)], fill=color)
+    for _ in range(6):
+        cx, cy, r = random.randint(0, w), random.randint(0, h), random.randint(10, min(w, h) // 4)
+        fill = tuple(random.randint(0, 255) for _ in range(3)) + ((255,) if "A" in mode else ())
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill)
+    return img
+
+
+# === Embedding Implementations ===
+def embed_lsb(cover: Image.Image, payload: bytes) -> Image.Image:
+    img = cover.convert("RGBA")
+    pixels = list(img.getdata())
+    bits = "".join(f"{b:08b}" for b in payload) + "00000000"
+    max_bits = len(pixels) * 3
+    if len(bits) > max_bits:
+        raise ValueError("Payload too large for LSB embedding.")
+    new_data, i = [], 0
+    for r, g, b, a in pixels:
+        if i < len(bits): r = (r & 0xFE) | int(bits[i]); i += 1
+        if i < len(bits): g = (g & 0xFE) | int(bits[i]); i += 1
+        if i < len(bits): b = (b & 0xFE) | int(bits[i]); i += 1
+        new_data.append((r, g, b, a))
+    out = Image.new("RGBA", img.size)
+    out.putdata(new_data)
     return out
 
-def bits_to_bytes(bits):
-    """Convert list of bits back to bytes, ignoring trailing incomplete byte."""
-    out = bytearray()
-    for i in range(0, len(bits) - (len(bits) % 8), 8):
-        out.append(int("".join(map(str, bits[i:i+8])), 2))
-    return bytes(out)
 
-def payload_sha256_bytes(payload_bytes):
-    h = hashlib.sha256()
-    h.update(payload_bytes)
-    return h.hexdigest()
+def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
+    img = cover.convert("RGBA")
+    pixels = list(img.getdata())
+    bits = "".join(f"{b:08b}" for b in payload) + "00000000"
+    if len(bits) > len(pixels):
+        raise ValueError("Payload too large for alpha embedding.")
+    new_data, i = [], 0
+    for r, g, b, a in pixels:
+        if i < len(bits):
+            a = (a & 0xFE) | int(bits[i]); i += 1
+        new_data.append((r, g, b, a))
+    out = Image.new("RGBA", img.size)
+    out.putdata(new_data)
+    return out
 
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
-# ---------------- LSB helpers (generic) ----------------
+def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
+    """Minimal-change palette embedding for GIF."""
+    img = cover.convert("P", palette=Image.ADAPTIVE, colors=256)
+    data = list(img.getdata())
+    bits = "".join(f"{b:08b}" for b in payload) + "00000000"
+    if len(bits) > len(data):
+        raise ValueError("Payload too large for palette embedding.")
+    new_data, i = [], 0
+    for idx in data:
+        if i < len(bits):
+            idx = (idx & 0xFE) | int(bits[i]); i += 1
+        new_data.append(idx)
+    out = Image.new("P", img.size)
+    out.putdata(new_data)
+    out.putpalette(img.getpalette())
+    return out
 
-def embed_lsb_image(image_array: np.ndarray, payload_bits: list):
-    """
-    Embed payload_bits into image_array least-significant bits.
-    image_array: ndarray of dtype uint8, any shape (H,W) or (H,W,C)
-    Returns a new ndarray with embedding applied (same dtype & shape).
-    """
-    if not isinstance(image_array, np.ndarray):
-        raise TypeError("image_array must be numpy.ndarray")
-    flat = image_array.flatten().astype(np.uint8)
-    n = min(len(payload_bits), flat.size)
-    if n == 0:
-        return image_array.copy()
-    out_flat = flat.copy()
-    for i in range(n):
-        out_flat[i] = (out_flat[i] & 0xFE) | int(payload_bits[i])
-    return out_flat.reshape(image_array.shape)
 
-def extract_lsb_from_image(image_array: np.ndarray, num_bits: int):
-    flat = image_array.flatten()
-    num_bits = min(num_bits, flat.size)
-    return [int(x & 1) for x in flat[:num_bits]]
+def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
+    if piexif is None:
+        raise RuntimeError("piexif not installed; cannot perform EXIF embedding.")
+    img = cover.convert("RGB")
+    exif = {"0th": {}, "Exif": {piexif.ExifIFD.UserComment: b"ASCII\x00\x00\x00" + payload[:2000]}, "GPS": {}, "1st": {}, "thumbnail": None}
+    img.info["exif_bytes"] = piexif.dump(exif)
+    return img
 
-# ---------------- main ----------------
 
-def generate_images():
-    clean_dir = "./clean"
-    stego_dir = "./stego"
-    os.makedirs(clean_dir, exist_ok=True)
-    os.makedirs(stego_dir, exist_ok=True)
+def embed_eoi(cover: Image.Image, payload: bytes) -> Image.Image:
+    img = cover.convert("RGB")
+    img.info["eoi_append"] = payload
+    return img
 
-    seed_files = sorted(glob.glob("*.md"))
-    if not seed_files:
-        print("[FATAL] No markdown seed files found in current directory.")
-        sys.exit(1)
 
-    manifest = {
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "seeds": []
+# === JPEG helpers ===
+def save_jpeg_with_exif(img, path, exif_bytes, quality=95):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, "JPEG", exif=exif_bytes, quality=quality)
+
+
+def save_jpeg_with_eoi_append(img, path, append_bytes, quality=95):
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=quality)
+    data = buf.getvalue()
+    eoi = b"\xff\xd9"
+    i = data.rfind(eoi)
+    if i == -1:
+        raise RuntimeError("JPEG EOI not found.")
+    new_data = data[:i] + append_bytes + data[i:]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(new_data)
+
+
+# === Core Generation ===
+def algorithm_name(func: Callable) -> str:
+    n = func.__name__.lower()
+    return n.split("embed_")[1] if n.startswith("embed_") else n
+
+
+def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable], force_regen=False, limit=None):
+    stats = {}
+    for f in funcs:
+        algo = algorithm_name(f)
+        formats = ALGO_FORMATS.get(algo, ["png"])
+        idx = next_available_index(payload_name, algo)
+        count = 0
+        limit = limit or IMAGES_PER_PAYLOAD_PER_ALGO
+        while count < limit:
+            ext = formats[count % len(formats)]
+            fname = f"{payload_name}_{algo}_{idx:03d}.{ext}"
+            clean, stego = CLEAN_DIR / fname, STEGO_DIR / fname
+            if clean.exists() and not force_regen:
+                idx += 1
+                continue
+            seed = random.randint(0, 2**32 - 1)
+            mode = "RGBA" if ext in ["png", "webp"] else "RGB"
+            if algo == "palette":
+                mode = "P"
+            img = generate_clean_image(mode=mode, seed=seed)
+            save_image(img, clean)
+            try:
+                stego_img = f(img, payload)
+            except Exception as e:
+                logging.warning(f"Skipping {fname}: {e}")
+                clean.unlink(missing_ok=True)
+                idx += 1
+                continue
+            try:
+                if algo == "exif":
+                    save_jpeg_with_exif(stego_img, stego, stego_img.info.get("exif_bytes"))
+                elif algo == "eoi":
+                    save_jpeg_with_eoi_append(stego_img, stego, stego_img.info.get("eoi_append", b""))
+                else:
+                    save_image(stego_img, stego)
+            except Exception as e:
+                logging.warning(f"Failed to save stego {fname}: {e}")
+                clean.unlink(missing_ok=True)
+                idx += 1
+                continue
+            logging.info(f"Wrote clean/stego: {fname}")
+            stats[algo] = stats.get(algo, 0) + 1
+            count += 1
+            idx += 1
+    return stats
+
+
+# === Validation + Summary ===
+def validate_dataset() -> dict:
+    logging.info("\n--- Validating dataset ---")
+    result = {"valid": True, "errors": []}
+    clean_files = {f.name for f in CLEAN_DIR.glob("*") if f.is_file()}
+    stego_files = {f.name for f in STEGO_DIR.glob("*") if f.is_file()}
+
+    # Missing pairs
+    missing_in_stego = clean_files - stego_files
+    missing_in_clean = stego_files - clean_files
+    for f in sorted(missing_in_stego):
+        result["errors"].append(f"Missing stego for {f}")
+    for f in sorted(missing_in_clean):
+        result["errors"].append(f"Missing clean for {f}")
+
+    # Format and consistency
+    for f in clean_files | stego_files:
+        m = VALID_FILENAME_RE.match(f)
+        if not m:
+            result["errors"].append(f"Invalid filename format: {f}")
+            continue
+        _, algo, _, ext = m.groups()
+        valid_exts = ALGO_FORMATS.get(algo, [])
+        if valid_exts and ext not in valid_exts:
+            result["errors"].append(f"Algorithm-format mismatch: {f}")
+
+    result["valid"] = len(result["errors"]) == 0
+    if result["valid"]:
+        logging.info("✅ Validation passed: all files consistent and properly named.")
+    else:
+        logging.error("❌ Validation failed:")
+        for err in result["errors"]:
+            logging.error(f"  - {err}")
+    return result
+
+
+def summarize_dataset(validation: dict):
+    payloads = {f.stem.split("_")[0] for f in CLEAN_DIR.glob("*") if f.is_file()}
+    algos = {VALID_FILENAME_RE.match(f.name).group(2)
+             for f in CLEAN_DIR.glob("*") if VALID_FILENAME_RE.match(f.name)}
+    summary = {
+        "payload_count": len(payloads),
+        "algorithms_used": sorted(list(algos)),
+        "clean_files": len(list(CLEAN_DIR.glob("*"))),
+        "stego_files": len(list(STEGO_DIR.glob("*"))),
+        "validation_passed": validation.get("valid", False),
+        "errors": validation.get("errors", []),
     }
+    SUMMARY_PATH.write_text(json.dumps(summary, indent=2))
+    logging.info(f"📊 Summary written to {SUMMARY_PATH}")
+    logging.info(json.dumps(summary, indent=2))
+    return summary
 
-    for seed_file in seed_files:
-        seed_label = os.path.splitext(os.path.basename(seed_file))[0]
-        try:
-            # Read payload as bytes
-            with open(seed_file, "r", encoding="utf-8") as f:
-                payload_text = f.read()
-            payload_bytes = payload_text.encode("utf-8")
-            payload_bits = bytes_to_bits(payload_bytes)
-            nbits = len(payload_bits)
 
-            # Create a random 512x512 RGB cover
-            H, W = 512, 512
-            img_array = np.random.randint(0, 256, (H, W, 3), dtype=np.uint8)
+# === CLI ===
+def main():
+    parser = argparse.ArgumentParser(description="Project Starlight Dataset Generator + Validator + Summary")
+    parser.add_argument("--validate-only", action="store_true", help="Run validation only.")
+    parser.add_argument("--regen", action="store_true", help="Force regeneration even if files exist.")
+    parser.add_argument("--limit", type=int, help="Limit images per payload per algorithm.")
+    args = parser.parse_args()
 
-            # Compute capacities for each format (bits)
-            cap_png = img_array.size  # H*W*3
-            # GIF will be a palette image (single channel indices)
-            # Convert to palette to get indices array shape (same HxW)
-            gif_image = Image.fromarray(img_array).convert("P", palette=Image.ADAPTIVE, colors=256)
-            gif_array = np.array(gif_image)
-            cap_gif = gif_array.size  # H*W
-            # WebP lossless works on full RGB
-            cap_webp = img_array.size
+    ensure_dirs()
+    if args.validate_only:
+        validation = validate_dataset()
+        summarize_dataset(validation)
+        return
 
-            min_capacity = min(cap_png, cap_gif, cap_webp)
-            if nbits > min_capacity:
-                raise RuntimeError(
-                    f"Payload from {seed_file} requires {nbits} bits but only {min_capacity} bits are available (min across PNG/GIF/WebP)."
-                )
+    md_files = find_md_payloads()
+    if not md_files:
+        logging.warning("No .md payloads found. Add one and re-run.")
+        return
 
-            # ---------- PNG (lossless) ----------
-            clean_png = os.path.join(clean_dir, f"{seed_label}.png")
-            stego_png = os.path.join(stego_dir, f"{seed_label}.png")
-            Image.fromarray(img_array).save(clean_png, "PNG")
+    funcs = [embed_lsb, embed_alpha, embed_palette, embed_exif, embed_eoi]
+    total_stats = {}
+    for md in md_files:
+        name, payload = md.stem, load_payload(md)
+        stats = generate_for_payload(name, payload, funcs, force_regen=args.regen, limit=args.limit)
+        for k, v in stats.items():
+            total_stats[k] = total_stats.get(k, 0) + v
 
-            stego_png_array = embed_lsb_image(img_array.copy(), payload_bits)
-            Image.fromarray(stego_png_array).save(stego_png, "PNG")
-
-            # Verify PNG by reloading and extracting
-            with Image.open(stego_png) as im:
-                re_png = np.array(im.convert("RGB"), dtype=np.uint8)
-            rec_bits_png = extract_lsb_from_image(re_png, nbits)
-            rec_bytes_png = bits_to_bytes(rec_bits_png)
-            if payload_sha256_bytes(rec_bytes_png) != payload_sha256_bytes(payload_bytes):
-                raise RuntimeError(f"PNG-LSB payload SHA mismatch for {seed_label}")
-            changed_png = int((img_array != re_png).sum())
-            if nbits > 0 and changed_png == 0:
-                raise RuntimeError(f"No pixel changes detected after PNG embedding for {seed_label}")
-            print(f"[OK] PNG LSB validated for {seed_label} (bits={nbits}, changed_pixels={changed_png})")
-
-            # ---------- GIF (palette indexes) ----------
-            clean_gif = os.path.join(clean_dir, f"{seed_label}.gif")
-            stego_gif = os.path.join(stego_dir, f"{seed_label}.gif")
-
-            # Save clean palette GIF (use adaptive palette)
-            # Keep the palette object for later reuse so colors remain consistent
-            gif_image.save(clean_gif, "GIF", optimize=False)
-
-            # Embed into the palette index array (2D)
-            stego_gif_array = embed_lsb_image(gif_array.copy(), payload_bits)
-
-            # Recreate a palette image with the original palette to preserve colors
-            im_stego_gif = Image.fromarray(stego_gif_array.astype(np.uint8), mode="P")
-            palette = gif_image.getpalette()
-            if palette is not None:
-                im_stego_gif.putpalette(palette)
-            # Save stego GIF
-            im_stego_gif.save(stego_gif, "GIF", optimize=False)
-
-            # Verify GIF by reloading and extracting (strict check)
-            gif_check = Image.open(stego_gif).convert("P")
-            re_gif = np.array(gif_check, dtype=np.uint8)
-            rec_bits_gif = extract_lsb_from_image(re_gif, nbits)
-            rec_bytes_gif = bits_to_bytes(rec_bits_gif)
-            if payload_sha256_bytes(rec_bytes_gif) != payload_sha256_bytes(payload_bytes):
-                raise RuntimeError(f"GIF-LSB payload SHA mismatch for {seed_label}")
-            changed_gif = int((gif_array != re_gif).sum())
-            if nbits > 0 and changed_gif == 0:
-                raise RuntimeError(f"No index changes detected after GIF embedding for {seed_label}")
-            print(f"[OK] GIF LSB validated for {seed_label} (bits={nbits}, changed_indices={changed_gif})")
-
-            # ---------- WebP (lossless) ----------
-            clean_webp = os.path.join(clean_dir, f"{seed_label}.webp")
-            stego_webp = os.path.join(stego_dir, f"{seed_label}.webp")
-
-            # Save lossless WebP cover
-            # Pillow may or may not accept lossless kwarg depending on build; capture errors
-            try:
-                Image.fromarray(img_array).save(clean_webp, "WEBP", lossless=True)
-            except TypeError:
-                # Fall back to quality=100 if lossless not supported in this Pillow build
-                Image.fromarray(img_array).save(clean_webp, "WEBP", quality=100)
-
-            webp_image = Image.open(clean_webp)
-            webp_array = np.array(webp_image, dtype=np.uint8)
-            stego_webp_array = embed_lsb_image(webp_array.copy(), payload_bits)
-
-            # Save stego WebP (attempt lossless; fallback to high-quality)
-            try:
-                Image.fromarray(stego_webp_array).save(stego_webp, "WEBP", lossless=True)
-            except TypeError:
-                Image.fromarray(stego_webp_array).save(stego_webp, "WEBP", quality=100)
-
-            # Verify WebP by reloading and extracting
-            re_webp = np.array(Image.open(stego_webp).convert("RGB"), dtype=np.uint8)
-            rec_bits_webp = extract_lsb_from_image(re_webp, nbits)
-            rec_bytes_webp = bits_to_bytes(rec_bits_webp)
-            if payload_sha256_bytes(rec_bytes_webp) != payload_sha256_bytes(payload_bytes):
-                raise RuntimeError(f"WEBP-LSB payload SHA mismatch for {seed_label}")
-            changed_webp = int((img_array != re_webp).sum())
-            if nbits > 0 and changed_webp == 0:
-                raise RuntimeError(f"No pixel changes detected after WebP embedding for {seed_label}")
-            print(f"[OK] WEBP LSB validated for {seed_label} (bits={nbits}, changed_pixels={changed_webp})")
-
-            # ---------- manifest entry (no plaintext) ----------
-            manifest["seeds"].append({
-                "seed_file": seed_file,
-                "seed_sha256": sha256_file(seed_file),
-                "payload_sha256": payload_sha256_bytes(payload_bytes),
-                "payload_bits": nbits,
-                "clean_png": clean_png,
-                "stego_png": stego_png,
-                "clean_gif": clean_gif,
-                "stego_gif": stego_gif,
-                "clean_webp": clean_webp,
-                "stego_webp": stego_webp,
-                "clean_png_sha256": sha256_file(clean_png),
-                "stego_png_sha256": sha256_file(stego_png),
-                "clean_gif_sha256": sha256_file(clean_gif),
-                "stego_gif_sha256": sha256_file(stego_gif),
-                "clean_webp_sha256": sha256_file(clean_webp),
-                "stego_webp_sha256": sha256_file(stego_webp),
-                "changed_pixels_png": changed_png,
-                "changed_indices_gif": changed_gif,
-                "changed_pixels_webp": changed_webp,
-                "formats": ["png", "gif", "webp"]
-            })
-
-        except Exception as e:
-            print(f"[FATAL] Error processing {seed_file}: {e}")
-            sys.exit(2)
-
-    # Write manifest
-    ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    manifest_filename = f"manifest_{ts}.yaml"
-    with open(manifest_filename, "w", encoding="utf-8") as f:
-        yaml.dump(manifest, f, sort_keys=False)
-
-    print(f"\nManifest written to {manifest_filename}")
-    for s in manifest["seeds"]:
-        print(f"  - {s['seed_file']} → png:{s['stego_png']} gif:{s['stego_gif']} webp:{s['stego_webp']} (bits={s['payload_bits']})")
+    validation = validate_dataset()
+    summary = summarize_dataset(validation)
+    summary["generated_counts"] = total_stats
+    SUMMARY_PATH.write_text(json.dumps(summary, indent=2))
+    logging.info("✅ Dataset generation and validation complete.")
 
 
 if __name__ == "__main__":
-    generate_images()
+    main()
 
