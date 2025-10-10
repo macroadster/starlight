@@ -10,12 +10,14 @@ TERMINATOR_BYTES = b'\x00'       # Byte to signal the end of the message
 
 # --- PNG (LSB) CONFIGURATION ---
 PNG_FORMAT = 'PNG'
+PNG_ALGORITHM = 'lsb' # ADDED: Algorithm name for PNG LSB
 # Steganography Method: Least Significant Bit (LSB) on RGBA channels.
 # Image Format: PNG (Lossless).
 
 # --- JPEG (EOI APPEND) CONFIGURATION ---
 JPEG_FORMAT = 'JPEG'
 JPEG_QUALITY = 90
+JPEG_ALGORITHM = 'eoi' # ADDED: Algorithm name for JPEG EOI Append
 EOI_MARKER = b'\xFF\xD9'         # JPEG End of Image (EOI) marker
 # Steganography Method: Append payload data after the JPEG EOI marker.
 # Image Format: JPEG (Quality 90).
@@ -210,21 +212,26 @@ def generate_images(num_images_per_payload=NUM_IMAGES_PER_PAYLOAD, resolution=RE
     total_images_generated = 0
     total_verifications_failed = 0
     
-    # Iterate over both formats for diversity
-    for current_format, quality, embed_func, test_func in [
-        (PNG_FORMAT, None, embed_stego_lsb, test_lsb_steganography_on_image),
-        (JPEG_FORMAT, JPEG_QUALITY, embed_stego_eoi_append, test_eoi_append_steganography_on_image)
+    # Iterate over both formats for diversity. Added algorithm name to the iteration.
+    for current_format, algorithm_name, quality, embed_func, test_func in [
+        (PNG_FORMAT, PNG_ALGORITHM, None, embed_stego_lsb, test_lsb_steganography_on_image),
+        (JPEG_FORMAT, JPEG_ALGORITHM, JPEG_QUALITY, embed_stego_eoi_append, test_eoi_append_steganography_on_image)
     ]:
         print(f"\n--- Generating {current_format} Images ({'Q'+str(quality) if quality else 'Lossless'})... ---")
         
         for payload_index, (base_name, full_byte_payload) in enumerate(all_payload_data):
             for i in range(num_images_per_payload):
                 
-                # 1. Create unique filenames without redundant format in the base name
-                # Filename will be like: payloadname_001.png or payloadname_001.jpeg
-                filename_base = f'{base_name}_{i:03d}'
-                # Cleaned-up filename generation: just the base name and the lowercase extension
-                filename = f'{filename_base}.{current_format.lower()}'
+                # --- NEW FILENAME GENERATION LOGIC ---
+                # Format: {payload_name}_{algorithm}_{index}.{ext}
+                
+                payload_name = base_name.lower() # payload_name
+                algorithm = algorithm_name.lower() # lsb or eoi
+                index = f'{i:03d}' # zero-padded index
+                ext = current_format.lower() # png or jpeg
+                
+                # Construct the full structured filename
+                filename = f'{payload_name}_{algorithm}_{index}.{ext}'
                 
                 clean_path = os.path.join(clean_dir, filename)
                 stego_path = os.path.join(stego_dir, filename)
