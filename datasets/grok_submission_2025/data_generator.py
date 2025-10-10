@@ -9,7 +9,7 @@ def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG')
     Generate a 512x512 clean image (JPEG or PNG) with a colorful gradient pattern.
     Uses a seed for reproducible diversity across images in a batch.
     Args:
-        output_path (str): Path to save (e.g., ./clean/sample_seed_001.jpeg).
+        output_path (str): Path to save (e.g., ./clean/sample_seed_exif_001.jpeg).
         size (tuple): Image dimensions (default: 512x512).
         seed (int): Random seed for noise variation (ensures unique patterns).
         format (str): 'JPEG' (Q=85) or 'PNG' (lossless; better for LSB stego).
@@ -185,7 +185,7 @@ def generate_images(num_images=1, format='JPEG'):
         - Stego key: None (keyless LSB/EXIF)
     Behavior:
         - Iterates over each .md file, generating a batch of num_images clean + stego pairs.
-        - Labels images with seed basename (e.g., sample_seed.md -> sample_seed_001.jpeg).
+        - Labels images with seed basename and algorithm (e.g., sample_seed_exif_001.jpeg).
         - If no seeds, generates a random batch labeled 'random' (no payload for verification).
         - Verifies payloads: PNG (LSB extraction), JPEG (EXIF UserComment).
         - Uses tqdm for progress feedback.
@@ -198,6 +198,7 @@ def generate_images(num_images=1, format='JPEG'):
     seed_dir = "./"
     payload_size = 0.2  # Fixed: 0.2 bpnzAC for PNG LSB
     quality = 85  # Fixed: JPEG quality
+    algorithm = 'exif' if format == 'JPEG' else 'lsb'  # Algorithm name for filename
 
     num_images = int(os.environ.get('NUM_IMAGES', num_images))
     
@@ -217,7 +218,7 @@ def generate_images(num_images=1, format='JPEG'):
         seed_basename = "random"
         stego_paths = []
         for i in tqdm(range(num_images), desc=f"Batch (random)"):
-            img_name = f"{seed_basename}_{i:03d}.{format.lower()}"
+            img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
             clean_path = os.path.join(clean_dir, img_name)
             stego_path = os.path.join(stego_dir, img_name)
             generate_clean_image(clean_path, seed=i, format=format)
@@ -239,7 +240,7 @@ def generate_images(num_images=1, format='JPEG'):
                 seed_payload = f.read()
             stego_paths = []
             for i in tqdm(range(num_images), desc=f"Batch ({seed_basename})"):
-                img_name = f"{seed_basename}_{i:03d}.{format.lower()}"
+                img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
                 clean_path = os.path.join(clean_dir, img_name)
                 stego_path = os.path.join(stego_dir, img_name)
                 generate_clean_image(clean_path, seed=i, format=format)
