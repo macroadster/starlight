@@ -5,30 +5,47 @@ from PIL import Image
 # --- Helper Function to Find and Read Markdown File ---
 
 def get_message_from_md():
-    """Finds the first .md file and returns its stripped and raw content."""
+    """Finds the first .md file and returns its stripped content, raw content, and filename."""
     md_files = [f for f in os.listdir('.') if f.endswith('.md')]
     if not md_files:
         print("Error: No .md file found in the current directory.")
-        return None, None
+        return None, None, None
 
-    md_file_path = md_files[0]
+    # Sort to ensure deterministic selection if multiple files exist
+    md_file_path = sorted(md_files)[0]
+    payload_name = os.path.splitext(md_file_path)[0] # Extract filename without extension
     print(f"Using content from: {md_file_path}")
 
     try:
         with open(md_file_path, 'r', encoding='utf-8') as f:
             content_raw = f.read()
-        return content_raw.strip(), content_raw
+        return content_raw.strip(), content_raw, payload_name
     except Exception as e:
         print(f"Error reading file {md_file_path}: {e}")
-        return None, None
+        return None, None, None
 
-# Get the message content
-message_to_embed, original_md_content_raw = get_message_from_md()
+# Get the message content and payload name
+message_to_embed, original_md_content_raw, payload_name = get_message_from_md()
 
 if message_to_embed is None:
     exit(1)
 
+# --- Filename Generation based on Dataset Guidelines ---
+# Format: {payload_name}_{algorithm}_{index}.{ext}
+# Algorithm: 'alpha' (Alpha channel LSB embedding)
+# Index: '000'
+# Extension: 'png'
+ALGORITHM_NAME = "alpha"
+IMAGE_INDEX = "000"
+COVER_IMAGE_NAME = f"promise.png" # The clean image path still contains 'promise.png'
+
+# Construct the new structured filename for both clean and stego output
+new_image_filename = f"{payload_name}_{ALGORITHM_NAME}_{IMAGE_INDEX}.png"
+clean_image_path = f"clean/{COVER_IMAGE_NAME}" # The path to read the cover image
+stego_image_path = f"stego/{new_image_filename}" # The path to save the stego image
+
 print(f"Message to embed (stripped): '{message_to_embed}'")
+print(f"New Stego Filename: {new_image_filename}")
 
 # --- Data Preparation ---
 
@@ -41,9 +58,10 @@ full_hidden_bytes = ai_hint + message_hex + [0x00]
 
 # Open the image
 try:
-    img = Image.open("clean/promise.png").convert("RGBA")
+    # Use the clean path for the cover image
+    img = Image.open(clean_image_path).convert("RGBA")
 except FileNotFoundError:
-    print("Error: 'clean/promise.png' not found.")
+    print(f"Error: '{clean_image_path}' not found.")
     exit(1)
 
 pixels = np.array(img)
@@ -55,7 +73,7 @@ if total_bits_needed > max_embeddable_bits:
     print(f"Needed: {total_bits_needed} bits. Available: {max_embeddable_bits} bits.")
     exit(1)
 
-# --- CORRECTED EMBEDDING LOGIC: 8 Pixels per Byte ---
+# --- EMBEDDING LOGIC: 8 Pixels per Byte ---
 
 pixel_index = 0
 for byte_val in full_hidden_bytes:
@@ -67,13 +85,10 @@ for byte_val in full_hidden_bytes:
         # 2. Get the current pixel's alpha value
         alpha_val = pixels[x, y, 3]
         
-        # 3. Get the specific bit to embed (Most Significant Bit first is common, but LSB first is fine too)
-        # We'll extract from LSB (bit_index=0) to MSB (bit_index=7) for simplicity.
+        # 3. Get the specific bit to embed (LSB first)
         bit_to_embed = (byte_val >> bit_index) & 0x01
         
         # 4. Modify the LSB of the alpha channel:
-        #    - (alpha_val & 0xFE) clears the current LSB (sets it to 0).
-        #    - | bit_to_embed sets the LSB to the required message bit (0 or 1).
         pixels[x, y, 3] = (alpha_val & 0xFE) | bit_to_embed
         
         # Move to the next pixel
@@ -83,8 +98,8 @@ for byte_val in full_hidden_bytes:
 
 stego_dir = "stego"
 os.makedirs(stego_dir, exist_ok=True)
-stego_image_path = "stego/promise.png"
 img_out = Image.fromarray(pixels)
+# Save to the new structured path
 img_out.save(stego_image_path)
 
 print(f"\nAI hint and full message bytes embedded successfully into {stego_image_path}.")
@@ -147,6 +162,7 @@ def extract_full_message(image_path, hint_length):
 
 # --- Execute Verification ---
 HINT_LENGTH = 4 # The length of the AI hint [0x41, 0x49, 0x34, 0x32]
+# Use the new structured path for verification
 extracted_hint, extracted_message = extract_full_message(stego_image_path, HINT_LENGTH)
 
 if extracted_message is not None:
