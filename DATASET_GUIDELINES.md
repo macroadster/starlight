@@ -12,6 +12,32 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
 
 -----
 
+## Filename Naming Convention
+
+**Format:** `{payload_name}_{algorithm}_{index}.{ext}`
+
+**Examples:**
+- `sample_seed_alpha_000.png` - Alpha channel LSB method
+- `sample_seed_palette_001.bmp` - Palette manipulation method
+- `sample_seed_dct_002.png` - DCT coefficient method
+
+**Algorithm Names:**
+- `alpha` - Alpha channel LSB embedding (PNG)
+- `palette` - Palette index manipulation (BMP)
+- `dct` - DCT coefficient embedding (PNG)
+- `lsb` - Standard LSB embedding
+- `exif` - EXIF metadata embedding (JPEG)
+- `eoi` - End-of-image append (JPEG)
+- Custom algorithm names should be concise and descriptive
+
+**Guidelines:**
+- Use lowercase for algorithm names
+- Avoid redundancy (e.g., use `alpha` not `png_alpha` for PNG files)
+- Index should be zero-padded to 3 digits (000, 001, 002, etc.)
+- File extension indicates the format; algorithm name indicates the method
+
+-----
+
 ## Contribution Options
 
 ### Option 1: Provide Clean and Tainted Images
@@ -39,6 +65,7 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
       - Run from `dataset/[username]_submission_[year]/`, reading from `./clean/`, saving to `./stego/` with identical filenames.
       - Must identify all `.md` seed files in `./` (if used) and **generate a separate batch of stego images for each file, using the markdown filename to label the output images**.
       - **The script must document the steganography algorithm, parameters, and image format/quality settings used**.
+      - Follow the filename naming convention specified above.
 
 -----
 
@@ -52,6 +79,7 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
       - Must identify all `.md` seed files in `./` (if used) and **generate a separate batch of images for each file, using the markdown filename to label the output images**.
       - Run from `dataset/[username]_submission_[year]/`, generating clean images in `./clean/` and stego images in `./stego/` with identical filenames.
       - Ensure clean images are diverse (e.g., vary patterns or colors).
+      - Follow the filename naming convention specified above.
 
 -----
 
@@ -61,8 +89,8 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
     ```
     dataset/
     └── [username]_submission_[year]/    # e.g., dataset/grok_submission_2025/
-        ├── clean/                      # Clean images (e.g., cover_001.jpeg)
-        ├── stego/                      # Tainted images (e.g., cover_001.jpeg)
+        ├── clean/                      # Clean images (e.g., payload_alpha_001.png)
+        ├── stego/                      # Tainted images (e.g., payload_alpha_001.png)
         ├── sample_seed.md              # Optional markdown seed files
         └── data_generator.py           # Script for Options 2 or 3
     ```
@@ -82,6 +110,7 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
   - **Ethics**: Use synthetic payloads (random bits or markdown text); avoid real malicious or illegal data.
   - **Licensing**: Ensure clean images are public domain or permissively licensed (e.g., CC0, MIT).
   - **Balance**: Aim for a 1:1 clean-to-stego ratio.
+  - **Naming**: Follow the filename convention to maintain dataset consistency.
 
 -----
 
@@ -94,4 +123,4 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
 
 ## Questions?
 
-Use GitHub Issues or Discussions for support. Let’s build a flexible dataset for blockchain steganalysis\!
+Use GitHub Issues or Discussions for support. Let's build a flexible dataset for blockchain steganalysis!
