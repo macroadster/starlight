@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm  # Progress bar for large batches
 import piexif  # For EXIF metadata; pip install piexif
+import argparse  # For command-line arguments
 
 def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG'):
     """
@@ -190,7 +191,7 @@ def generate_images(num_images=1, format='JPEG'):
         - Verifies payloads: PNG (LSB extraction), JPEG (EXIF UserComment).
         - Uses tqdm for progress feedback.
     Args:
-        num_images (int): Pairs per seed batch (default: 1; override via NUM_IMAGES env var).
+        num_images (int): Pairs per seed batch (default: 1; override via --limit or NUM_IMAGES env var).
         format (str): 'JPEG' (EXIF metadata) or 'PNG' (LSB).
     """
     clean_dir = "./clean"
@@ -254,8 +255,13 @@ def generate_images(num_images=1, format='JPEG'):
             verify_images(seed_file, stego_paths, seed_payload, format, payload_size)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate clean and stego images for Project Starlight.")
+    parser.add_argument('--limit', type=int, default=1, help='Number of images to generate per payload per algorithm (overrides NUM_IMAGES env var).')
+    parser.add_argument('--format', type=str, default='JPEG', choices=['JPEG', 'PNG'], help='Format/algorithm to use: JPEG (exif) or PNG (lsb).')
+    args = parser.parse_args()
+
     try:
-        generate_images(num_images=1, format='JPEG')  # Default: JPEG with EXIF
+        generate_images(num_images=args.limit, format=args.format)
         print("Image generation completed.")
     except Exception as e:
         print(f"Error: {str(e)}")
@@ -264,6 +270,6 @@ if __name__ == "__main__":
 # - JPEG: Stores payload in EXIF UserComment (~65 KB capacity, keyless).
 # - PNG: Embeds payload via LSB (0.2 bpnzAC, ~6.5 KB for 512x512, keyless).
 # - Verification: PNG (LSB extraction), JPEG (EXIF UserComment).
-# - Override: export NUM_IMAGES=10; export FORMAT=PNG; python data_generator.py
+# - Override: python data_generator.py --limit 10 --format PNG
 # - Dependencies: pip install piexif Pillow numpy tqdm
 # - Ensure Python 3.8+ for compatibility.
