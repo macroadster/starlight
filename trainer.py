@@ -28,6 +28,7 @@ import json
 from tqdm import tqdm
 import random
 import argparse
+import os
 
 # ============= SPECIALIZED PREPROCESSING =============
 
@@ -65,6 +66,15 @@ class StegoPreprocessing:
         
         return residual
 
+def compute_entropy(data: bytes) -> float:
+    """Compute Shannon entropy for byte data"""
+    if len(data) == 0:
+        return 0.0
+    hist = np.bincount(np.frombuffer(data, np.uint8), minlength=256)
+    hist = hist / hist.sum()
+    hist = hist[hist > 0]
+    return -np.sum(hist * np.log2(hist)) if len(hist) > 0 else 0.0
+
 class StegoTransform:
     """Custom transform for steganalysis"""
     
@@ -73,29 +83,10 @@ class StegoTransform:
         self.augment = augment
         self.preprocessing = StegoPreprocessing()
     
-    def __call__(self, img):
+    def __call__(self, img: Image.Image, file_path: str = None):
         # Preserve alpha channel if present, and handle palette-indexed images
         has_alpha = img.mode in ('RGBA', 'LA') or 'transparency' in img.info
         is_palette = img.mode in ('P', 'PA')
-        
-        # TODO: JPEG EXIF and EOI steganography detection
-        # EXIF metadata can hide data in various fields (UserComment, MakerNote, etc.)
-        # EOI (End of Image, 0xFFD9) marker - data can be appended after EOI
-        # Implementation notes:
-        # 1. Extract EXIF data using PIL's img.getexif() or img.info['exif']
-        # 2. Check for suspicious/oversized EXIF fields
-        # 3. For EOI detection, need to work with raw file bytes:
-        #    - Read file as binary, find FFD9 marker
-        #    - Check if data exists after EOI (file_size > eoi_position + 2)
-        #    - Extract and analyze trailing bytes as potential hidden payload
-        # 4. Add EXIF entropy analysis as additional channel
-        # 5. Add EOI trailing data flag as binary feature
-        # Example structure for future implementation:
-        #   exif_data = img.getexif() if hasattr(img, 'getexif') else {}
-        #   has_suspicious_exif = check_exif_anomalies(exif_data)
-        #   has_eoi_data = check_eoi_trailing_data(image_path)
-        #   exif_feature_channel = encode_exif_features(exif_data)
-        # This would add 1-2 additional channels to the input
         
         if is_palette:
             # GIF/BMP palette mode - critical for palette steganography detection!
@@ -316,13 +307,61 @@ class StegoTransform:
                     res_normalized
                 ], axis=2)
         
+        # Add JPEG-specific features if applicable
+        exif_entropy = 0.0
+        exif_size_ratio = 0.0
+        has_eoi_trailing = 0.0
+        eoi_entropy = 0.0
+        
+        if file_path is not None and getattr(img, 'format', None) == 'JPEG':
+            try:
+                # Extract EXIF
+                exif = img.getexif()
+                exif_bytes = exif.tobytes() if exif else b''
+                exif_entropy = compute_entropy(exif_bytes)
+                exif_size = len(exif_bytes)
+                file_size = os.path.getsize(file_path)
+                exif_size_ratio = exif_size / file_size if file_size > 0 else 0.0
+                
+                # Check EOI trailing data
+                with open(file_path, 'rb') as f:
+                    data = f.read()
+                eoi_pos = data.rfind(b'\xff\xd9')
+                if eoi_pos != -1:
+                    trailing = data[eoi_pos + 2:]
+                    if len(trailing) > 0:
+                        has_eoi_trailing = 1.0
+                        eoi_entropy = compute_entropy(trailing)
+            except Exception as e:
+                print(f"Error extracting JPEG features from {file_path}: {e}")
+        
+        # Normalize entropy values (max entropy for bytes is 8)
+        exif_entropy /= 8.0
+        eoi_entropy /= 8.0
+        
+        # Create constant channels for JPEG features
+        h, w = self.size, self.size
+        exif_entropy_ch = np.full((h, w, 1), exif_entropy, dtype=np.float32)
+        exif_ratio_ch = np.full((h, w, 1), exif_size_ratio, dtype=np.float32)
+        eoi_flag_ch = np.full((h, w, 1), has_eoi_trailing, dtype=np.float32)
+        eoi_entropy_ch = np.full((h, w, 1), eoi_entropy, dtype=np.float32)
+        
+        # Concatenate JPEG feature channels
+        jpeg_features = np.concatenate([
+            exif_entropy_ch,
+            exif_ratio_ch,
+            eoi_flag_ch,
+            eoi_entropy_ch
+        ], axis=2)
+        
+        combined = np.concatenate([combined, jpeg_features], axis=2)
+        
         # Convert to tensor (H, W, C) -> (C, H, W)
         tensor = torch.from_numpy(combined).permute(2, 0, 1).float()
         
-        # Pad to consistent 15 channels for batching
-        # This ensures all images in a batch have the same dimensions
-        if tensor.shape[0] < 15:
-            padding_size = 15 - tensor.shape[0]
+        # Pad to consistent 19 channels for batching
+        if tensor.shape[0] < 19:
+            padding_size = 19 - tensor.shape[0]
             padding = torch.zeros(padding_size, tensor.shape[1], tensor.shape[2])
             tensor = torch.cat([tensor, padding], dim=0)
         
@@ -336,19 +375,6 @@ class ImprovedStegoDataset(Dataset):
     def __init__(self, dataset_root: str = 'datasets', train=True, max_samples=None):
         self.dataset_root = Path(dataset_root)
         self.train = train
-        
-        # TODO: Track image file paths for JPEG EXIF/EOI analysis
-        # Currently we only pass PIL Image objects to transform
-        # For JPEG steganography detection, we need:
-        # 1. Access to original file path in __getitem__
-        # 2. Pass file path to StegoTransform along with PIL Image
-        # 3. StegoTransform can then open file as binary to check:
-        #    - EXIF metadata size and entropy
-        #    - Data after EOI marker (0xFFD9)
-        # Suggested modification:
-        #   return (img_tensor, label, str(image_path))
-        # Then StegoTransform.__call__ signature becomes:
-        #   def __call__(self, img, file_path=None)
         
         # Find all submission directories
         self.pairs = []
@@ -396,19 +422,20 @@ class ImprovedStegoDataset(Dataset):
         
         try:
             if is_stego:
-                img = Image.open(stego_path)
+                img_path = stego_path
                 label = 1
             else:
-                img = Image.open(clean_path)
+                img_path = clean_path
                 label = 0
             
-            img_tensor = self.transform(img)
+            img = Image.open(img_path)
+            img_tensor = self.transform(img, str(img_path))
             return img_tensor, label
             
         except Exception as e:
-            print(f"Error loading {stego_path if is_stego else clean_path}: {e}")
+            print(f"Error loading {img_path}: {e}")
             # Return a dummy sample
-            return torch.zeros(9, 256, 256), 0
+            return torch.zeros(19, 256, 256), 0
 
 # ============= IMPROVED MODEL =============
 
@@ -418,16 +445,15 @@ class SRNet(nn.Module):
     Based on research in deep learning steganalysis
     Supports RGB (9ch), RGBA (12ch), and Palette-indexed (12-15ch) inputs
     
-    TODO: Extend for JPEG EXIF and EOI steganography
-    Future channels to add:
+    Extended for JPEG EXIF and EOI steganography with additional channels:
     - EXIF entropy channel (1 channel): Statistical measure of EXIF data randomness
     - EXIF size ratio channel (1 channel): EXIF size / total file size
     - EOI trailing data flag (1 channel): Binary flag if data exists after FFD9
     - EOI data entropy (1 channel): If trailing data exists, its entropy
-    This would increase max channels from 15 to 19
+    This increases max channels from 15 to 19
     
     Implementation approach:
-    1. Modify first conv layer: nn.Conv2d(19, 64, ...)
+    1. Modified first conv layer: nn.Conv2d(19, 64, ...)
     2. Extract EXIF features in StegoTransform, encode as spatial channels
     3. For EOI data, create a uniform channel with the flag/entropy value
     4. Pad non-JPEG images with zeros in these channels
@@ -442,14 +468,15 @@ class SRNet(nn.Module):
     def __init__(self, num_classes=2):
         super().__init__()
         
-        # Input: 9-15 channels depending on image type
+        # Input: 9-19 channels depending on image type
         # RGB: 9 channels
         # RGB+Palette: 12 channels
         # RGBA: 12 channels
         # RGBA+Palette: 15 channels
+        # + JPEG features: +4 channels
         
         # Layer 1: Feature extraction with small kernels
-        self.conv1 = nn.Conv2d(15, 64, kernel_size=3, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(19, 64, kernel_size=3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         
         # Layer 2-3: Detection layers
@@ -481,10 +508,10 @@ class SRNet(nn.Module):
         self.fc3 = nn.Linear(64, num_classes)
         
     def forward(self, x):
-        # Handle variable input channels (9, 12, or 15)
-        if x.shape[1] < 15:
-            # Pad to 15 channels with zeros
-            padding_size = 15 - x.shape[1]
+        # Handle variable input channels (9-19)
+        if x.shape[1] < 19:
+            # Pad to 19 channels with zeros
+            padding_size = 19 - x.shape[1]
             padding = torch.zeros(x.shape[0], padding_size, x.shape[2], x.shape[3], 
                                 device=x.device, dtype=x.dtype)
             x = torch.cat([x, padding], dim=1)
