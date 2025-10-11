@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """
-Steganography Detection Model for Project Starlight
-Detects hidden information in images using deep learning
-Supports: PNG Alpha LSB, BMP Palette, PNG DCT, and general stego detection
+Improved Steganography Detection Model for Project Starlight
+Key improvements:
+- Specialized preprocessing for steganalysis
+- High-pass filtering to detect subtle changes
+- Better data augmentation
+- Adjusted learning rate and optimization
+
+Usage:
+  python trainer.py                    # Train with all data
+  python trainer.py --limit 1000       # Train with 1000 pairs max
+  python trainer.py --epochs 50        # Train for 50 epochs
+  python trainer.py --lr 0.0003        # Custom learning rate
+  python trainer.py --batch-size 16    # Custom batch size
 """
 
 import torch
@@ -16,15 +26,329 @@ from pathlib import Path
 from typing import Tuple, List, Dict
 import json
 from tqdm import tqdm
+import random
+import argparse
 
-# ============= DATASET LOADER =============
+# ============= SPECIALIZED PREPROCESSING =============
 
-class StegoDataset(Dataset):
-    """Dataset for steganography detection"""
+class StegoPreprocessing:
+    """Preprocessing optimized for steganography detection"""
     
-    def __init__(self, dataset_root: str = 'datasets', transform=None, max_samples=None):
+    @staticmethod
+    def high_pass_filter(img_array):
+        """Apply high-pass filter to emphasize subtle changes"""
+        kernel = np.array([[-1, -1, -1],
+                          [-1,  8, -1],
+                          [-1, -1, -1]], dtype=np.float32)
+        
+        filtered = np.zeros_like(img_array, dtype=np.float32)
+        
+        for c in range(3):
+            channel = img_array[:, :, c].astype(np.float32)
+            # Apply convolution
+            from scipy.ndimage import convolve
+            filtered[:, :, c] = convolve(channel, kernel, mode='constant')
+        
+        return filtered
+    
+    @staticmethod
+    def get_residual(img_array):
+        """Get residual (difference from smoothed version)"""
+        from scipy.ndimage import gaussian_filter
+        
+        residual = np.zeros_like(img_array, dtype=np.float32)
+        
+        for c in range(3):
+            channel = img_array[:, :, c].astype(np.float32)
+            smoothed = gaussian_filter(channel, sigma=1.0)
+            residual[:, :, c] = channel - smoothed
+        
+        return residual
+
+class StegoTransform:
+    """Custom transform for steganalysis"""
+    
+    def __init__(self, size=256, augment=True):
+        self.size = size
+        self.augment = augment
+        self.preprocessing = StegoPreprocessing()
+    
+    def __call__(self, img):
+        # Preserve alpha channel if present, and handle palette-indexed images
+        has_alpha = img.mode in ('RGBA', 'LA') or 'transparency' in img.info
+        is_palette = img.mode in ('P', 'PA')
+        
+        # TODO: JPEG EXIF and EOI steganography detection
+        # EXIF metadata can hide data in various fields (UserComment, MakerNote, etc.)
+        # EOI (End of Image, 0xFFD9) marker - data can be appended after EOI
+        # Implementation notes:
+        # 1. Extract EXIF data using PIL's img.getexif() or img.info['exif']
+        # 2. Check for suspicious/oversized EXIF fields
+        # 3. For EOI detection, need to work with raw file bytes:
+        #    - Read file as binary, find FFD9 marker
+        #    - Check if data exists after EOI (file_size > eoi_position + 2)
+        #    - Extract and analyze trailing bytes as potential hidden payload
+        # 4. Add EXIF entropy analysis as additional channel
+        # 5. Add EOI trailing data flag as binary feature
+        # Example structure for future implementation:
+        #   exif_data = img.getexif() if hasattr(img, 'getexif') else {}
+        #   has_suspicious_exif = check_exif_anomalies(exif_data)
+        #   has_eoi_data = check_eoi_trailing_data(image_path)
+        #   exif_feature_channel = encode_exif_features(exif_data)
+        # This would add 1-2 additional channels to the input
+        
+        if is_palette:
+            # GIF/BMP palette mode - critical for palette steganography detection!
+            # Store original palette indices before conversion
+            palette_indices = np.array(img, dtype=np.float32)
+            
+            # Get the palette (handle different PIL palette formats)
+            if img.palette:
+                try:
+                    # Get palette data - returns (mode, data)
+                    palette_mode, palette_data = img.palette.getdata()
+                    # Convert bytes to numpy array and reshape
+                    palette = np.frombuffer(palette_data, dtype=np.uint8).astype(np.float32)
+                    # Reshape to (num_colors, 3) for RGB or (num_colors, 4) for RGBA
+                    if palette_mode == 'RGB':
+                        palette = palette.reshape(-1, 3)
+                    elif palette_mode == 'RGBA':
+                        palette = palette.reshape(-1, 4)
+                    else:
+                        palette = None
+                except Exception as e:
+                    # If palette extraction fails, just set to None
+                    palette = None
+            else:
+                palette = None
+            
+            # Convert to RGB for standard processing
+            if 'transparency' in img.info or img.mode == 'PA':
+                img_rgb = img.convert('RGBA')
+                has_alpha = True
+            else:
+                img_rgb = img.convert('RGB')
+                has_alpha = False
+        else:
+            palette_indices = None
+            palette = None
+            
+            if has_alpha:
+                img_rgb = img.convert('RGBA')
+            else:
+                img_rgb = img.convert('RGB')
+        
+        # Resize
+        img_rgb = img_rgb.resize((self.size, self.size), Image.BILINEAR)
+        
+        # Resize palette indices if they exist
+        if palette_indices is not None:
+            from PIL import Image as PILImage
+            # Convert to uint8 and create grayscale image (mode inferred from array)
+            palette_img = PILImage.fromarray(palette_indices.astype(np.uint8))
+            palette_img = palette_img.resize((self.size, self.size), Image.NEAREST)
+            palette_indices = np.array(palette_img, dtype=np.float32)
+        
+        # Convert to array
+        img_array = np.array(img_rgb, dtype=np.float32)
+        
+        # Data augmentation (only for training)
+        if self.augment and random.random() > 0.5:
+            # Random horizontal flip
+            if random.random() > 0.5:
+                img_array = np.fliplr(img_array)
+            
+            # Random rotation (90, 180, 270)
+            if random.random() > 0.5:
+                k = random.randint(1, 3)
+                img_array = np.rot90(img_array, k)
+        
+        # Handle RGB vs RGBA vs Palette-indexed
+        if img_array.shape[2] == 4:
+            # RGBA image - process RGB and alpha separately
+            rgb_array = img_array[:, :, :3]
+            alpha_array = img_array[:, :, 3:4]
+            
+            # Get high-pass filtered version for RGB
+            hp_filtered_rgb = self.preprocessing.high_pass_filter(rgb_array)
+            
+            # Get residual for RGB
+            residual_rgb = self.preprocessing.get_residual(rgb_array)
+            
+            # Process alpha channel separately (critical for alpha LSB detection!)
+            alpha_hp = self.preprocessing.high_pass_filter(
+                np.repeat(alpha_array, 3, axis=2)
+            )[:, :, 0:1]  # Take only one channel
+            
+            alpha_residual = self.preprocessing.get_residual(
+                np.repeat(alpha_array, 3, axis=2)
+            )[:, :, 0:1]
+            
+            # Normalize RGB
+            rgb_normalized = rgb_array / 255.0
+            
+            # Normalize alpha
+            alpha_normalized = alpha_array / 255.0
+            
+            # Normalize high-pass RGB
+            hp_normalized_rgb = (hp_filtered_rgb - hp_filtered_rgb.mean()) / (hp_filtered_rgb.std() + 1e-8)
+            hp_normalized_rgb = np.clip(hp_normalized_rgb, -3, 3) / 3.0
+            
+            # Normalize residual RGB
+            res_normalized_rgb = (residual_rgb - residual_rgb.mean()) / (residual_rgb.std() + 1e-8)
+            res_normalized_rgb = np.clip(res_normalized_rgb, -3, 3) / 3.0
+            
+            # Normalize high-pass alpha
+            hp_normalized_alpha = (alpha_hp - alpha_hp.mean()) / (alpha_hp.std() + 1e-8)
+            hp_normalized_alpha = np.clip(hp_normalized_alpha, -3, 3) / 3.0
+            
+            # Normalize residual alpha
+            res_normalized_alpha = (alpha_residual - alpha_residual.mean()) / (alpha_residual.std() + 1e-8)
+            res_normalized_alpha = np.clip(res_normalized_alpha, -3, 3) / 3.0
+            
+            # Add palette indices if available
+            if palette_indices is not None:
+                # Process palette indices (critical for palette steganography!)
+                palette_expanded = np.expand_dims(palette_indices, axis=2)
+                
+                # High-pass filter on palette indices
+                palette_hp = self.preprocessing.high_pass_filter(
+                    np.repeat(palette_expanded, 3, axis=2)
+                )[:, :, 0:1]
+                
+                # Residual on palette indices
+                palette_residual = self.preprocessing.get_residual(
+                    np.repeat(palette_expanded, 3, axis=2)
+                )[:, :, 0:1]
+                
+                # Normalize palette
+                palette_normalized = palette_expanded / 255.0
+                
+                # Normalize palette high-pass
+                palette_hp_norm = (palette_hp - palette_hp.mean()) / (palette_hp.std() + 1e-8)
+                palette_hp_norm = np.clip(palette_hp_norm, -3, 3) / 3.0
+                
+                # Normalize palette residual
+                palette_res_norm = (palette_residual - palette_residual.mean()) / (palette_residual.std() + 1e-8)
+                palette_res_norm = np.clip(palette_res_norm, -3, 3) / 3.0
+                
+                # Stack: RGB + alpha + palette + RGB hp + alpha hp + palette hp + RGB res + alpha res + palette res = 15 channels
+                combined = np.concatenate([
+                    rgb_normalized,           # 3 channels
+                    alpha_normalized,         # 1 channel
+                    palette_normalized,       # 1 channel
+                    hp_normalized_rgb,        # 3 channels
+                    hp_normalized_alpha,      # 1 channel
+                    palette_hp_norm,          # 1 channel
+                    res_normalized_rgb,       # 3 channels
+                    res_normalized_alpha,     # 1 channel
+                    palette_res_norm          # 1 channel
+                ], axis=2)
+            else:
+                # Stack: RGB + alpha + RGB hp + alpha hp + RGB residual + alpha residual = 12 channels
+                combined = np.concatenate([
+                    rgb_normalized,           # 3 channels
+                    alpha_normalized,         # 1 channel
+                    hp_normalized_rgb,        # 3 channels
+                    hp_normalized_alpha,      # 1 channel
+                    res_normalized_rgb,       # 3 channels
+                    res_normalized_alpha      # 1 channel
+                ], axis=2)
+        else:
+            # RGB image - original processing
+            # Get high-pass filtered version
+            hp_filtered = self.preprocessing.high_pass_filter(img_array)
+            
+            # Get residual
+            residual = self.preprocessing.get_residual(img_array)
+            
+            # Normalize original image
+            img_normalized = img_array / 255.0
+            
+            # Normalize high-pass
+            hp_normalized = (hp_filtered - hp_filtered.mean()) / (hp_filtered.std() + 1e-8)
+            hp_normalized = np.clip(hp_normalized, -3, 3) / 3.0
+            
+            # Normalize residual
+            res_normalized = (residual - residual.mean()) / (residual.std() + 1e-8)
+            res_normalized = np.clip(res_normalized, -3, 3) / 3.0
+            
+            # Add palette indices if available
+            if palette_indices is not None:
+                # Process palette indices for GIF/BMP palette steganography
+                palette_expanded = np.expand_dims(palette_indices, axis=2)
+                
+                # High-pass filter on palette indices (detects LSB in indices!)
+                palette_hp = self.preprocessing.high_pass_filter(
+                    np.repeat(palette_expanded, 3, axis=2)
+                )[:, :, 0:1]
+                
+                # Residual on palette indices
+                palette_residual = self.preprocessing.get_residual(
+                    np.repeat(palette_expanded, 3, axis=2)
+                )[:, :, 0:1]
+                
+                # Normalize palette
+                palette_normalized = palette_expanded / 255.0
+                
+                # Normalize palette high-pass
+                palette_hp_norm = (palette_hp - palette_hp.mean()) / (palette_hp.std() + 1e-8)
+                palette_hp_norm = np.clip(palette_hp_norm, -3, 3) / 3.0
+                
+                # Normalize palette residual
+                palette_res_norm = (palette_residual - palette_residual.mean()) / (palette_residual.std() + 1e-8)
+                palette_res_norm = np.clip(palette_res_norm, -3, 3) / 3.0
+                
+                # Stack: RGB + palette + RGB hp + palette hp + RGB res + palette res = 12 channels
+                combined = np.concatenate([
+                    img_normalized,           # 3 channels
+                    palette_normalized,       # 1 channel
+                    hp_normalized,            # 3 channels
+                    palette_hp_norm,          # 1 channel
+                    res_normalized,           # 3 channels
+                    palette_res_norm          # 1 channel
+                ], axis=2)
+            else:
+                # Stack: original + high-pass + residual (9 channels)
+                combined = np.concatenate([
+                    img_normalized,
+                    hp_normalized,
+                    res_normalized
+                ], axis=2)
+        
+        # Convert to tensor (H, W, C) -> (C, H, W)
+        tensor = torch.from_numpy(combined).permute(2, 0, 1).float()
+        
+        # Pad to consistent 15 channels for batching
+        # This ensures all images in a batch have the same dimensions
+        if tensor.shape[0] < 15:
+            padding_size = 15 - tensor.shape[0]
+            padding = torch.zeros(padding_size, tensor.shape[1], tensor.shape[2])
+            tensor = torch.cat([tensor, padding], dim=0)
+        
+        return tensor
+
+# ============= IMPROVED DATASET =============
+
+class ImprovedStegoDataset(Dataset):
+    """Dataset with better handling for steganalysis"""
+    
+    def __init__(self, dataset_root: str = 'datasets', train=True, max_samples=None):
         self.dataset_root = Path(dataset_root)
-        self.transform = transform
+        self.train = train
+        
+        # TODO: Track image file paths for JPEG EXIF/EOI analysis
+        # Currently we only pass PIL Image objects to transform
+        # For JPEG steganography detection, we need:
+        # 1. Access to original file path in __getitem__
+        # 2. Pass file path to StegoTransform along with PIL Image
+        # 3. StegoTransform can then open file as binary to check:
+        #    - EXIF metadata size and entropy
+        #    - Data after EOI marker (0xFFD9)
+        # Suggested modification:
+        #   return (img_tensor, label, str(image_path))
+        # Then StegoTransform.__call__ signature becomes:
+        #   def __call__(self, img, file_path=None)
         
         # Find all submission directories
         self.pairs = []
@@ -39,12 +363,10 @@ class StegoDataset(Dataset):
             if not clean_dir.exists() or not stego_dir.exists():
                 continue
             
-            # Find all image pairs in this submission
             clean_files = list(clean_dir.glob('*.*'))
             submission_pairs = 0
             
             for clean_path in clean_files:
-                # Try multiple extensions
                 for ext in ['.png', '.bmp', '.jpg', '.jpeg', '.webp']:
                     stego_path = stego_dir / (clean_path.stem + ext)
                     if stego_path.exists():
@@ -59,9 +381,12 @@ class StegoDataset(Dataset):
             self.pairs = self.pairs[:max_samples]
         
         print(f"\nTotal: {len(self.pairs)} image pairs from all submissions")
+        
+        # Create transform
+        self.transform = StegoTransform(size=256, augment=train)
     
     def __len__(self):
-        return len(self.pairs) * 2  # Each pair provides 2 samples
+        return len(self.pairs) * 2
     
     def __getitem__(self, idx):
         pair_idx = idx // 2
@@ -69,148 +394,134 @@ class StegoDataset(Dataset):
         
         clean_path, stego_path = self.pairs[pair_idx]
         
-        # Load image
-        if is_stego:
-            img = Image.open(stego_path).convert('RGB')
-            label = 1  # Stego
-        else:
-            img = Image.open(clean_path).convert('RGB')
-            label = 0  # Clean
-        
-        if self.transform:
-            img = self.transform(img)
-        
-        return img, label
+        try:
+            if is_stego:
+                img = Image.open(stego_path)
+                label = 1
+            else:
+                img = Image.open(clean_path)
+                label = 0
+            
+            img_tensor = self.transform(img)
+            return img_tensor, label
+            
+        except Exception as e:
+            print(f"Error loading {stego_path if is_stego else clean_path}: {e}")
+            # Return a dummy sample
+            return torch.zeros(9, 256, 256), 0
 
-# ============= MODEL ARCHITECTURES =============
+# ============= IMPROVED MODEL =============
 
-class StegoDetectorCNN(nn.Module):
-    """CNN architecture optimized for steganalysis"""
+class SRNet(nn.Module):
+    """
+    Spatial Rich Model Network - specialized for steganalysis
+    Based on research in deep learning steganalysis
+    Supports RGB (9ch), RGBA (12ch), and Palette-indexed (12-15ch) inputs
+    
+    TODO: Extend for JPEG EXIF and EOI steganography
+    Future channels to add:
+    - EXIF entropy channel (1 channel): Statistical measure of EXIF data randomness
+    - EXIF size ratio channel (1 channel): EXIF size / total file size
+    - EOI trailing data flag (1 channel): Binary flag if data exists after FFD9
+    - EOI data entropy (1 channel): If trailing data exists, its entropy
+    This would increase max channels from 15 to 19
+    
+    Implementation approach:
+    1. Modify first conv layer: nn.Conv2d(19, 64, ...)
+    2. Extract EXIF features in StegoTransform, encode as spatial channels
+    3. For EOI data, create a uniform channel with the flag/entropy value
+    4. Pad non-JPEG images with zeros in these channels
+    
+    Research notes:
+    - EXIF steganography often shows high entropy in specific fields
+    - EOI trailing data is a strong indicator (legitimate JPEGs rarely have it)
+    - Some tools (e.g., steghide) use EOI appending
+    - EXIF MakerNote and UserComment are common hiding spots
+    """
     
     def __init__(self, num_classes=2):
         super().__init__()
         
-        # Feature extraction layers with small kernels (good for detecting subtle changes)
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
+        # Input: 9-15 channels depending on image type
+        # RGB: 9 channels
+        # RGB+Palette: 12 channels
+        # RGBA: 12 channels
+        # RGBA+Palette: 15 channels
+        
+        # Layer 1: Feature extraction with small kernels
+        self.conv1 = nn.Conv2d(15, 64, kernel_size=3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         
-        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        # Layer 2-3: Detection layers
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(64)
         
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        
-        self.conv4 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        # Layer 4-5: Abstraction
+        self.conv4 = nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False)
         self.bn4 = nn.BatchNorm2d(128)
+        self.conv5 = nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False)
+        self.bn5 = nn.BatchNorm2d(128)
         
-        self.conv5 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.bn5 = nn.BatchNorm2d(256)
-        
-        self.conv6 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        # Layer 6-7: Higher abstraction
+        self.conv6 = nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False)
         self.bn6 = nn.BatchNorm2d(256)
+        self.conv7 = nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False)
+        self.bn7 = nn.BatchNorm2d(256)
         
-        # Global average pooling
+        # Global pooling
         self.gap = nn.AdaptiveAvgPool2d((1, 1))
         
-        # Classification head
+        # Classification
         self.fc1 = nn.Linear(256, 128)
-        self.dropout = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(128, num_classes)
-    
+        self.dropout1 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(128, 64)
+        self.dropout2 = nn.Dropout(0.3)
+        self.fc3 = nn.Linear(64, num_classes)
+        
     def forward(self, x):
+        # Handle variable input channels (9, 12, or 15)
+        if x.shape[1] < 15:
+            # Pad to 15 channels with zeros
+            padding_size = 15 - x.shape[1]
+            padding = torch.zeros(x.shape[0], padding_size, x.shape[2], x.shape[3], 
+                                device=x.device, dtype=x.dtype)
+            x = torch.cat([x, padding], dim=1)
+        
         # Block 1
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
         x = F.max_pool2d(x, 2)
         
         # Block 2
-        x = F.relu(self.bn3(self.conv3(x)))
         x = F.relu(self.bn4(self.conv4(x)))
+        x = F.relu(self.bn5(self.conv5(x)))
         x = F.max_pool2d(x, 2)
         
         # Block 3
-        x = F.relu(self.bn5(self.conv5(x)))
         x = F.relu(self.bn6(self.conv6(x)))
+        x = F.relu(self.bn7(self.conv7(x)))
         x = F.max_pool2d(x, 2)
         
-        # Global pooling and classification
+        # Global pooling
         x = self.gap(x)
         x = x.view(x.size(0), -1)
+        
+        # Classification
         x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
+        x = self.dropout1(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout2(x)
+        x = self.fc3(x)
         
         return x
 
+# ============= IMPROVED TRAINING =============
 
-class ResidualBlock(nn.Module):
-    """Residual block for deeper network"""
-    
-    def __init__(self, in_channels, out_channels, stride=1):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride, 1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, 1, stride, 0),
-                nn.BatchNorm2d(out_channels)
-            )
-    
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
-        return out
-
-
-class StegoDetectorResNet(nn.Module):
-    """ResNet-style architecture for steganalysis"""
-    
-    def __init__(self, num_classes=2):
-        super().__init__()
-        
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        
-        self.layer1 = self._make_layer(64, 64, 2, stride=1)
-        self.layer2 = self._make_layer(64, 128, 2, stride=2)
-        self.layer3 = self._make_layer(128, 256, 2, stride=2)
-        
-        self.gap = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(256, num_classes)
-    
-    def _make_layer(self, in_channels, out_channels, num_blocks, stride):
-        layers = []
-        layers.append(ResidualBlock(in_channels, out_channels, stride))
-        for _ in range(1, num_blocks):
-            layers.append(ResidualBlock(out_channels, out_channels, 1))
-        return nn.Sequential(*layers)
-    
-    def forward(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = self.maxpool(x)
-        
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        
-        x = self.gap(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
-        
-        return x
-
-
-# ============= TRAINING FRAMEWORK =============
-
-class StegoDetectorTrainer:
-    """Training framework for steganography detection"""
+class ImprovedTrainer:
+    """Improved training with better optimization"""
     
     def __init__(self, model, device='cuda' if torch.cuda.is_available() else 'cpu'):
         self.model = model.to(device)
@@ -231,6 +542,10 @@ class StegoDetectorTrainer:
             outputs = self.model(images)
             loss = criterion(outputs, labels)
             loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
             total_loss += loss.item()
@@ -261,15 +576,25 @@ class StegoDetectorTrainer:
         
         return total_loss / len(dataloader), 100. * correct / total
     
-    def train(self, train_loader, val_loader, epochs=20, lr=0.001):
+    def train(self, train_loader, val_loader, epochs=30, lr=0.0001):
+        # Use weighted loss if classes are imbalanced
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3)
+        
+        # Use AdamW with weight decay
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=1e-4)
+        
+        # Cosine annealing learning rate
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=10, T_mult=2, eta_min=1e-6
+        )
         
         best_val_acc = 0
+        patience = 10
+        patience_counter = 0
         
         for epoch in range(epochs):
             print(f'\nEpoch {epoch+1}/{epochs}')
+            print(f'Learning rate: {optimizer.param_groups[0]["lr"]:.6f}')
             
             train_loss, train_acc = self.train_epoch(train_loader, optimizer, criterion)
             val_loss, val_acc = self.validate(val_loader, criterion)
@@ -282,117 +607,147 @@ class StegoDetectorTrainer:
             print(f'Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%')
             print(f'Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%')
             
-            scheduler.step(val_loss)
+            scheduler.step()
             
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 torch.save(self.model.state_dict(), 'best_stego_detector.pth')
                 print(f'✓ Model saved (best accuracy: {best_val_acc:.2f}%)')
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f"\nEarly stopping triggered after {epoch+1} epochs")
+                    break
+        
+        print(f"\n{'='*60}")
+        print(f"Training complete! Best validation accuracy: {best_val_acc:.2f}%")
+        print(f"{'='*60}")
     
     def save_history(self, filename='training_history.json'):
         with open(filename, 'w') as f:
             json.dump(self.history, f, indent=2)
 
-
-# ============= INFERENCE =============
-
-class StegoDetectorInference:
-    """Inference class for steganography detection"""
-    
-    def __init__(self, model_path, model_class, device='cuda' if torch.cuda.is_available() else 'cpu'):
-        self.device = device
-        self.model = model_class().to(device)
-        self.model.load_state_dict(torch.load(model_path, map_location=device))
-        self.model.eval()
-        
-        self.transform = transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-    
-    def predict(self, image_path: str) -> Tuple[str, float]:
-        """Predict if image contains hidden data"""
-        img = Image.open(image_path).convert('RGB')
-        img_tensor = self.transform(img).unsqueeze(0).to(self.device)
-        
-        with torch.no_grad():
-            output = self.model(img_tensor)
-            probs = F.softmax(output, dim=1)
-            pred_class = output.argmax(1).item()
-            confidence = probs[0][pred_class].item()
-        
-        label = 'STEGO' if pred_class == 1 else 'CLEAN'
-        return label, confidence
-    
-    def batch_predict(self, image_paths: List[str]) -> Dict:
-        """Batch prediction for multiple images"""
-        results = {}
-        for path in tqdm(image_paths, desc='Analyzing images'):
-            label, conf = self.predict(path)
-            results[path] = {'label': label, 'confidence': conf}
-        return results
-
-
 # ============= MAIN EXECUTION =============
 
-def main():
-    print("="*60)
-    print("Steganography Detection Model - Project Starlight")
-    print("="*60)
-    
-    # Data transforms
-    transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    # Load dataset from all submissions
-    print("\nLoading dataset from all submissions...")
-    dataset = StegoDataset(
-        dataset_root='datasets',
-        transform=transform
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='Train steganography detection model',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python trainer.py                          # Train with all data
+  python trainer.py --limit 1000             # Train with max 1000 pairs
+  python trainer.py --epochs 50 --lr 0.0003  # Custom training params
+  python trainer.py --batch-size 16          # Smaller batches for less memory
+        """
     )
     
-    # Split into train/val
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    parser.add_argument('--dataset-root', default='datasets', help='Root directory of datasets')
+    parser.add_argument('--limit', type=int, default=None, help='Limit number of image pairs to use')
+    parser.add_argument('--epochs', type=int, default=30, help='Number of training epochs')
+    parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
+    parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
+    parser.add_argument('--model-type', choices=['srnet', 'cnn'], default='srnet', help='Model architecture')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4)
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
     
-    # Initialize model (choose architecture)
+    print("="*60)
+    print("Improved Steganography Detection - Project Starlight")
+    print("="*60)
+    
+    # Set random seeds for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    
+    # Device
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+    else:
+        device = 'cpu'
+    
+    print(f"Using device: {device}\n")
+    
+    # Configuration summary
+    print("Configuration:")
+    print(f"  Dataset root: {args.dataset_root}")
+    print(f"  Limit pairs: {args.limit if args.limit else 'None (use all)'}")
+    print(f"  Epochs: {args.epochs}")
+    print(f"  Learning rate: {args.lr}")
+    print(f"  Batch size: {args.batch_size}")
+    print(f"  Model type: {args.model_type}")
+    print(f"  Random seed: {args.seed}")
+    print()
+    
+    # Load dataset
+    print("Loading dataset...")
+    train_dataset = ImprovedStegoDataset(dataset_root=args.dataset_root, train=True, max_samples=args.limit)
+    val_dataset = ImprovedStegoDataset(dataset_root=args.dataset_root, train=False)
+    
+    # Use same pairs but different augmentation
+    val_dataset.pairs = train_dataset.pairs[-len(train_dataset.pairs)//5:]
+    train_dataset.pairs = train_dataset.pairs[:-len(train_dataset.pairs)//5]
+    
+    print(f"Train samples: {len(train_dataset)}")
+    print(f"Val samples: {len(val_dataset)}")
+    
+    # Data loaders with proper settings
+    # MPS doesn't support pin_memory, and may have issues with num_workers > 0
+    use_pin_memory = (device == 'cuda')
+    num_workers = 0 if device == 'mps' else 4
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size,
+        shuffle=True, 
+        num_workers=num_workers,
+        pin_memory=use_pin_memory,
+        drop_last=True  # Drop incomplete batches
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        num_workers=num_workers,
+        pin_memory=use_pin_memory
+    )
+    
+    # Initialize model
     print("\nInitializing model...")
-    model = StegoDetectorResNet(num_classes=2)  # or StegoDetectorCNN()
+    if args.model_type == 'srnet':
+        model = SRNet(num_classes=2)
+    else:
+        model = StegoDetectorCNN(num_classes=2)
+    
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Model: {args.model_type.upper()}")
+    print(f"Total parameters: {total_params:,}")
     
     # Train
     print("\nStarting training...")
-    trainer = StegoDetectorTrainer(model)
-    trainer.train(train_loader, val_loader, epochs=20, lr=0.001)
+    print("Tips:")
+    print("- Using high-pass filtering and residual features")
+    print("- Smaller learning rate (0.0001) for stability")
+    print("- Data augmentation enabled")
+    print("- Early stopping with patience=10")
+    print()
+    
+    trainer = ImprovedTrainer(model, device=device)
+    trainer.train(train_loader, val_loader, epochs=30, lr=0.0001)
     
     # Save history
     trainer.save_history()
-    print("\n✓ Training complete! Model saved as 'best_stego_detector.pth'")
-    
-    # Example inference
-    print("\n" + "="*60)
-    print("Running inference example...")
-    detector = StegoDetectorInference('best_stego_detector.pth', StegoDetectorResNet)
-    
-    # Test on sample images from all submissions
-    all_stego = []
-    for submission_dir in Path('datasets').glob('*/stego'):
-        all_stego.extend(list(submission_dir.glob('*.png'))[:2])  # 2 from each
-        all_stego.extend(list(submission_dir.glob('*.bmp'))[:2])
-    
-    if all_stego:
-        results = detector.batch_predict([str(p) for p in all_stego[:10]])
-        print("\nSample predictions:")
-        for img_path, result in results.items():
-            print(f"  {Path(img_path).name}: {result['label']} ({result['confidence']:.2%})")
-
+    print("\n✓ Training history saved")
 
 if __name__ == "__main__":
     main()
