@@ -1,23 +1,25 @@
 import os
+import argparse 
 import numpy as np
 from PIL import Image
 
 # --- CONFIGURATION ---
-NUM_IMAGES_PER_PAYLOAD = 5      # Number of image pairs to generate for each .md file
+# Note: This is now the DEFAULT, but it will be overridden if --limit is used.
+NUM_IMAGES_PER_PAYLOAD = 5      # Default number of image pairs to generate for each .md file
 RESOLUTION = 512
 HINT_BYTES = b'0xAI42'           # Sequence to signal hidden data
 TERMINATOR_BYTES = b'\x00'       # Byte to signal the end of the message
 
 # --- PNG (LSB) CONFIGURATION ---
 PNG_FORMAT = 'PNG'
-PNG_ALGORITHM = 'lsb' # ADDED: Algorithm name for PNG LSB
+PNG_ALGORITHM = 'lsb'
 # Steganography Method: Least Significant Bit (LSB) on RGBA channels.
 # Image Format: PNG (Lossless).
 
 # --- JPEG (EOI APPEND) CONFIGURATION ---
 JPEG_FORMAT = 'JPEG'
 JPEG_QUALITY = 90
-JPEG_ALGORITHM = 'eoi' # ADDED: Algorithm name for JPEG EOI Append
+JPEG_ALGORITHM = 'eoi'
 EOI_MARKER = b'\xFF\xD9'         # JPEG End of Image (EOI) marker
 # Steganography Method: Append payload data after the JPEG EOI marker.
 # Image Format: JPEG (Quality 90).
@@ -195,9 +197,17 @@ def test_eoi_append_steganography_on_image(stego_path_target, expected_byte_payl
 
 # --- MAIN GENERATION LOOP ---
 
-def generate_images(num_images_per_payload=NUM_IMAGES_PER_PAYLOAD, resolution=RESOLUTION):
+def generate_images(limit=None, resolution=RESOLUTION):
     """Generates clean/stego pairs for both PNG (LSB) and JPEG (EOI Append)."""
     
+    # MODIFIED LOGIC: Use limit if provided, otherwise fall back to the default constant.
+    if limit is None:
+        images_to_generate = NUM_IMAGES_PER_PAYLOAD
+    else:
+        images_to_generate = limit
+        
+    print(f"Generating exactly {images_to_generate} image pairs per payload file.")
+
     clean_dir = "clean"
     stego_dir = "stego"
     
@@ -212,7 +222,7 @@ def generate_images(num_images_per_payload=NUM_IMAGES_PER_PAYLOAD, resolution=RE
     total_images_generated = 0
     total_verifications_failed = 0
     
-    # Iterate over both formats for diversity. Added algorithm name to the iteration.
+    # Iterate over both formats for diversity.
     for current_format, algorithm_name, quality, embed_func, test_func in [
         (PNG_FORMAT, PNG_ALGORITHM, None, embed_stego_lsb, test_lsb_steganography_on_image),
         (JPEG_FORMAT, JPEG_ALGORITHM, JPEG_QUALITY, embed_stego_eoi_append, test_eoi_append_steganography_on_image)
@@ -220,7 +230,9 @@ def generate_images(num_images_per_payload=NUM_IMAGES_PER_PAYLOAD, resolution=RE
         print(f"\n--- Generating {current_format} Images ({'Q'+str(quality) if quality else 'Lossless'})... ---")
         
         for payload_index, (base_name, full_byte_payload) in enumerate(all_payload_data):
-            for i in range(num_images_per_payload):
+            
+            # Use the determined images_to_generate for the range
+            for i in range(images_to_generate):
                 
                 # --- NEW FILENAME GENERATION LOGIC ---
                 # Format: {payload_name}_{algorithm}_{index}.{ext}
@@ -274,5 +286,24 @@ def generate_images(num_images_per_payload=NUM_IMAGES_PER_PAYLOAD, resolution=RE
         print("All generated images passed verification. Data integrity confirmed. ✅")
     print("-" * 50)
 
+# --- COMMAND LINE ARGUMENTS ---
+
+def main():
+    """Parses command line arguments and starts the generation."""
+    parser = argparse.ArgumentParser(
+        description="Generate clean and stego image pairs using LSB (PNG) and EOI Append (JPEG)."
+    )
+    
+    parser.add_argument(
+        '--limit', 
+        type=int, 
+        default=None, 
+        help=f"Set the number of images generated per payload file. Overrides the default of {NUM_IMAGES_PER_PAYLOAD}."
+    )
+    
+    args = parser.parse_args()
+    
+    generate_images(limit=args.limit)
+
 if __name__ == "__main__":
-    generate_images()
+    main()
