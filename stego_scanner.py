@@ -73,7 +73,7 @@ class StegoDetectorResNet(nn.Module):
             layers.append(BasicBlock(out_channels, out_channels))
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x, g=None):
         x = F.relu(self.bn1(self.conv1(x)))
         x = self.layer1(x)
         x = self.layer2(x)
@@ -93,7 +93,7 @@ class StegoDetectorCNN(nn.Module):
         self.fc1 = nn.Linear(128 * 32 * 32, 512)
         self.fc2 = nn.Linear(512, num_classes)
 
-    def forward(self, x):
+    def forward(self, x, g=None):
         x = F.relu(F.max_pool2d(self.conv1(x), 2))
         x = F.relu(F.max_pool2d(self.conv2(x), 2))
         x = F.relu(F.max_pool2d(self.conv3(x), 2))
@@ -108,7 +108,7 @@ class StegoDetectorCNN(nn.Module):
 # ============================================================
 
 class ImageFolderDataset(Dataset):
-    def __init__(self, folder, transform):
+    def __init__(self, folder, transform, use_globals=False):
         self.folder = folder
         self.files = [
             os.path.join(folder, f)
@@ -116,16 +116,20 @@ class ImageFolderDataset(Dataset):
             if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'))
         ]
         self.transform = transform
+        self.use_globals = use_globals
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
         path = self.files[idx]
-        img = Image.open(path)  # Do NOT convert to RGB here - let transform handle modes
-        if self.transform:
-            img = self.transform(img)
-        return img, path
+        img = Image.open(path)
+        if self.use_globals:
+            tensor, global_feats = self.transform(img, path)
+        else:
+            tensor = self.transform(img)
+            global_feats = torch.zeros(5)
+        return tensor, global_feats, path
 
 
 # ============================================================
@@ -181,22 +185,21 @@ class StegoScanner:
                 raise
 
         # Choose preprocessing
-        if _HAS_TRAINER and self.model_type == 'srnet' and StegoTransform is not None:
+        self.use_globals = _HAS_TRAINER and self.model_type == 'srnet' and StegoTransform is not None
+        if self.use_globals:
             self.transform = StegoTransform(size=256, augment=False)
         else:
             self.transform = transforms.Compose([
-                transforms.Lambda(lambda img: img.convert('RGB')),  # Convert for legacy models
+                transforms.Lambda(lambda img: img.convert('RGB')), 
                 transforms.Resize((256, 256)),
                 transforms.ToTensor(),
             ])
 
-    # ------------------------------------------------------------
     def scan_folder(self, folder):
-        dataset = ImageFolderDataset(folder, self.transform)
+        dataset = ImageFolderDataset(folder, self.transform, use_globals=self.use_globals)
 
-        # Device-specific DataLoader settings
         use_pin_memory = (self.device.type == 'cuda')
-        num_workers = 4 if self.device.type == 'cuda' else 0  # More workers for CUDA; 0 for others to avoid issues
+        num_workers = 4 if self.device.type == 'cuda' else 0
 
         loader = DataLoader(
             dataset,
@@ -209,9 +212,10 @@ class StegoScanner:
 
         self.model.eval()
         with torch.no_grad():
-            for imgs, paths in loader:
+            for imgs, globals_feats, paths in loader:
                 imgs = imgs.to(self.device)
-                outputs = self.model(imgs)
+                globals_feats = globals_feats.to(self.device)
+                outputs = self.model(imgs, globals_feats)
                 probs = torch.softmax(outputs, dim=1)
                 preds = probs[:, 1].cpu().numpy()
 
@@ -228,7 +232,7 @@ def main():
     parser = argparse.ArgumentParser(description="Project Starlight - Steganography Scanner")
     parser.add_argument('--input', required=True, help="Input folder to scan")
     parser.add_argument('--model', required=True, help="Path to model checkpoint (.pt)")
-    parser.add_argument('--model_type', default='srnet', help="Model type: resnet | cnn | srnet")  # Default to srnet
+    parser.add_argument('--model_type', default='srnet', help="Model type: resnet | cnn | srnet")  
     parser.add_argument('--device', default='auto', help="Device to use (auto, cpu, cuda, or mps)")
     parser.add_argument('--batch_size', type=int, default=8)
     args = parser.parse_args()
