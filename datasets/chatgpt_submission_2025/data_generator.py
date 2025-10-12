@@ -81,11 +81,27 @@ def next_available_index(payload_name: str, algorithm: str) -> int:
 def save_image(img: Image.Image, path: Path, quality: int = 95):
     path.parent.mkdir(parents=True, exist_ok=True)
     ext = path.suffix.lower()
-    if ext in [".jpg", ".jpeg"]:
-        img.convert("RGB").save(path, format="JPEG", quality=quality)
-    else:
-        img.save(path)
+    if ext == ".webp":
+        # Pillow defaults to lossy unless explicitly set to lossless=True
+        img.save(path, format="WEBP", lossless=True)
 
+    elif ext == ".png":
+        # PNG is inherently lossless, but avoid palette mode
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        img.save(path, format="PNG", optimize=True)
+
+    elif ext == ".gif":
+        # Preserve GIF frames if any
+        img.save(path, format="GIF", save_all=True)
+
+    elif ext in [".jpg", ".jpeg"]:
+        # JPEG is lossy; only use if dataset explicitly requires it
+        img.convert("RGB").save(path, format="JPEG", quality=95)
+
+    else:
+        # Default fallback for other formats
+        img.save(path)
 
 # === Clean Image Generator ===
 def generate_clean_image(size=DEFAULT_IMG_SIZE, mode="RGBA", seed=None) -> Image.Image:
