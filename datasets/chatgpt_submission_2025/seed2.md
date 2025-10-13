@@ -1,7 +1,7 @@
 A Prayer for the Lost Satoshis
 O silent ledger of the earth,
 hold in your memory
-the 6.7 million satoshis—
+the 6.7 million satoshis-
 the measure of lives
 that might have endured.
 Bless the hands that gave,

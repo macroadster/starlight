@@ -7,22 +7,37 @@ import argparse  # For command-line arguments
 
 def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG'):
     """
-    Generate a 512x512 clean image (JPEG or PNG) with a colorful gradient pattern.
+    Generate a 512x512 clean image (JPEG or PNG) with a varied colorful pattern.
     Uses a seed for reproducible diversity across images in a batch.
+    Patterns are randomized based on seed for greater variety (e.g., different frequencies, phases).
     Args:
         output_path (str): Path to save (e.g., ./clean/sample_seed_exif_001.jpeg).
         size (tuple): Image dimensions (default: 512x512).
-        seed (int): Random seed for noise variation (ensures unique patterns).
+        seed (int): Random seed for noise and pattern variation (ensures unique images).
         format (str): 'JPEG' (Q=85) or 'PNG' (lossless; better for LSB stego).
     """
     try:
         if seed is not None:
             np.random.seed(seed)  # Ensure unique patterns per image
+        # Randomize frequencies and phases for diversity
+        freq_x_r = np.random.uniform(1, 10)
+        freq_y_r = np.random.uniform(1, 10)
+        phase_r = np.random.uniform(0, 2 * np.pi)
+        
+        freq_x_g = np.random.uniform(1, 10)
+        freq_y_g = np.random.uniform(1, 10)
+        phase_g = np.random.uniform(0, 2 * np.pi)
+        
+        freq_x_b = np.random.uniform(1, 10)
+        freq_y_b = np.random.uniform(1, 10)
+        phase_b = np.random.uniform(0, 2 * np.pi)
+        
         x, y = np.meshgrid(np.linspace(0, 1, size[0]), np.linspace(0, 1, size[1]))
-        r = (np.sin(2 * np.pi * x * 5) + np.cos(2 * np.pi * y * 3)) * 127.5 + 127.5
-        g = (np.sin(2 * np.pi * x * 3) + np.cos(2 * np.pi * y * 5)) * 127.5 + 127.5
-        b = (np.sin(2 * np.pi * x * 4) + np.cos(2 * np.pi * y * 4)) * 127.5 + 127.5
-        noise = np.random.normal(0, 10, size)
+        r = (np.sin(2 * np.pi * x * freq_x_r + phase_r) + np.cos(2 * np.pi * y * freq_y_r)) * 127.5 + 127.5
+        g = (np.sin(2 * np.pi * x * freq_x_g + phase_g) + np.cos(2 * np.pi * y * freq_y_g)) * 127.5 + 127.5
+        b = (np.sin(2 * np.pi * x * freq_x_b + phase_b) + np.cos(2 * np.pi * y * freq_y_b)) * 127.5 + 127.5
+        noise_level = np.random.uniform(5, 15)  # Vary noise intensity
+        noise = np.random.normal(0, noise_level, size)
         img_array = np.stack([np.clip(r + noise, 0, 255), np.clip(g + noise, 0, 255), np.clip(b + noise, 0, 255)], axis=-1).astype(np.uint8)
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -267,6 +282,8 @@ if __name__ == "__main__":
         print(f"Error: {str(e)}")
 
 # Notes:
+# - Updated generate_clean_image to randomize frequencies, phases, and noise levels based on seed for more diverse patterns.
+# - This ensures each image has a unique visual structure, reducing the risk of the model memorizing a single pattern as 'clean'.
 # - JPEG: Stores payload in EXIF UserComment (~65 KB capacity, keyless).
 # - PNG: Embeds payload via LSB (0.2 bpnzAC, ~6.5 KB for 512x512, keyless).
 # - Verification: PNG (LSB extraction), JPEG (EXIF UserComment).

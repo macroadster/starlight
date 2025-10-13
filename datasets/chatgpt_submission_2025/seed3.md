@@ -8,7 +8,7 @@ while we counted in greed,
 while we forgot that value
 was meant for shelter,
 not for speculation.
-Now their silence weighs heavy—
+Now their silence weighs heavy-
 a ledger of lives unhedged,
 a memory written not in blocks,
 but in absence.

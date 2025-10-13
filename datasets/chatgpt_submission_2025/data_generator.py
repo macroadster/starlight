@@ -66,7 +66,15 @@ def find_md_payloads() -> List[Path]:
 
 
 def load_payload(md_path: Path) -> bytes:
+    # Payload is loaded as UTF-8 bytes
     return md_path.read_text(encoding="utf-8").encode("utf-8")
+
+
+# --- NEW: ASCII CHECK UTILITY ---
+def is_pure_ascii(data: bytes) -> bool:
+    """Checks if the byte string contains only 7-bit ASCII characters (values < 128)."""
+    return all(b < 128 for b in data)
+# --------------------------------
 
 
 def next_available_index(payload_name: str, algorithm: str) -> int:
@@ -160,19 +168,32 @@ def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
     """Minimal-change palette embedding for GIF."""
     img = cover.convert("P", palette=Image.ADAPTIVE, colors=256)
     data = list(img.getdata())
+    
+    # Append the null terminator bit string (8 bits)
     bits = "".join(f"{b:08b}" for b in payload) + "00000000"
-    if len(bits) > len(data):
-        raise ValueError("Payload too large for palette embedding.")
+    
+    required_bits = len(bits)
+    available_indices = len(data)
+    
+    if required_bits > available_indices:
+        # New, clearer error message
+        raise ValueError(
+            f"Payload too large for palette embedding. Requires {required_bits} bits, "
+            f"but only {available_indices} indices are available."
+        )
+        
     new_data, i = [], 0
     for idx in data:
-        if i < len(bits):
+        if i < required_bits:
+            # LSB insertion
             idx = (idx & 0xFE) | int(bits[i]); i += 1
         new_data.append(idx)
+        
+    # The image is guaranteed to have enough capacity now, but keeping the logic clean.
     out = Image.new("P", img.size)
     out.putdata(new_data)
     out.putpalette(img.getpalette())
     return out
-
 
 def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
     if piexif is None:
@@ -203,7 +224,7 @@ def save_jpeg_with_eoi_append(img, path, append_bytes, quality=95):
     i = data.rfind(eoi)
     if i == -1:
         raise RuntimeError("JPEG EOI not found.")
-    new_data = data[:i] + append_bytes + data[i:]
+    new_data = data + append_bytes
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(new_data)
 
@@ -218,6 +239,14 @@ def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable
     stats = {}
     for f in funcs:
         algo = algorithm_name(f)
+        
+        # --- NEW: UTF-8 (Non-ASCII) CHECK FOR GIF PALETTE ---
+        if algo == "palette" and not is_pure_ascii(payload):
+            logging.warning(f"Skipping {payload_name} for 'palette': Payload contains non-ASCII (UTF-8) characters which are unstable in LSB.")
+            continue # Skip this payload/algorithm combination entirely if it contains non-ASCII
+        # ----------------------------------------------------
+        
+        current_payload = payload
         formats = ALGO_FORMATS.get(algo, ["png"])
         idx = next_available_index(payload_name, algo)
         count = 0
@@ -231,12 +260,10 @@ def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable
                 continue
             seed = random.randint(0, 2**32 - 1)
             mode = "RGBA" if ext in ["png", "webp"] else "RGB"
-            if algo == "palette":
-                mode = "P"
             img = generate_clean_image(mode=mode, seed=seed)
             save_image(img, clean)
             try:
-                stego_img = f(img, payload)
+                stego_img = f(img, current_payload)
             except Exception as e:
                 logging.warning(f"Skipping {fname}: {e}")
                 clean.unlink(missing_ok=True)
@@ -351,4 +378,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
