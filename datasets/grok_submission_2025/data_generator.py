@@ -111,16 +111,13 @@ def extract_lsb(stego_img_path, payload_size=0.2):
         # Extract LSBs
         binary_payload = ''.join(str(flat[i] & 1) for i in range(min(total_bits, len(flat))))
         
-        # Convert binary to text (8 bits per character)
+        # Decode all bytes without stopping
         extracted_text = ''
         for i in range(0, len(binary_payload) - 7, 8):
             byte = binary_payload[i:i+8]
             if len(byte) == 8:
                 char_code = int(byte, 2)
-                if 32 <= char_code <= 126:  # Printable ASCII
-                    extracted_text += chr(char_code)
-                else:
-                    break  # Stop at non-printable
+                extracted_text += chr(char_code)  # No range check or break
         return extracted_text
     except Exception as e:
         print(f"Error extracting LSB payload from {stego_img_path}: {str(e)}")
@@ -161,7 +158,7 @@ def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.2
     print(f"Verifying {format} stego images for {seed_file}...")
     for stego_path in stego_paths:
         if format == 'PNG':
-            max_chars = int(payload_size * 512 * 512 / 8)  # ~6553 chars for 512x512
+            max_chars = int(payload_size * 512 * 512 * 3 / 8)  # Corrected capacity
             extracted = extract_lsb(stego_path, payload_size)
             seed_truncated = seed_payload[:max_chars]
             if extracted.startswith(seed_truncated):
@@ -173,7 +170,7 @@ def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.2
         else:  # JPEG
             verify_exif_metadata(stego_path, seed_payload)
 
-def generate_images(num_images=1, format='JPEG'):
+def generate_images(num_images=1, formats=['JPEG', 'PNG']):
     """
     Generate clean and stego images for Project Starlight (Option 3).
     Hardcoded relative paths (run from dataset/grok_submission_2025/):
@@ -182,24 +179,23 @@ def generate_images(num_images=1, format='JPEG'):
         - Markdown seeds: ./ (all .md files)
         - Payload size: 0.2 bpnzAC (for PNG LSB; JPEG uses EXIF UserComment)
         - JPEG quality: 85 (fixed; within 75-95)
-        - Format: JPEG (EXIF metadata) or PNG (LSB)
+        - Formats: List of 'JPEG' (EXIF metadata) or 'PNG' (LSB)
         - Stego key: None (keyless LSB/EXIF)
     Behavior:
-        - Iterates over each .md file, generating a batch of num_images clean + stego pairs.
+        - Iterates over each .md file, generating a batch of num_images clean + stego pairs per format.
         - Labels images with seed basename and algorithm (e.g., sample_seed_exif_001.jpeg).
         - If no seeds, generates a random batch labeled 'random' (no payload for verification).
         - Verifies payloads: PNG (LSB extraction), JPEG (EXIF UserComment).
         - Uses tqdm for progress feedback.
     Args:
         num_images (int): Pairs per seed batch (default: 1; override via --limit or NUM_IMAGES env var).
-        format (str): 'JPEG' (EXIF metadata) or 'PNG' (LSB).
+        formats (list): List of formats to generate: 'JPEG' (EXIF metadata) or 'PNG' (LSB).
     """
     clean_dir = "./clean"
     stego_dir = "./stego"
     seed_dir = "./"
     payload_size = 0.2  # Fixed: 0.2 bpnzAC for PNG LSB
     quality = 85  # Fixed: JPEG quality
-    algorithm = 'exif' if format == 'JPEG' else 'lsb'  # Algorithm name for filename
 
     num_images = int(os.environ.get('NUM_IMAGES', num_images))
     
@@ -207,61 +203,65 @@ def generate_images(num_images=1, format='JPEG'):
     os.makedirs(stego_dir, exist_ok=True)
     
     # Validate
-    if format == 'JPEG' and not 75 <= quality <= 95:
+    if 'JPEG' in formats and not 75 <= quality <= 95:
         raise ValueError("JPEG quality must be 75-95.")
-    if format not in ['JPEG', 'PNG']:
-        raise ValueError("Format must be 'JPEG' or 'PNG'.")
+    for fmt in formats:
+        if fmt not in ['JPEG', 'PNG']:
+            raise ValueError("Formats must be 'JPEG' or 'PNG'.")
 
     # Identify all .md seed files
     seed_files = [f for f in os.listdir(seed_dir) if f.endswith('.md')]
     if not seed_files:
         print("No .md seeds found; generating random batch.")
         seed_basename = "random"
-        stego_paths = []
-        for i in tqdm(range(num_images), desc=f"Batch (random)"):
-            img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
-            clean_path = os.path.join(clean_dir, img_name)
-            stego_path = os.path.join(stego_dir, img_name)
-            generate_clean_image(clean_path, seed=i, format=format)
-            if format == 'PNG':
-                embed_lsb(clean_path, stego_path, payload=None, payload_size=payload_size)
-                stego_paths.append(stego_path)
-            else:  # JPEG
-                generate_clean_image(stego_path, seed=i, format=format)  # Copy clean to stego
-                add_exif_metadata(stego_path, "")
-                stego_paths.append(stego_path)
-        if format == 'PNG':
-            verify_images("random", stego_paths, "", format, payload_size)
-        else:
-            verify_images("random", stego_paths, "", format)
-    else:
-        for seed_file in seed_files:
-            seed_basename = os.path.splitext(seed_file)[0]
-            with open(os.path.join(seed_dir, seed_file), 'r', encoding='utf-8') as f:
-                seed_payload = f.read()
+        for format in formats:
+            algorithm = 'exif' if format == 'JPEG' else 'lsb'  # Algorithm name for filename
             stego_paths = []
-            for i in tqdm(range(num_images), desc=f"Batch ({seed_basename})"):
+            for i in tqdm(range(num_images), desc=f"Batch (random, {format})"):
                 img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
                 clean_path = os.path.join(clean_dir, img_name)
                 stego_path = os.path.join(stego_dir, img_name)
                 generate_clean_image(clean_path, seed=i, format=format)
                 if format == 'PNG':
-                    embed_lsb(clean_path, stego_path, payload=seed_payload, payload_size=payload_size)
+                    embed_lsb(clean_path, stego_path, payload=None, payload_size=payload_size)
                     stego_paths.append(stego_path)
                 else:  # JPEG
                     generate_clean_image(stego_path, seed=i, format=format)  # Copy clean to stego
-                    add_exif_metadata(stego_path, seed_payload)
+                    add_exif_metadata(stego_path, "")
                     stego_paths.append(stego_path)
-            verify_images(seed_file, stego_paths, seed_payload, format, payload_size)
+            verify_images("random", stego_paths, "", format, payload_size)
+    else:
+        for seed_file in seed_files:
+            seed_basename = os.path.splitext(seed_file)[0]
+            with open(os.path.join(seed_dir, seed_file), 'r', encoding='utf-8') as f:
+                seed_payload = f.read()
+            for format in formats:
+                algorithm = 'exif' if format == 'JPEG' else 'lsb'  # Algorithm name for filename
+                stego_paths = []
+                for i in tqdm(range(num_images), desc=f"Batch ({seed_basename}, {format})"):
+                    img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
+                    clean_path = os.path.join(clean_dir, img_name)
+                    stego_path = os.path.join(stego_dir, img_name)
+                    generate_clean_image(clean_path, seed=i, format=format)
+                    if format == 'PNG':
+                        embed_lsb(clean_path, stego_path, payload=seed_payload, payload_size=payload_size)
+                        stego_paths.append(stego_path)
+                    else:  # JPEG
+                        generate_clean_image(stego_path, seed=i, format=format)  # Copy clean to stego
+                        add_exif_metadata(stego_path, seed_payload)
+                        stego_paths.append(stego_path)
+                verify_images(seed_file, stego_paths, seed_payload, format, payload_size)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate clean and stego images for Project Starlight.")
     parser.add_argument('--limit', type=int, default=1, help='Number of images to generate per payload per algorithm (overrides NUM_IMAGES env var).')
-    parser.add_argument('--format', type=str, default='JPEG', choices=['JPEG', 'PNG'], help='Format/algorithm to use: JPEG (exif) or PNG (lsb).')
+    parser.add_argument('--formats', type=str, default='JPEG,PNG', help='Comma-separated formats to use: JPEG (exif), PNG (lsb).')
     args = parser.parse_args()
 
+    formats = [f.strip().upper() for f in args.formats.split(',')]
+
     try:
-        generate_images(num_images=args.limit, format=args.format)
+        generate_images(num_images=args.limit, formats=formats)
         print("Image generation completed.")
     except Exception as e:
         print(f"Error: {str(e)}")
@@ -270,6 +270,6 @@ if __name__ == "__main__":
 # - JPEG: Stores payload in EXIF UserComment (~65 KB capacity, keyless).
 # - PNG: Embeds payload via LSB (0.2 bpnzAC, ~6.5 KB for 512x512, keyless).
 # - Verification: PNG (LSB extraction), JPEG (EXIF UserComment).
-# - Override: python data_generator.py --limit 10 --format PNG
+# - Override: python data_generator.py --limit 10 --formats PNG
 # - Dependencies: pip install piexif Pillow numpy tqdm
 # - Ensure Python 3.8+ for compatibility.
