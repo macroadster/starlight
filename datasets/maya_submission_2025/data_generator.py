@@ -37,7 +37,7 @@ if message_to_embed is None:
 # Extension: 'png'
 ALGORITHM_NAME = "alpha"
 IMAGE_INDEX = "000"
-COVER_IMAGE_NAME = f"promise.png" # The clean image path still contains 'promise.png'
+COVER_IMAGE_NAME = f"seed_alpha_000.png"
 
 # Construct the new structured filename for both clean and stego output
 new_image_filename = f"{payload_name}_{ALGORITHM_NAME}_{IMAGE_INDEX}.png"
