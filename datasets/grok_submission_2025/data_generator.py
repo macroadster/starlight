@@ -4,6 +4,7 @@ from PIL import Image
 from tqdm import tqdm  # Progress bar for large batches
 import piexif  # For EXIF metadata; pip install piexif
 import argparse  # For command-line arguments
+import logging  # For logging outputs to file
 
 def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG'):
     """
@@ -46,9 +47,9 @@ def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG')
             img.save(output_path, 'JPEG', quality=85)  # Q=85
         else:  # PNG
             img.save(output_path, 'PNG', compress_level=0)  # Lossless
-        print(f"Clean image saved to: {output_path} ({format})")
+        logging.info(f"Clean image saved to: {output_path} ({format})")
     except Exception as e:
-        print(f"Error generating clean image: {str(e)}")
+        logging.error(f"Error generating clean image: {str(e)}")
 
 def add_exif_metadata(img_path, payload):
     """
@@ -63,9 +64,9 @@ def add_exif_metadata(img_path, payload):
         exif_bytes = piexif.dump(exif_dict)
         img = Image.open(img_path)
         img.save(img_path, 'JPEG', quality=85, exif=exif_bytes)
-        print(f"Added EXIF UserComment to {img_path} ({len(payload)} chars)")
+        logging.info(f"Added EXIF UserComment to {img_path} ({len(payload)} chars)")
     except Exception as e:
-        print(f"Error adding EXIF metadata to {img_path}: {str(e)}")
+        logging.error(f"Error adding EXIF metadata to {img_path}: {str(e)}")
 
 def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.2):
     """
@@ -83,10 +84,10 @@ def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.2):
 
         # Prepare payload (random if None or empty)
         if payload and isinstance(payload, str) and len(payload) > 0:
-            print(f"Embedding provided payload: {len(payload)} chars")
+            logging.info(f"Embedding provided payload: {len(payload)} chars")
             binary_payload = ''.join(format(ord(c), '08b') for c in payload)
         else:
-            print("No payload provided; generating random payload")
+            logging.info("No payload provided; generating random payload")
             total_bits = int(payload_size * img_array.size)
             binary_payload = ''.join(map(str, np.random.randint(0, 2, total_bits)))
         
@@ -103,9 +104,9 @@ def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.2):
         stego_array = flat.reshape(img_array.shape)
         stego_img = Image.fromarray(stego_array)
         stego_img.save(stego_img_path, 'PNG', compress_level=0)
-        print(f"Generated LSB stego image: {stego_img_path} (PNG)")
+        logging.info(f"Generated LSB stego image: {stego_img_path} (PNG)")
     except Exception as e:
-        print(f"Error with LSB embedding: {str(e)}")
+        logging.error(f"Error with LSB embedding: {str(e)}")
 
 def extract_lsb(stego_img_path, payload_size=0.2):
     """
@@ -135,7 +136,7 @@ def extract_lsb(stego_img_path, payload_size=0.2):
                 extracted_text += chr(char_code)  # No range check or break
         return extracted_text
     except Exception as e:
-        print(f"Error extracting LSB payload from {stego_img_path}: {str(e)}")
+        logging.error(f"Error extracting LSB payload from {stego_img_path}: {str(e)}")
         return ""
 
 def verify_exif_metadata(img_path, expected_payload):
@@ -150,13 +151,13 @@ def verify_exif_metadata(img_path, expected_payload):
         user_comment = exif_dict.get("Exif", {}).get(piexif.ExifIFD.UserComment, b"")
         extracted = user_comment[8:].decode('ascii') if len(user_comment) > 8 else ""
         if extracted == expected_payload[:65527]:  # Truncate to EXIF limit
-            print(f"EXIF verification passed: {img_path} matches payload.")
+            logging.info(f"EXIF verification passed: {img_path} matches payload.")
         else:
-            print(f"EXIF verification failed: {img_path} does not match payload.")
-            print(f"Expected (truncated): {expected_payload[:50]}...")
-            print(f"Extracted: {extracted[:50]}...")
+            logging.warning(f"EXIF verification failed: {img_path} does not match payload.")
+            logging.warning(f"Expected (truncated): {expected_payload[:50]}...")
+            logging.warning(f"Extracted: {extracted[:50]}...")
     except Exception as e:
-        print(f"Error verifying EXIF metadata for {img_path}: {str(e)}")
+        logging.error(f"Error verifying EXIF metadata for {img_path}: {str(e)}")
 
 def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.2):
     """
@@ -170,18 +171,19 @@ def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.2
         format (str): 'JPEG' (EXIF) or 'PNG' (LSB).
         payload_size (float): Bits per pixel for LSB (fixed: 0.2).
     """
-    print(f"Verifying {format} stego images for {seed_file}...")
-    for stego_path in stego_paths:
+    logging.info(f"Verifying {format} stego images for {seed_file}...")
+    for _ in tqdm(range(len(stego_paths)), desc=f"Verifying ({seed_file}, {format})"):
+        stego_path = stego_paths[_]  # Use index from tqdm
         if format == 'PNG':
             max_chars = int(payload_size * 512 * 512 * 3 / 8)  # Corrected capacity
             extracted = extract_lsb(stego_path, payload_size)
             seed_truncated = seed_payload[:max_chars]
             if extracted.startswith(seed_truncated):
-                print(f"LSB verification passed: {stego_path} matches {seed_file} payload.")
+                logging.info(f"LSB verification passed: {stego_path} matches {seed_file} payload.")
             else:
-                print(f"LSB verification failed: {stego_path} does not match {seed_file} payload.")
-                print(f"Expected (truncated): {seed_truncated[:50]}...")
-                print(f"Extracted: {extracted[:50]}...")
+                logging.warning(f"LSB verification failed: {stego_path} does not match {seed_file} payload.")
+                logging.warning(f"Expected (truncated): {seed_truncated[:50]}...")
+                logging.warning(f"Extracted: {extracted[:50]}...")
         else:  # JPEG
             verify_exif_metadata(stego_path, seed_payload)
 
@@ -275,15 +277,20 @@ if __name__ == "__main__":
 
     formats = [f.strip().upper() for f in args.formats.split(',')]
 
+    logging.basicConfig(filename='generation.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
     try:
         generate_images(num_images=args.limit, formats=formats)
-        print("Image generation completed.")
+        print("Image generation completed. Check generation.log for details.")
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logging.error(f"Error: {str(e)}")
+        print(f"Error occurred. Check generation.log for details.")
 
 # Notes:
-# - Updated generate_clean_image to randomize frequencies, phases, and noise levels based on seed for more diverse patterns.
-# - This ensures each image has a unique visual structure, reducing the risk of the model memorizing a single pattern as 'clean'.
+# - Updated to use logging for all print statements to channel outputs to 'generation.log'.
+# - Added tqdm progress bar to the verification loop in verify_images.
+# - Console now only shows tqdm progress bars and final completion message; details are in the log file.
+# - Used logging.info for successes, logging.warning for verification failures, logging.error for exceptions.
 # - JPEG: Stores payload in EXIF UserComment (~65 KB capacity, keyless).
 # - PNG: Embeds payload via LSB (0.2 bpnzAC, ~6.5 KB for 512x512, keyless).
 # - Verification: PNG (LSB extraction), JPEG (EXIF UserComment).
