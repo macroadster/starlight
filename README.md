@@ -6,6 +6,12 @@ The blockchain, beginning with the **Bitcoin Genesis Block**, serves as a living
 
 ---
 
+## Quick Start / Usage
+
+To immediately begin generating datasets, training the model, and running detection, please refer to the comprehensive instructions in the [**USAGE.md**](USAGE.md) file.
+
+---
+
 ## The Opportunity: Ensuring Digital Integrity
 
 The proliferation of data, especially rich media like images, being stored on public blockchains marks a new era of digital permanence and transparency. This evolution presents a critical **opportunity** to proactively ensure the complete integrity and trustworthiness of decentralized ledgers.
