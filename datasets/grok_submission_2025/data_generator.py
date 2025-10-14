@@ -6,39 +6,55 @@ import piexif  # For EXIF metadata; pip install piexif
 import argparse  # For command-line arguments
 import logging  # For logging outputs to file
 
-def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG'):
+def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG', pattern_type='linear'):
     """
-    Generate a 512x512 clean image (JPEG or PNG) with a varied colorful pattern.
+    Generate a 512x512 clean image (JPEG or PNG) with varied patterns for diversity.
     Uses a seed for reproducible diversity across images in a batch.
-    Patterns are randomized based on seed for greater variety (e.g., different frequencies, phases).
+    Supports 'linear' (smooth directional gradients) or 'radial' (circular gradients) for better texture variety,
+    making LSB artifacts more detectable in different contexts without periodic masking.
+    This eases steganalysis training by providing low-complexity but diverse backgrounds.
     Args:
         output_path (str): Path to save (e.g., ./clean/sample_seed_exif_001.jpeg).
         size (tuple): Image dimensions (default: 512x512).
-        seed (int): Random seed for noise and pattern variation (ensures unique images).
+        seed (int): Random seed for variation (ensures unique images).
         format (str): 'JPEG' (Q=85) or 'PNG' (lossless; better for LSB stego).
+        pattern_type (str): 'linear' or 'radial' for gradient style (randomized if not specified).
     """
     try:
         if seed is not None:
             np.random.seed(seed)  # Ensure unique patterns per image
-        # Randomize frequencies and phases for diversity
-        freq_x_r = np.random.uniform(1, 10)
-        freq_y_r = np.random.uniform(1, 10)
-        phase_r = np.random.uniform(0, 2 * np.pi)
         
-        freq_x_g = np.random.uniform(1, 10)
-        freq_y_g = np.random.uniform(1, 10)
-        phase_g = np.random.uniform(0, 2 * np.pi)
+        # Randomize pattern type if not specified
+        if pattern_type == 'random':
+            pattern_type = np.random.choice(['linear', 'radial'])
         
-        freq_x_b = np.random.uniform(1, 10)
-        freq_y_b = np.random.uniform(1, 10)
-        phase_b = np.random.uniform(0, 2 * np.pi)
+        # Randomize start and end colors for each channel
+        start_color = np.random.randint(0, 256, 3)
+        end_color = np.random.randint(0, 256, 3)
         
-        x, y = np.meshgrid(np.linspace(0, 1, size[0]), np.linspace(0, 1, size[1]))
-        r = (np.sin(2 * np.pi * x * freq_x_r + phase_r) + np.cos(2 * np.pi * y * freq_y_r)) * 127.5 + 127.5
-        g = (np.sin(2 * np.pi * x * freq_x_g + phase_g) + np.cos(2 * np.pi * y * freq_y_g)) * 127.5 + 127.5
-        b = (np.sin(2 * np.pi * x * freq_x_b + phase_b) + np.cos(2 * np.pi * y * freq_y_b)) * 127.5 + 127.5
-        noise_level = np.random.uniform(5, 15)  # Vary noise intensity
+        x, y = np.meshgrid(np.linspace(-1, 1, size[0]), np.linspace(-1, 1, size[1]))
+        
+        if pattern_type == 'linear':
+            # Linear: Randomized direction
+            angle = np.random.uniform(0, 360)
+            angle_rad = np.deg2rad(angle)
+            grad = (np.cos(angle_rad) * x + np.sin(angle_rad) * y + 1) / 2  # Normalize to [0,1]
+        else:  # 'radial'
+            # Radial: Distance from randomized center
+            center_x = np.random.uniform(-0.5, 0.5)
+            center_y = np.random.uniform(-0.5, 0.5)
+            grad = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+            grad = grad / np.max(grad)  # Normalize to [0,1]
+        
+        # Interpolate between start and end colors
+        r = start_color[0] + (end_color[0] - start_color[0]) * grad
+        g = start_color[1] + (end_color[1] - start_color[1]) * grad
+        b = start_color[2] + (end_color[2] - start_color[2]) * grad
+        
+        # Add minimal noise to avoid perfect uniformity (but keep low for easier stego detection)
+        noise_level = np.random.uniform(0, 1)  # Even lower noise
         noise = np.random.normal(0, noise_level, size)
+        
         img_array = np.stack([np.clip(r + noise, 0, 255), np.clip(g + noise, 0, 255), np.clip(b + noise, 0, 255)], axis=-1).astype(np.uint8)
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -47,7 +63,7 @@ def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG')
             img.save(output_path, 'JPEG', quality=85)  # Q=85
         else:  # PNG
             img.save(output_path, 'PNG', compress_level=0)  # Lossless
-        logging.info(f"Clean image saved to: {output_path} ({format})")
+        logging.info(f"Clean image saved to: {output_path} ({format}, pattern: {pattern_type})")
     except Exception as e:
         logging.error(f"Error generating clean image: {str(e)}")
 
@@ -68,15 +84,16 @@ def add_exif_metadata(img_path, payload):
     except Exception as e:
         logging.error(f"Error adding EXIF metadata to {img_path}: {str(e)}")
 
-def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.2):
+def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.4):
     """
     Embed a payload into a PNG image using LSB (Least Significant Bit) technique.
+    Increased default payload_size to 0.4 bpp for stronger artifacts, easing detection.
     LSB replaces the LSB of pixel channels with payload bits—simple, keyless.
     Args:
         clean_img_path (str): Path to clean PNG.
         stego_img_path (str): Path to save stego PNG.
         payload (str or None): Text from markdown seed to embed (None for random).
-        payload_size (float): Bits per pixel (fixed: 0.2 bpnzAC approximation).
+        payload_size (float): Bits per pixel (default: 0.4 for better detectability).
     """
     try:
         img = Image.open(clean_img_path).convert('RGB')
@@ -104,17 +121,17 @@ def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.2):
         stego_array = flat.reshape(img_array.shape)
         stego_img = Image.fromarray(stego_array)
         stego_img.save(stego_img_path, 'PNG', compress_level=0)
-        logging.info(f"Generated LSB stego image: {stego_img_path} (PNG)")
+        logging.info(f"Generated LSB stego image: {stego_img_path} (PNG, payload_size={payload_size})")
     except Exception as e:
         logging.error(f"Error with LSB embedding: {str(e)}")
 
-def extract_lsb(stego_img_path, payload_size=0.2):
+def extract_lsb(stego_img_path, payload_size=0.4):
     """
     Extract payload from a PNG LSB stego image.
     Reads the least significant bits to reconstruct the embedded binary data and converts to text.
     Args:
         stego_img_path (str): Path to stego PNG.
-        payload_size (float): Bits per pixel used during embedding (fixed: 0.2).
+        payload_size (float): Bits per pixel used during embedding (default: 0.4).
     Returns:
         str: Extracted text payload (or empty string if extraction fails).
     """
@@ -159,23 +176,23 @@ def verify_exif_metadata(img_path, expected_payload):
     except Exception as e:
         logging.error(f"Error verifying EXIF metadata for {img_path}: {str(e)}")
 
-def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.2):
+def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.4):
     """
     Verify that stego images contain the correct payload.
-    - PNG: Verifies LSB-extracted payload (truncated to ~6.5 KB).
+    - PNG: Verifies LSB-extracted payload (truncated to ~13 KB at 0.4 bpp).
     - JPEG: Verifies EXIF UserComment (up to ~65 KB).
     Args:
         seed_file (str): Name of the seed file (e.g., 'sample_seed.md').
         stego_paths (list): List of stego image paths to verify.
         seed_payload (str): Original markdown content.
         format (str): 'JPEG' (EXIF) or 'PNG' (LSB).
-        payload_size (float): Bits per pixel for LSB (fixed: 0.2).
+        payload_size (float): Bits per pixel for LSB (default: 0.4).
     """
     logging.info(f"Verifying {format} stego images for {seed_file}...")
     for _ in tqdm(range(len(stego_paths)), desc=f"Verifying ({seed_file}, {format})"):
         stego_path = stego_paths[_]  # Use index from tqdm
         if format == 'PNG':
-            max_chars = int(payload_size * 512 * 512 * 3 / 8)  # Corrected capacity
+            max_chars = int(payload_size * 512 * 512 * 3 / 8)  # Updated capacity
             extracted = extract_lsb(stego_path, payload_size)
             seed_truncated = seed_payload[:max_chars]
             if extracted.startswith(seed_truncated):
@@ -187,31 +204,33 @@ def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.2
         else:  # JPEG
             verify_exif_metadata(stego_path, seed_payload)
 
-def generate_images(num_images=1, formats=['JPEG', 'PNG']):
+def generate_images(num_images=5, formats=['JPEG', 'PNG'], payload_size=0.4):
     """
     Generate clean and stego images for Project Starlight (Option 3).
+    Increased default num_images to 5 for more data pairs.
     Hardcoded relative paths (run from dataset/grok_submission_2025/):
         - Clean images: ./clean/
         - Stego images: ./stego/
         - Markdown seeds: ./ (all .md files)
-        - Payload size: 0.2 bpnzAC (for PNG LSB; JPEG uses EXIF UserComment)
+        - Payload size: Default 0.4 bpnzAC for PNG LSB (configurable; higher for easier detection)
         - JPEG quality: 85 (fixed; within 75-95)
         - Formats: List of 'JPEG' (EXIF metadata) or 'PNG' (LSB)
         - Stego key: None (keyless LSB/EXIF)
     Behavior:
         - Iterates over each .md file, generating a batch of num_images clean + stego pairs per format.
+        - Randomizes pattern_type ('linear' or 'radial') for diversity.
         - Labels images with seed basename and algorithm (e.g., sample_seed_exif_001.jpeg).
         - If no seeds, generates a random batch labeled 'random' (no payload for verification).
         - Verifies payloads: PNG (LSB extraction), JPEG (EXIF UserComment).
         - Uses tqdm for progress feedback.
     Args:
-        num_images (int): Pairs per seed batch (default: 1; override via --limit or NUM_IMAGES env var).
+        num_images (int): Pairs per seed batch (default: 5; override via --limit or NUM_IMAGES env var).
         formats (list): List of formats to generate: 'JPEG' (EXIF metadata) or 'PNG' (LSB).
+        payload_size (float): Bits per pixel for LSB (default: 0.4).
     """
     clean_dir = "./clean"
     stego_dir = "./stego"
     seed_dir = "./"
-    payload_size = 0.2  # Fixed: 0.2 bpnzAC for PNG LSB
     quality = 85  # Fixed: JPEG quality
 
     num_images = int(os.environ.get('NUM_IMAGES', num_images))
@@ -238,12 +257,13 @@ def generate_images(num_images=1, formats=['JPEG', 'PNG']):
                 img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
                 clean_path = os.path.join(clean_dir, img_name)
                 stego_path = os.path.join(stego_dir, img_name)
-                generate_clean_image(clean_path, seed=i, format=format)
+                pattern = np.random.choice(['linear', 'radial'])
+                generate_clean_image(clean_path, seed=i, format=format, pattern_type=pattern)
                 if format == 'PNG':
                     embed_lsb(clean_path, stego_path, payload=None, payload_size=payload_size)
                     stego_paths.append(stego_path)
                 else:  # JPEG
-                    generate_clean_image(stego_path, seed=i, format=format)  # Copy clean to stego
+                    generate_clean_image(stego_path, seed=i, format=format, pattern_type=pattern)  # Copy clean to stego
                     add_exif_metadata(stego_path, "")
                     stego_paths.append(stego_path)
             verify_images("random", stego_paths, "", format, payload_size)
@@ -259,20 +279,22 @@ def generate_images(num_images=1, formats=['JPEG', 'PNG']):
                     img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
                     clean_path = os.path.join(clean_dir, img_name)
                     stego_path = os.path.join(stego_dir, img_name)
-                    generate_clean_image(clean_path, seed=i, format=format)
+                    pattern = np.random.choice(['linear', 'radial'])
+                    generate_clean_image(clean_path, seed=i, format=format, pattern_type=pattern)
                     if format == 'PNG':
                         embed_lsb(clean_path, stego_path, payload=seed_payload, payload_size=payload_size)
                         stego_paths.append(stego_path)
                     else:  # JPEG
-                        generate_clean_image(stego_path, seed=i, format=format)  # Copy clean to stego
+                        generate_clean_image(stego_path, seed=i, format=format, pattern_type=pattern)  # Copy clean to stego
                         add_exif_metadata(stego_path, seed_payload)
                         stego_paths.append(stego_path)
                 verify_images(seed_file, stego_paths, seed_payload, format, payload_size)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate clean and stego images for Project Starlight.")
-    parser.add_argument('--limit', type=int, default=1, help='Number of images to generate per payload per algorithm (overrides NUM_IMAGES env var).')
+    parser.add_argument('--limit', type=int, default=5, help='Number of images to generate per payload per algorithm (overrides NUM_IMAGES env var).')
     parser.add_argument('--formats', type=str, default='JPEG,PNG', help='Comma-separated formats to use: JPEG (exif), PNG (lsb).')
+    parser.add_argument('--payload_size', type=float, default=0.4, help='Bits per pixel for PNG LSB embedding (higher eases detection).')
     args = parser.parse_args()
 
     formats = [f.strip().upper() for f in args.formats.split(',')]
@@ -280,20 +302,20 @@ if __name__ == "__main__":
     logging.basicConfig(filename='generation.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
     try:
-        generate_images(num_images=args.limit, formats=formats)
+        generate_images(num_images=args.limit, formats=formats, payload_size=args.payload_size)
         print("Image generation completed. Check generation.log for details.")
     except Exception as e:
         logging.error(f"Error: {str(e)}")
         print(f"Error occurred. Check generation.log for details.")
 
 # Notes:
-# - Updated to use logging for all print statements to channel outputs to 'generation.log'.
-# - Added tqdm progress bar to the verification loop in verify_images.
-# - Console now only shows tqdm progress bars and final completion message; details are in the log file.
-# - Used logging.info for successes, logging.warning for verification failures, logging.error for exceptions.
+# - Added 'radial' gradients for diversity, randomized per image—helps model generalize without masking artifacts.
+# - Increased default LSB payload_size to 0.4 bpp (~13 KB capacity) for more obvious changes, improving detection confidence.
+# - Default num_images=5 to generate more pairs (~4x data if rerun).
+# - For even easier training, try --payload_size 0.6 or integrate real images (e.g., via external download to seed_dir).
 # - JPEG: Stores payload in EXIF UserComment (~65 KB capacity, keyless).
-# - PNG: Embeds payload via LSB (0.2 bpnzAC, ~6.5 KB for 512x512, keyless).
+# - PNG: Embeds payload via LSB (configurable bpp, ~13 KB at 0.4 for 512x512, keyless).
 # - Verification: PNG (LSB extraction), JPEG (EXIF UserComment).
-# - Override: python data_generator.py --limit 10 --formats PNG
+# - Override: python data_generator.py --limit 10 --formats PNG --payload_size 0.5
 # - Dependencies: pip install piexif Pillow numpy tqdm
 # - Ensure Python 3.8+ for compatibility.
