@@ -155,7 +155,7 @@ class ClaudeStegGenerator:
             if bit_index >= len(full_payload):
                 break
         
-        return Image.fromarray(img_array, 'RGBA')
+        return Image.fromarray(img_array)
     
     def png_alpha_lsb_extract(self, img_path):
         """Extract data from PNG Alpha Channel LSB"""
@@ -252,7 +252,7 @@ class ClaudeStegGenerator:
             if bit_index >= len(full_payload):
                 break
         
-        result = Image.fromarray(img_array, 'P')
+        result = Image.fromarray(img_array)
         result.putpalette(img_palette.getpalette())
         return result
     
@@ -318,92 +318,105 @@ class ClaudeStegGenerator:
         block_size = 8
         height, width = img_array.shape[:2]
         
-        # Calculate capacity
-        num_blocks_y = (height - block_size) // block_size
-        num_blocks_x = (width - block_size) // block_size
-        num_blocks = num_blocks_y * num_blocks_x
-        max_bytes = (num_blocks - 32) // 8
+        # CRITICAL FIX: First, find all usable blocks (not near boundaries)
+        usable_blocks = []
+        
+        for y in range(0, height - block_size, block_size):
+            for x in range(0, width - block_size, block_size):
+                if y + block_size <= height and x + block_size <= width:
+                    block = img_array[y:y+block_size, x:x+block_size, 0]
+                    mid_y, mid_x = block_size // 2, block_size // 2
+                    current_val = block[mid_y, mid_x]
+                    
+                    # Only use blocks where ±15 won't hit boundaries
+                    # We need current_val to be in range [15, 240] to safely modify ±15
+                    if 15 <= current_val <= 240:
+                        usable_blocks.append((y, x, current_val))
+        
+        # NOW calculate actual capacity based on usable blocks
+        max_bits = len(usable_blocks) - 32  # Reserve 32 bits for length header
+        max_bytes = max_bits // 8
+        
+        # Validate capacity against actual usable blocks
         self.validate_capacity(payload, max_bytes, "PNG DCT")
         
         payload_bits = ''.join(format(byte, '08b') for byte in payload)
         length_header = format(len(payload), '032b')
         full_payload = length_header + payload_bits
         
-        bit_index = 0
-        
-        for y in range(0, height - block_size, block_size):
-            for x in range(0, width - block_size, block_size):
-                if bit_index < len(full_payload):
-                    if y + block_size <= height and x + block_size <= width:
-                        block = img_array[y:y+block_size, x:x+block_size, 0].copy()
-                        mid_y, mid_x = block_size // 2, block_size // 2
-                        
-                        current_val = block[mid_y, mid_x]
-                        bit_val = int(full_payload[bit_index])
-                        
-                        # Use ±15 for better detection on uniform images
-                        if bit_val == 1:
-                            block[mid_y, mid_x] = min(current_val + 15.0, 255.0)
-                        else:
-                            block[mid_y, mid_x] = max(current_val - 15.0, 0.0)
-                        
-                        img_array[y:y+block_size, x:x+block_size, 0] = block
-                        bit_index += 1
-                        
-                        if bit_index >= len(full_payload):
-                            break
+        # Embed in usable blocks only
+        for bit_index, (y, x, current_val) in enumerate(usable_blocks[:len(full_payload)]):
+            block = img_array[y:y+block_size, x:x+block_size, 0].copy()
+            mid_y, mid_x = block_size // 2, block_size // 2
             
-            if bit_index >= len(full_payload):
-                break
+            bit_val = int(full_payload[bit_index])
+            
+            # Now we can safely apply ±15 without boundary issues
+            if bit_val == 1:
+                block[mid_y, mid_x] = current_val + 15.0
+            else:
+                block[mid_y, mid_x] = current_val - 15.0
+            
+            img_array[y:y+block_size, x:x+block_size, 0] = block
         
         result_array = np.clip(img_array, 0, 255).astype(np.uint8)
-        return Image.fromarray(result_array, 'RGB')
+        return Image.fromarray(result_array)
     
-    def png_dct_extract(self, img_path, original_img):
-        """Extract data from PNG DCT embedding with ±10 threshold"""
+    def png_dct_extract(self, img_path, original_img_path):
+        """Extract data from PNG DCT embedding
+        
+        Args:
+            img_path: Path to stego PNG file
+            original_img_path: Path to original clean PNG file
+        """
         stego_img = Image.open(img_path).convert('RGB')
+        
+        # Load original from disk if it's a path, otherwise use the image object
+        if isinstance(original_img_path, (str, Path)):
+            orig_img = Image.open(original_img_path).convert('RGB')
+        else:
+            orig_img = original_img_path.convert('RGB')
+        
         stego_array = np.array(stego_img, dtype=np.float32)
-        orig_array = np.array(original_img.convert('RGB'), dtype=np.float32)
+        orig_array = np.array(orig_img, dtype=np.float32)
         
         block_size = 8
         height, width = stego_array.shape[:2]
         
-        bits = []
+        # CRITICAL FIX: Only extract from blocks that were actually usable during embedding
+        # Match the embedding logic exactly
+        usable_blocks = []
         
         for y in range(0, height - block_size, block_size):
             for x in range(0, width - block_size, block_size):
                 if y + block_size <= height and x + block_size <= width:
                     mid_y, mid_x = block_size // 2, block_size // 2
-                    
-                    stego_val = stego_array[y + mid_y, x + mid_x, 0]
                     orig_val = orig_array[y + mid_y, x + mid_x, 0]
                     
-                    diff = stego_val - orig_val
-                    
-                    # Use threshold of 10 (67% of embedding strength)
-                    if diff > 10:
-                        bits.append('1')
-                    elif diff < -10:
-                        bits.append('0')
-                    else:
-                        bits.append('1' if diff >= 0 else '0')
-                    
-                    # Early exit check
-                    if len(bits) >= 32:
-                        try:
-                            length = int(''.join(bits[:32]), 2)
-                            if 0 < length <= 100000 and len(bits) >= 32 + length * 8:
-                                break
-                        except:
-                            pass
+                    # Only extract from blocks that met the embedding criteria
+                    if 15 <= orig_val <= 240:
+                        usable_blocks.append((y, x))
+        
+        # Extract bits from usable blocks only
+        bits = []
+        
+        for y, x in usable_blocks:
+            mid_y, mid_x = block_size // 2, block_size // 2
             
-            if len(bits) >= 32:
-                try:
-                    length = int(''.join(bits[:32]), 2)
-                    if 0 < length <= 100000 and len(bits) >= 32 + length * 8:
-                        break
-                except:
-                    pass
+            stego_val = stego_array[y + mid_y, x + mid_x, 0]
+            orig_val = orig_array[y + mid_y, x + mid_x, 0]
+            
+            diff = stego_val - orig_val
+            
+            # Use threshold of 7.5 (halfway between 0 and 15)
+            if diff > 7.5:
+                bits.append('1')
+            elif diff < -7.5:
+                bits.append('0')
+            else:
+                # This shouldn't happen if embedding worked correctly
+                # Default to 0
+                bits.append('0')
         
         if len(bits) < 32:
             return b""
@@ -414,10 +427,12 @@ class ClaudeStegGenerator:
             if length > 100000 or length <= 0:
                 return b""
             
-            if len(bits) < 32 + length * 8:
+            total_bits_needed = 32 + length * 8
+            
+            if len(bits) < total_bits_needed:
                 return b""
             
-            payload_bits = bits[32:32 + length * 8]
+            payload_bits = bits[32:total_bits_needed]
             payload_bytes = bytes([int(''.join(payload_bits[i:i+8]), 2) 
                                    for i in range(0, len(payload_bits), 8)])
             
@@ -485,11 +500,21 @@ class ClaudeStegGenerator:
         try:
             print("3. Testing PNG DCT...")
             img = self.generate_diverse_clean_image(2, 'geometric')
+            
+            # Save clean image first
+            clean_test_path = self.clean_dir / "_test_dct_clean.png"
+            img.save(clean_test_path, 'PNG')
+            
             stego = self.png_dct_embed(img, test_payload)
             temp_path = self.stego_dir / "_test_dct.png"
             stego.save(temp_path, 'PNG')
-            extracted = self.png_dct_extract(temp_path, img)
+            
+            # Extract using paths to both files
+            extracted = self.png_dct_extract(temp_path, clean_test_path)
+            
+            # Cleanup
             temp_path.unlink()
+            clean_test_path.unlink()
             
             if extracted == test_payload:
                 print("   ✓ PASSED\n")
@@ -575,16 +600,31 @@ class ClaudeStegGenerator:
                     method_payload = payload_data
                     
                     if method_name == 'png_dct':
-                        width, height = clean_img.size
-                        dct_blocks = ((height - 8) // 8) * ((width - 8) // 8)
-                        max_dct_bytes = (dct_blocks - 32) // 8
+                        # CRITICAL: Calculate ACTUAL usable blocks, not theoretical capacity
+                        img_array = np.array(clean_img, dtype=np.float32)
+                        block_size = 8
+                        height, width = img_array.shape[:2]
+                        
+                        # Count usable blocks (matching embedding logic)
+                        usable_count = 0
+                        for y in range(0, height - block_size, block_size):
+                            for x in range(0, width - block_size, block_size):
+                                if y + block_size <= height and x + block_size <= width:
+                                    mid_y, mid_x = block_size // 2, block_size // 2
+                                    current_val = img_array[y:y+block_size, x:x+block_size, 0][mid_y, mid_x]
+                                    if 15 <= current_val <= 240:
+                                        usable_count += 1
+                        
+                        # Calculate actual capacity from usable blocks
+                        max_dct_bytes = (usable_count - 32) // 8
                         
                         if len(payload_data) > max_dct_bytes:
-                            # FIXED: Reserve 24 bytes for marker (not 20)
+                            # FIXED: Reserve 24 bytes for marker
                             method_payload = payload_data[:max_dct_bytes - 24]
                             truncation_marker = f" [TRUNCATED: {len(payload_data)} bytes]".encode('utf-8')
                             method_payload = method_payload + truncation_marker
-                            print(f"  ⓘ DCT payload truncated: {len(payload_data)} → {len(method_payload)} bytes")
+                            print(f"  ⓘ DCT payload truncated: {len(payload_data)} → {len(method_payload)} bytes (usable blocks: {usable_count})")
+
                     
                     # Generate stego
                     stego_img = embed_func(clean_img, method_payload)
@@ -595,9 +635,11 @@ class ClaudeStegGenerator:
                     else:
                         stego_img.save(stego_path, 'PNG')
                     
-                    # Verify extraction
+                    # CRITICAL FIX: For DCT, load clean image from disk for comparison
+                    # PNG compression may slightly alter pixel values, so we need
+                    # to compare stego (from disk) with clean (from disk)
                     if method_name == 'png_dct':
-                        extracted = extract_func(stego_path, clean_img)
+                        extracted = extract_func(stego_path, clean_path)
                     else:
                         extracted = extract_func(stego_path)
                     
