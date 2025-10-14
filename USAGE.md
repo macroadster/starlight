@@ -51,5 +51,5 @@ To use a trained model to scan a file for concealed data, run the scanner script
 * **Action:** Run the steganography scanner, providing the path to your best model and the file you wish to analyze.
 * **Command:**
     ```bash
-    python3 stego_scanner.py --model models/best_stego_detector.pth --input /path/to/image_to_scan.jpg
+    python3 stego_scanner.py --model models/best_stego_detector.pth --input /path/to/images_to_scan
     ```
