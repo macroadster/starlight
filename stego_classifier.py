@@ -408,7 +408,7 @@ class StegoFeatureExtractor:
             features.append(1.0)
         else:
             features.append(0.0)
-            return features + [0] * 11
+            return features + [0] * 10
         
         img_array = np.array(img)
         
