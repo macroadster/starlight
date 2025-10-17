@@ -2,13 +2,13 @@
 
 ## Overview
 
-Project Starlight aims to build a dataset for training AI to detect steganography in blockchain-stored images. Contributions are organized under `dataset/[username]_submission_[year]/` (e.g., `dataset/grok_submission_2025/`). Contributors can choose from three flexible options:
+Project Starlight aims to build a dataset for training AI to detect steganography in blockchain-stored images. Contributions are organized under `datasets/[username]_submission_[year]/` (e.g., `datasets/grok_submission_2025/`). Contributors can choose from three flexible options:
 
 1.  **Clean and Tainted Images**: Provide both clean (cover) and tainted (stego) images with the same filenames for alignment.
 2.  **Clean Images with `data_generator.py`**: Provide clean images and a script to generate stego images.
 3.  **Single `data_generator.py` Script**: Provide a script that generates both clean and stego images.
 
-Start with one image pair for testing, or scale to thousands. Markdown seed files in `dataset/[username]_submission_[year]/` provide structured payloads for stego generation. Scripts for Options 2 and 3 use relative paths and should be run from `dataset/[username]_submission_[year]/`.
+Start with one image pair for testing, or scale to thousands. Markdown seed files in `datasets/[username]_submission_[year]/` provide structured payloads for stego generation. Scripts for Options 2 and 3 use relative paths and should be run from `datasets/[username]_submission_[year]/`.
 
 -----
 
@@ -43,8 +43,8 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
 ### Option 1: Provide Clean and Tainted Images
 
   - **What to Submit**:
-      - Clean images in `dataset/[username]_submission_[year]/clean/`.
-      - Corresponding stego images in `dataset/[username]_submission_[year]/stego/` with the *same filename*.
+      - Clean images in `datasets/[username]_submission_[year]/clean/`.
+      - Corresponding stego images in `datasets/[username]_submission_[year]/stego/` with the *same filename*.
   - **Format**: Any common image format (e.g., **JPEG, PNG, WebP**).
   - **Guidelines**:
       - Ensure a 1:1 correspondence with **identical filenames**.
@@ -57,12 +57,12 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
 ### Option 2: Provide Clean Images and `data_generator.py`
 
   - **What to Submit**:
-      - Clean images in `dataset/[username]_submission_[year]/clean/`.
-      - A Python script (`data_generator.py`) in `dataset/[username]_submission_[year]/` to generate stego images.
+      - Clean images in `datasets/[username]_submission_[year]/clean/`.
+      - A Python script (`data_generator.py`) in `datasets/[username]_submission_[year]/` to generate stego images.
       - Optional: Any markdown seed file (e.g., `[payload_name].md`) for payload content.
   - **Script Requirements**:
       - Python 3.8+, using necessary libraries.
-      - Run from `dataset/[username]_submission_[year]/`, reading from `./clean/`, saving to `./stego/` with identical filenames.
+      - Run from `datasets/[username]_submission_[year]/`, reading from `./clean/`, saving to `./stego/` with identical filenames.
       - Must identify all `.md` seed files in `./` (if used) and **generate a separate batch of stego images for each file, using the markdown filename to label the output images**.
       - **The script must document the steganography algorithm, parameters, and image format/quality settings used**.
       - Follow the filename naming convention specified above.
@@ -72,12 +72,12 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
 ### Option 3: Provide `data_generator.py` for Both Clean and Stego Images
 
   - **What to Submit**:
-      - A single Python script (`data_generator.py`) in `dataset/[username]_submission_[year]/` that generates both clean and stego images.
-      - Optional: Markdown seed files in `dataset/[username]_submission_[year]/` for payloads.
+      - A single Python script (`data_generator.py`) in `datasets/[username]_submission_[year]/` that generates both clean and stego images.
+      - Optional: Markdown seed files in `datasets/[username]_submission_[year]/` for payloads.
   - **Script Requirements**:
       - **The script must document the steganography algorithm, parameters, and image format/quality settings used**.
       - Must identify all `.md` seed files in `./` (if used) and **generate a separate batch of images for each file, using the markdown filename to label the output images**.
-      - Run from `dataset/[username]_submission_[year]/`, generating clean images in `./clean/` and stego images in `./stego/` with identical filenames.
+      - Run from `datasets/[username]_submission_[year]/`, generating clean images in `./clean/` and stego images in `./stego/` with identical filenames.
       - Ensure clean images are diverse (e.g., vary patterns or colors).
       - Follow the filename naming convention specified above.
 
@@ -87,8 +87,8 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
 
   - **Folder Structure**:
     ```
-    dataset/
-    └── [username]_submission_[year]/    # e.g., dataset/grok_submission_2025/
+    datasets/
+    └── [username]_submission_[year]/    # e.g., datasets/grok_submission_2025/
         ├── clean/                      # Clean images (e.g., payload_alpha_001.png)
         ├── stego/                      # Tainted images (e.g., payload_alpha_001.png)
         ├── sample_seed.md              # Optional markdown seed files
@@ -96,8 +96,8 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
     ```
   - **Steps**:
     1.  Fork the repository.
-    2.  Add your contribution in `dataset/[username]_submission_[year]/` based on your chosen option.
-    3.  Test your contribution (e.g., verify images or run script from `dataset/[username]_submission_[year]/`).
+    2.  Add your contribution in `datasets/[username]_submission_[year]/` based on your chosen option.
+    3.  Test your contribution (e.g., verify images or run script from `datasets/[username]_submission_[year]/`).
     4.  Submit a pull request (PR) with a description (e.g., option chosen, number of images, seed usage).
   - **Validation**: Maintainers will check image formats, filename alignment, script functionality, seed files, and licensing.
 
@@ -110,7 +110,7 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
   - **Ethics**: Use synthetic payloads (random bits or markdown text); avoid real malicious or illegal data.
   - **Licensing**: Ensure clean images are public domain or permissively licensed (e.g., CC0, MIT).
   - **Balance**: Aim for a 1:1 clean-to-stego ratio.
-  - **Naming**: Follow the filename convention to maintain dataset consistency.
+  - **Naming**: Follow the filename convention to maintain datasets consistency.
 
 -----
 
