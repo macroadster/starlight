@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import re
 import math
@@ -65,7 +66,7 @@ class CustomDataset(Dataset):
         return [file_size, exif_present, exif_length, palette_present, palette_length, palette_entropy_value, eof_length]
 
 # Function to collect data from dataset folders
-def collect_data(root_dir='dataset'):
+def collect_data(root_dir='datasets'):
     image_paths = []
     labels = []
     class_map = {'clean': 0, 'alpha': 1, 'palette': 2, 'dct': 3, 'lsb': 4, 'eoi': 5, 'exif': 6}
