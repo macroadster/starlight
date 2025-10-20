@@ -10,6 +10,7 @@ import argparse
 import math
 from scipy.stats import entropy
 from scipy.fftpack import dct
+from PIL.ExifTags import TAGS
 
 try:
     import piexif
@@ -25,7 +26,7 @@ transform = transforms.Compose([
 ])
 
 class Starlight(nn.Module):
-    def __init__(self, num_classes=7, feature_dim=7):
+    def __init__(self, num_classes=7, feature_dim=13):
         super(Starlight, self).__init__()
         kernel = torch.tensor([[[ -1.,  2., -1.],
                                 [  2., -4.,  2.],
@@ -35,9 +36,15 @@ class Starlight(nn.Module):
         resnet = models.resnet18(weights=None)
         self.pd_backbone = nn.Sequential(*list(resnet.children())[:-1])
         self.sf_mlp = nn.Sequential(
-            nn.Linear(feature_dim, 64),
+            nn.Linear(feature_dim, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Linear(64, 32),
+            nn.Dropout(0.3),
+            nn.Linear(128, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, 128),
             nn.ReLU()
         )
         self.fd_cnn = nn.Sequential(
@@ -55,9 +62,12 @@ class Starlight(nn.Module):
             nn.ReLU()
         )
         self.fusion = nn.Sequential(
-            nn.Linear(512 + 32 + 256, 256),
+            nn.Linear(512 + 128 + 256, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(256, num_classes)
         )
 
@@ -90,10 +100,37 @@ class Starlight(nn.Module):
         return dct_row
 
 def extract_features(path, img):
+    width, height = img.size
+    area = width * height if width * height > 0 else 1.0
+    
     file_size = os.path.getsize(path) / 1024.0
-    exif = img.getexif()
-    exif_present = 1.0 if exif else 0.0
-    exif_length = len(exif) if exif else 0.0
+    file_size_norm = file_size / area
+    
+    exif_bytes = img.info.get('exif')
+    exif_present = 1.0 if exif_bytes else 0.0
+    exif_length = len(exif_bytes) if exif_bytes else 0.0
+    exif_length_norm = min(exif_length / area, 1.0)
+    
+    comment_length = 0.0
+    exif_entropy = 0.0
+    if exif_bytes:
+        try:
+            exif_dict = img.getexif()
+            tag_values = []
+            for tag_id, value in exif_dict.items():
+                tag = TAGS.get(tag_id, tag_id)
+                if tag == 'UserComment' and isinstance(value, bytes):
+                    comment_length = min(len(value) / area, 1.0)
+                if isinstance(value, (bytes, str)):
+                    tag_values.append(value if isinstance(value, bytes) else value.encode('utf-8'))
+            if tag_values:
+                lengths = [len(v) for v in tag_values]
+                hist = np.histogram(lengths, bins=10, range=(0, max(lengths or [1])))[0]
+                exif_entropy = entropy(hist + 1e-10) / area if any(hist) else 0.0
+        except:
+            comment_length = 0.0
+            exif_entropy = 0.0
+    
     palette_present = 1.0 if img.mode == 'P' else 0.0
     palette = img.getpalette()
     palette_length = len(palette) / 3 if palette else 0.0
@@ -102,6 +139,7 @@ def extract_features(path, img):
         palette_entropy_value = entropy([h + 1 for h in hist if h > 0]) if any(hist) else 0.0
     else:
         palette_entropy_value = 0.0
+    
     with open(path, 'rb') as f:
         data = f.read()
     if img.format == 'JPEG':
@@ -109,7 +147,24 @@ def extract_features(path, img):
         eof_length = len(data) - (eoi_pos + 2) if eoi_pos >= 0 else 0.0
     else:
         eof_length = 0.0
-    return np.array([file_size, exif_present, exif_length, palette_present, palette_length, palette_entropy_value, eof_length], dtype=np.float32)
+    eof_length_norm = min(eof_length / area, 1.0)
+    
+    has_alpha = 1.0 if img.mode in ('RGBA', 'LA', 'PA') else 0.0
+    alpha_variance = 0.0
+    if has_alpha and img.mode == 'RGBA':
+        img_array = np.array(img)
+        if img_array.shape[-1] == 4:
+            alpha_channel = img_array[:, :, 3].astype(float)
+            alpha_variance = np.var(alpha_channel) / 65025.0
+    
+    is_jpeg = 1.0 if img.format == 'JPEG' else 0.0
+    is_png = 1.0 if img.format == 'PNG' else 0.0
+    
+    return np.array([
+        file_size_norm, exif_present, exif_length_norm, comment_length,
+        exif_entropy, palette_present, palette_length, palette_entropy_value,
+        eof_length_norm, has_alpha, alpha_variance, is_jpeg, is_png
+    ], dtype=np.float32)
 
 def extract_message_from_bits(bits, max_length=24576):
     """Extract message from bit string with multiple format support."""
@@ -190,7 +245,6 @@ def extract_message_from_bits(bits, max_length=24576):
     
     return None, bits
 
-
 def extract_lsb_strategy(image_path, strategy='auto', channel='all', max_bits=1000000):
     """Extract LSB data using different strategies."""
     img = Image.open(image_path)
@@ -223,7 +277,6 @@ def extract_lsb_strategy(image_path, strategy='auto', channel='all', max_bits=10
     
     best = max(results, key=lambda x: x['confidence'])
     return best['message'], None
-
 
 def extract_bits_by_strategy(img, strategy, max_bits):
     """Extract bits using a specific strategy."""
@@ -292,7 +345,6 @@ def extract_bits_by_strategy(img, strategy, max_bits):
     
     return bits
 
-
 def calculate_message_confidence(message):
     """Calculate confidence score for extracted message."""
     if not message:
@@ -333,7 +385,6 @@ def calculate_message_confidence(message):
     
     return max(0.0, min(100.0, score))
 
-
 def extract_lsb(image_path, channel='all', max_bits=1000000):
     """Extract LSB steganography data."""
     img = Image.open(image_path)
@@ -346,7 +397,6 @@ def extract_lsb(image_path, channel='all', max_bits=1000000):
     
     return extract_lsb_strategy(image_path, strategy='auto', channel=channel, max_bits=max_bits)
 
-
 def extract_alpha(image_path):
     img = Image.open(image_path)
     if img.mode != 'RGBA':
@@ -355,7 +405,6 @@ def extract_alpha(image_path):
     bits = ''.join(bin(value)[-1] for value in data.flatten())
     return extract_message_from_bits(bits)
 
-
 def extract_palette(image_path):
     img = Image.open(image_path)
     if img.mode != 'P':
@@ -363,7 +412,6 @@ def extract_palette(image_path):
     img_array = np.array(img)
     bits = ''.join(str(pixel & 1) for pixel in img_array.flatten())
     return extract_message_from_bits(bits)
-
 
 def extract_dct(image_path, clean_path=None):
     img = np.array(Image.open(image_path).convert('YCbCr'))[:, :, 0].astype(float)
@@ -388,7 +436,6 @@ def extract_dct(image_path, clean_path=None):
         coeffs_flat = dct_coeffs.flatten()[1:]
         bits = ''.join(bin(int(coeff))[-1] for coeff in coeffs_flat if abs(coeff) > 10)
     return extract_message_from_bits(bits)
-
 
 def extract_exif(image_path):
     img = Image.open(image_path)
@@ -432,7 +479,6 @@ def extract_exif(image_path):
         message = raw_bytes.hex()
     return message, None
 
-
 def extract_eoi(image_path):
     with open(image_path, 'rb') as f:
         data = f.read()
@@ -444,13 +490,12 @@ def extract_eoi(image_path):
             terminator_pos = payload.find(b'\x00')
             if terminator_pos != -1:
                 payload = payload[:terminator_pos]
-            try:
-                message = payload.decode('utf-8')
-                return message, None
-            except UnicodeDecodeError:
-                return payload.hex(), None
+        try:
+            message = payload.decode('utf-8')
+            return message, None
+        except UnicodeDecodeError:
+            return payload.hex(), None
     return None, None
-
 
 extraction_functions = {
     'alpha': extract_alpha,
@@ -460,7 +505,6 @@ extraction_functions = {
     'exif': extract_exif,
     'eoi': extract_eoi
 }
-
 
 def predict(model, device, image_path, class_map):
     model.eval()
@@ -475,7 +519,6 @@ def predict(model, device, image_path, class_map):
         pred_label = class_map.get(pred_class, 'unknown')
         confidence = probs[pred_class]
     return pred_label, confidence, probs
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Steganography Extractor using Starlight Model")
@@ -495,7 +538,7 @@ if __name__ == "__main__":
         device = torch.device('cpu')
     print(f"Using device: {device}")
 
-    model = Starlight(num_classes=7)
+    model = Starlight(num_classes=7, feature_dim=13)
     try:
         model.load_state_dict(torch.load(args.model_path, map_location=device))
     except Exception as e:
