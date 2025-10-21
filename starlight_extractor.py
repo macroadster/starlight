@@ -36,15 +36,15 @@ class Starlight(nn.Module):
         resnet = models.resnet18(weights=None)
         self.pd_backbone = nn.Sequential(*list(resnet.children())[:-1])
         self.sf_mlp = nn.Sequential(
-            nn.Linear(feature_dim, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(feature_dim, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(128, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(256, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
             nn.ReLU()
         )
         self.fd_cnn = nn.Sequential(
@@ -61,8 +61,20 @@ class Starlight(nn.Module):
             nn.Linear(128, 256),
             nn.ReLU()
         )
+        self.gate_pd = nn.Sequential(
+            nn.Linear(feature_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+        self.gate_fd = nn.Sequential(
+            nn.Linear(feature_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
         self.fusion = nn.Sequential(
-            nn.Linear(512 + 128 + 256, 512),
+            nn.Linear(512 + 256 + 256, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, 256),
@@ -71,16 +83,22 @@ class Starlight(nn.Module):
             nn.Linear(256, num_classes)
         )
 
-    def forward(self, image, features):
+    def forward(self, image, features, labels=None):
+        sf_feat = self.sf_mlp(features)
+        gate_pd = self.gate_pd(features)
+        gate_fd = self.gate_fd(features)
         filtered = self.srm_conv(image)
         pd_feat = self.pd_backbone(filtered).flatten(1)
-        sf_feat = self.sf_mlp(features)
+        pd_feat_gated = pd_feat * gate_pd
         dct_img = self.dct2d(image)
         fd_feat = self.fd_cnn(dct_img)
-        concatenated = torch.cat([pd_feat, sf_feat, fd_feat], dim=1)
+        fd_feat_gated = fd_feat * gate_fd
+        concatenated = torch.cat([pd_feat_gated, sf_feat, fd_feat_gated], dim=1)
         out = self.fusion(concatenated)
+        if self.training:
+            return out, gate_pd, gate_fd
         return out
-    
+
     def dct2d(self, x):
         def dct1d(y):
             N = y.size(-1)
@@ -168,7 +186,6 @@ def extract_features(path, img):
 
 def extract_message_from_bits(bits, max_length=24576):
     """Extract message from bit string with multiple format support."""
-    # Try hint (0xAI42) + payload + terminator (\x00)
     hint_bits = ''.join(format(byte, '08b') for byte in b'0xAI42')
     if bits.startswith(hint_bits):
         bits_after_hint = bits[len(hint_bits):]
@@ -200,7 +217,6 @@ def extract_message_from_bits(bits, max_length=24576):
             bytes_data = [int(bits_after_hint[j:j+8], 2) for j in range(0, max_bits, 8)]
             return None, bits_after_hint
     
-    # Try 32-bit length prefix
     if len(bits) >= 32:
         try:
             length = int(bits[:32], 2)
@@ -217,7 +233,6 @@ def extract_message_from_bits(bits, max_length=24576):
         except Exception:
             pass
     
-    # Fallback: Decode as UTF-8 until null or invalid sequence
     try:
         max_bits = min(len(bits), max_length * 8)
         max_bits = (max_bits // 8) * 8

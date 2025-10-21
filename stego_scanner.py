@@ -21,6 +21,7 @@ import torch.nn.functional as F
 import numpy as np
 from scipy.stats import entropy
 from PIL.ExifTags import TAGS
+import math
 
 # --- 1. CONFIGURATION AND MODEL DEFINITION ---
 
@@ -130,15 +131,15 @@ class StarlightTrainerModel(nn.Module):
         
         # Spatial Feature MLP
         self.sf_mlp = nn.Sequential(
-            nn.Linear(feature_dim, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(feature_dim, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(128, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(256, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
             nn.ReLU()
         )
         
@@ -158,9 +159,23 @@ class StarlightTrainerModel(nn.Module):
             nn.ReLU()
         )
         
-        # Fusion Block (512 + 128 + 256 = 896 input features)
+        # Gating Networks
+        self.gate_pd = nn.Sequential(
+            nn.Linear(feature_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+        self.gate_fd = nn.Sequential(
+            nn.Linear(feature_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+        
+        # Fusion Block (512 + 256 + 256 = 1024 input features)
         self.fusion = nn.Sequential(
-            nn.Linear(512 + 128 + 256, 512),
+            nn.Linear(512 + 256 + 256, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, 256),
@@ -169,21 +184,30 @@ class StarlightTrainerModel(nn.Module):
             nn.Linear(256, num_classes)
         )
 
-    def forward(self, image: torch.Tensor, features: torch.Tensor) -> torch.Tensor:
+    def forward(self, image: torch.Tensor, features: torch.Tensor, labels: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Spatial Features Path
+        sf_feat = self.sf_mlp(features)
+        
+        # Compute Gates
+        gate_pd = self.gate_pd(features)
+        gate_fd = self.gate_fd(features)
+        
         # Pixel Domain Path
         filtered = self.srm_conv(image)
-        pd_feat = self.pd_backbone(filtered).flatten(1)  # [Batch, 512]
-        
-        # Spatial Features Path
-        sf_feat = self.sf_mlp(features)  # [Batch, 128]
+        pd_feat = self.pd_backbone(filtered).flatten(1)
+        pd_feat_gated = pd_feat * gate_pd
         
         # Frequency Domain Path
         dct_img = self.dct2d(image)
-        fd_feat = self.fd_cnn(dct_img)  # [Batch, 256]
+        fd_feat = self.fd_cnn(dct_img)
+        fd_feat_gated = fd_feat * gate_fd
         
         # Concatenate and Fuse
-        concatenated = torch.cat([pd_feat, sf_feat, fd_feat], dim=1)  # [Batch, 896]
+        concatenated = torch.cat([pd_feat_gated, sf_feat, fd_feat_gated], dim=1)
         out = self.fusion(concatenated)
+        
+        if self.training:
+            return out, gate_pd, gate_fd
         return out
     
     def dct2d(self, x: torch.Tensor) -> torch.Tensor:
@@ -193,7 +217,7 @@ class StarlightTrainerModel(nn.Module):
             odd = y[..., 1::2].flip(-1)
             v = torch.cat([even, odd], dim=-1)
             Vc = torch.fft.fft(v, dim=-1)
-            k = torch.arange(N, dtype=x.dtype, device=x.device) * (np.pi / (2 * N))
+            k = torch.arange(N, dtype=x.dtype, device=x.device) * (math.pi / (2 * N))
             W_r = torch.cos(k)
             W_i = torch.sin(k)
             V = 2 * (Vc.real * W_r - Vc.imag * W_i)

@@ -19,6 +19,7 @@ ALL FIXES APPLIED (v6):
 ✓ CLI --limit parameter (was --num-images)
 ✓ Audio generation disabled (pending Maya compatibility)
 ✓ Clean code structure (no duplicates)
+✓ Sequential filename numbering per method
 """
 
 import sys
@@ -576,12 +577,19 @@ class ClaudeStegGenerator:
             print(f"Payload length: {len(payload_data)} bytes")
             print(f"{'='*60}\n")
             
+            # Track sequential numbering per method
+            method_counters = {method[0]: 0 for method in methods}
+            
             # Generate images
             for i in range(num_images):
                 img_type = image_types[i % len(image_types)]
                 method_name, file_ext, embed_func, extract_func = methods[i % len(methods)]
                 
-                base_filename = f"{payload_name}_{method_name}_{i:03d}"
+                # Use sequential counter for this method
+                method_idx = method_counters[method_name]
+                method_counters[method_name] += 1
+                
+                base_filename = f"{payload_name}_{method_name}_{method_idx:03d}"
                 
                 try:
                     # Generate clean image
@@ -623,7 +631,7 @@ class ClaudeStegGenerator:
                             method_payload = payload_data[:max_dct_bytes - 24]
                             truncation_marker = f" [TRUNCATED: {len(payload_data)} bytes]".encode('utf-8')
                             method_payload = method_payload + truncation_marker
-                            print(f"  ⓘ DCT payload truncated: {len(payload_data)} → {len(method_payload)} bytes (usable blocks: {usable_count})")
+                            print(f"  ⌙ DCT payload truncated: {len(payload_data)} → {len(method_payload)} bytes (usable blocks: {usable_count})")
 
                     
                     # Generate stego
@@ -699,6 +707,7 @@ if __name__ == "__main__":
     print("✓ CLI --limit parameter")
     print("✓ Audio generation disabled")
     print("✓ Clean code (no duplicates)")
+    print("✓ Sequential filename numbering per method")
     print("\nSteganography Techniques:")
     print("• Alpha Channel LSB (PNG) - Transparency-based")
     print("• Palette Index Manipulation (BMP) - Indexed color")
