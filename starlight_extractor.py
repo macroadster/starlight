@@ -12,112 +12,20 @@ from scipy.stats import entropy
 from scipy.fftpack import dct
 from PIL.ExifTags import TAGS
 
+# Import the two-stage model and the corresponding validation transform from trainer.py
+from trainer import StarlightTwoStage, transform_val as transform_rgba_val 
+
 try:
     import piexif
 except ImportError:
     piexif = None
     print("Warning: piexif not installed; EXIF extraction may be limited.")
 
-transform = transforms.Compose([
-    transforms.Resize(224),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-class Starlight(nn.Module):
-    def __init__(self, num_classes=7, feature_dim=13):
-        super(Starlight, self).__init__()
-        kernel = torch.tensor([[[ -1.,  2., -1.],
-                                [  2., -4.,  2.],
-                                [ -1.,  2., -1.]]]).repeat(3, 1, 1, 1)
-        self.srm_conv = nn.Conv2d(3, 3, kernel_size=3, padding=1, groups=3, bias=False)
-        self.srm_conv.weight = nn.Parameter(kernel, requires_grad=False)
-        resnet = models.resnet18(weights=None)
-        self.pd_backbone = nn.Sequential(*list(resnet.children())[:-1])
-        self.sf_mlp = nn.Sequential(
-            nn.Linear(feature_dim, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 256),
-            nn.ReLU()
-        )
-        self.fd_cnn = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(128, 256),
-            nn.ReLU()
-        )
-        self.gate_pd = nn.Sequential(
-            nn.Linear(feature_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
-        )
-        self.gate_fd = nn.Sequential(
-            nn.Linear(feature_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
-        )
-        self.fusion = nn.Sequential(
-            nn.Linear(512 + 256 + 256, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, num_classes)
-        )
-
-    def forward(self, image, features, labels=None):
-        sf_feat = self.sf_mlp(features)
-        gate_pd = self.gate_pd(features)
-        gate_fd = self.gate_fd(features)
-        filtered = self.srm_conv(image)
-        pd_feat = self.pd_backbone(filtered).flatten(1)
-        pd_feat_gated = pd_feat * gate_pd
-        dct_img = self.dct2d(image)
-        fd_feat = self.fd_cnn(dct_img)
-        fd_feat_gated = fd_feat * gate_fd
-        concatenated = torch.cat([pd_feat_gated, sf_feat, fd_feat_gated], dim=1)
-        out = self.fusion(concatenated)
-        if self.training:
-            return out, gate_pd, gate_fd
-        return out
-
-    def dct2d(self, x):
-        def dct1d(y):
-            N = y.size(-1)
-            even = y[..., ::2]
-            odd = y[..., 1::2].flip(-1)
-            v = torch.cat([even, odd], dim=-1)
-            Vc = torch.fft.fft(v, dim=-1)
-            k = torch.arange(N, dtype=x.dtype, device=x.device) * (math.pi / (2 * N))
-            W_r = torch.cos(k)
-            W_i = torch.sin(k)
-            V = 2 * (Vc.real * W_r - Vc.imag * W_i)
-            return V
-        dct_col = dct1d(x)
-        dct_col = dct_col.transpose(2, 3)
-        dct_row = dct1d(dct_col)
-        dct_row = dct_row.transpose(2, 3)
-        return dct_row
-
 def extract_features(path, img):
+    """
+    Extracts 15 statistical/structural features from the image file.
+    This function is updated to match the 15 features in trainer.py.
+    """
     width, height = img.size
     area = width * height if width * height > 0 else 1.0
     
@@ -137,18 +45,22 @@ def extract_features(path, img):
             tag_values = []
             for tag_id, value in exif_dict.items():
                 tag = TAGS.get(tag_id, tag_id)
+                # Feature: UserComment length
                 if tag == 'UserComment' and isinstance(value, bytes):
                     comment_length = min(len(value) / area, 1.0)
                 if isinstance(value, (bytes, str)):
                     tag_values.append(value if isinstance(value, bytes) else value.encode('utf-8'))
+            # Feature: EXIF entropy
             if tag_values:
                 lengths = [len(v) for v in tag_values]
-                hist = np.histogram(lengths, bins=10, range=(0, max(lengths or [1])))[0]
+                max_len = max(lengths or [1])
+                hist = np.histogram(lengths, bins=10, range=(0, max_len))[0]
                 exif_entropy = entropy(hist + 1e-10) / area if any(hist) else 0.0
         except:
             comment_length = 0.0
             exif_entropy = 0.0
     
+    # Features: Palette presence, length, and entropy
     palette_present = 1.0 if img.mode == 'P' else 0.0
     palette = img.getpalette()
     palette_length = len(palette) / 3 if palette else 0.0
@@ -158,6 +70,7 @@ def extract_features(path, img):
     else:
         palette_entropy_value = 0.0
     
+    # Feature: EOF length (for JPEG EOI)
     with open(path, 'rb') as f:
         data = f.read()
     if img.format == 'JPEG':
@@ -167,21 +80,31 @@ def extract_features(path, img):
         eof_length = 0.0
     eof_length_norm = min(eof_length / area, 1.0)
     
+    # Features: Alpha channel metrics
     has_alpha = 1.0 if img.mode in ('RGBA', 'LA', 'PA') else 0.0
     alpha_variance = 0.0
+    alpha_mean = 0.5 # Default to 0.5 for non-RGBA
+    alpha_unique_ratio = 0.0
+    
     if has_alpha and img.mode == 'RGBA':
         img_array = np.array(img)
         if img_array.shape[-1] == 4:
             alpha_channel = img_array[:, :, 3].astype(float)
-            alpha_variance = np.var(alpha_channel) / 65025.0
+            alpha_variance = np.var(alpha_channel) / 65025.0 # Max variance is 255^2 = 65025
+            alpha_mean = np.mean(alpha_channel) / 255.0
+            unique_alphas = len(np.unique(alpha_channel))
+            total_pixels = alpha_channel.size
+            alpha_unique_ratio = unique_alphas / min(total_pixels, 256)
     
+    # Features: File format indicators
     is_jpeg = 1.0 if img.format == 'JPEG' else 0.0
     is_png = 1.0 if img.format == 'PNG' else 0.0
     
     return np.array([
-        file_size_norm, exif_present, exif_length_norm, comment_length,
-        exif_entropy, palette_present, palette_length, palette_entropy_value,
-        eof_length_norm, has_alpha, alpha_variance, is_jpeg, is_png
+        file_size_norm, exif_present, exif_length_norm, comment_length, 
+        exif_entropy, palette_present, palette_length, palette_entropy_value, 
+        eof_length_norm, has_alpha, alpha_variance, alpha_mean, alpha_unique_ratio, 
+        is_jpeg, is_png # Total 15 features
     ], dtype=np.float32)
 
 def extract_message_from_bits(bits, max_length=24576):
@@ -522,17 +445,33 @@ extraction_functions = {
 }
 
 def predict(model, device, image_path, class_map):
+    """
+    Predicts the steganography type using the StarlightTwoStage model.
+    """
     model.eval()
-    img = Image.open(image_path).convert('RGB')
+    
+    # Open image and convert to RGBA for feature extraction and new model input
+    img = Image.open(image_path).convert('RGBA')
+    
+    # Extract the 15 features
     features = extract_features(image_path, img)
-    img = transform(img).unsqueeze(0).to(device)
-    features = torch.tensor(features).unsqueeze(0).to(device)
+    
+    # Apply the RGBA transform
+    img_tensor = transform_rgba_val(img).unsqueeze(0).to(device)
+    features_tensor = torch.tensor(features).unsqueeze(0).to(device)
+    
     with torch.no_grad():
-        outputs = model(img, features)
+        # The StarlightTwoStage model returns: (all_logits, normality_score, stego_type_logits)
+        all_logits, normality_score, stego_type_logits = model(img_tensor, features_tensor)
+        
+        # We use all_logits (7 classes: clean + 6 stego) for the final prediction
+        outputs = all_logits 
+        
         probs = F.softmax(outputs, dim=1).cpu().numpy()[0]
         pred_class = np.argmax(probs)
         pred_label = class_map.get(pred_class, 'unknown')
         confidence = probs[pred_class]
+        
     return pred_label, confidence, probs
 
 if __name__ == "__main__":
@@ -541,6 +480,8 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', default='best_model.pth', help="Path to the trained model file")
     parser.add_argument('--channel', default='all', choices=['all', 'red', 'green', 'blue'], help="Channel for LSB extraction")
     parser.add_argument('--clean_path', default=None, help="Path to the corresponding clean image for DCT extraction")
+    # Added new parameter for explicit algorithm choice
+    parser.add_argument('--extract_algo', default=None, choices=list(extraction_functions.keys()), help="Explicitly specify the stego algorithm to attempt extraction for, overriding the model's prediction.")
     args = parser.parse_args()
 
     class_map = {0: 'clean', 1: 'alpha', 2: 'palette', 3: 'dct', 4: 'lsb', 5: 'eoi', 6: 'exif'}
@@ -553,7 +494,8 @@ if __name__ == "__main__":
         device = torch.device('cpu')
     print(f"Using device: {device}")
 
-    model = Starlight(num_classes=7, feature_dim=13)
+    # Instantiate the new StarlightTwoStage model. num_stego_classes=6 and feature_dim=15.
+    model = StarlightTwoStage(num_stego_classes=6, feature_dim=15)
     try:
         model.load_state_dict(torch.load(args.model_path, map_location=device))
     except Exception as e:
@@ -568,13 +510,19 @@ if __name__ == "__main__":
         
         clean_path = args.clean_path
         if clean_path is None:
+            # Attempt to find a corresponding clean image automatically
             clean_path = image_path.replace('/stego/', '/clean/')
             if not os.path.exists(clean_path):
                 clean_path = None
         
         pred_label, confidence, probs = predict(model, device, image_path, class_map)
         
+        # Determine the extraction algorithm to use: explicitly specified or predicted
+        algo_to_try = args.extract_algo if args.extract_algo else pred_label
+
         print(f"\nAnalysis for {image_path}:")
+        
+        # Print prediction results
         if pred_label == 'clean':
             print("  Predicted: Clean (no steganography detected)")
             print(f"  Confidence: {confidence:.4f}")
@@ -585,35 +533,35 @@ if __name__ == "__main__":
         print("  All Probabilities:")
         for idx, label in class_map.items():
             print(f"    {label}: {probs[idx]:.4f}")
-        
-        if pred_label != 'clean':
-            extractor = extraction_functions.get(pred_label)
+
+        # Only attempt extraction if the determined algorithm is a stego algorithm
+        if algo_to_try != 'clean' and algo_to_try in extraction_functions:
+            extractor = extraction_functions.get(algo_to_try)
+            
+            # Print which algorithm is being used
+            if args.extract_algo:
+                print(f"  Attempting extraction with explicitly specified algorithm: {algo_to_try}")
+            else:
+                print(f"  Attempting extraction with predicted algorithm: {algo_to_try}")
+                
             if extractor:
-                if pred_label == 'lsb':
+                # Call the specific extractor function
+                if algo_to_try == 'lsb':
                     message, bits = extractor(image_path, channel=args.channel)
-                elif pred_label == 'dct':
+                elif algo_to_try == 'dct':
                     message, bits = extractor(image_path, clean_path=clean_path)
                 else:
                     message, bits = extractor(image_path)
+                
                 if message:
                     print("  Extracted Message:")
                     print(f"    {message}")
                 else:
                     print("  No message extracted or extraction failed.")
-                if not message:
-                    print("  Trying alternative algorithms:")
-                    for algo, alt_extractor in extraction_functions.items():
-                        if algo != pred_label:
-                            print(f"    Trying {algo}...")
-                            if algo == 'lsb':
-                                alt_message, alt_bits = alt_extractor(image_path, channel=args.channel)
-                            elif algo == 'dct':
-                                alt_message, alt_bits = alt_extractor(image_path, clean_path=clean_path)
-                            else:
-                                alt_message, alt_bits = alt_extractor(image_path)
-                            if alt_message:
-                                print(f"    Extracted Message with {algo}:")
-                                print(f"      {alt_message}")
-                                break
             else:
-                print("  Extraction not implemented for this algorithm.")
+                print(f"  Extraction not implemented for algorithm: {algo_to_try}.")
+        elif algo_to_try != 'clean' and algo_to_try not in extraction_functions:
+             print(f"  Error: Explicitly specified algorithm '{algo_to_try}' is not a valid extraction type.")
+        else:
+            # Skip extraction for 'clean' prediction
+            pass
