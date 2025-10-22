@@ -1,52 +1,36 @@
 #!/usr/bin/env python3
-# =============================================================
-# Project Starlight - Steganography Scanner
-# Detecting Hidden Data and Identifying Algorithms in Images
-#
-# This script uses the Trainer Model architecture to predict the 
-# presence and type of steganography in a folder of images.
-# =============================================================
-
 import os
+import sys
+import importlib.util
 import torch
-import argparse
-import json
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, models
-from PIL import Image
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms
+from PIL import Image
 import numpy as np
 from scipy.stats import entropy
+import argparse
 from PIL.ExifTags import TAGS
-import math
 
-# --- 1. CONFIGURATION AND MODEL DEFINITION ---
-
-# Class configuration to match trainer.py's class_map
-ALGO_NAMES: Dict[int, str] = {
-    0: 'clean',
-    1: 'alpha',
-    2: 'palette',
-    3: 'dct',
-    4: 'lsb',
-    5: 'eoi',
-    6: 'exif',
-}
-NUM_CLASSES = len(ALGO_NAMES)  # 7 classes
-
-# Image Transform to match trainer.py
-StegoTransform = transforms.Compose([
+# Updated transform for RGBA input, matching trainer.py
+transform = transforms.Compose([
     transforms.Resize(224),
     transforms.CenterCrop(224),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406, 0.5], std=[0.229, 0.224, 0.225, 0.5])
 ])
 
-def extract_features(path: str, img: Image.Image) -> np.ndarray:
-    """Extract 13 features to match trainer.py's CustomDataset.extract_features."""
+def load_model_class(trainer_path='trainer.py'):
+    """Dynamically load the StarlightTwoStage model class from trainer.py."""
+    spec = importlib.util.spec_from_file_location("trainer", trainer_path)
+    if spec is None:
+        raise ImportError(f"Could not load trainer.py from {trainer_path}")
+    trainer_module = importlib.util.module_from_spec(spec)
+    sys.modules["trainer"] = trainer_module
+    spec.loader.exec_module(trainer_module)
+    return trainer_module.StarlightTwoStage
+
+def extract_features(path, img):
     width, height = img.size
     area = width * height if width * height > 0 else 1.0
     
@@ -98,11 +82,18 @@ def extract_features(path: str, img: Image.Image) -> np.ndarray:
     
     has_alpha = 1.0 if img.mode in ('RGBA', 'LA', 'PA') else 0.0
     alpha_variance = 0.0
+    alpha_mean = 0.5
+    alpha_unique_ratio = 0.0
+    
     if has_alpha and img.mode == 'RGBA':
         img_array = np.array(img)
         if img_array.shape[-1] == 4:
             alpha_channel = img_array[:, :, 3].astype(float)
             alpha_variance = np.var(alpha_channel) / 65025.0
+            alpha_mean = np.mean(alpha_channel) / 255.0
+            unique_alphas = len(np.unique(alpha_channel))
+            total_pixels = alpha_channel.size
+            alpha_unique_ratio = unique_alphas / min(total_pixels, 256)
     
     is_jpeg = 1.0 if img.format == 'JPEG' else 0.0
     is_png = 1.0 if img.format == 'PNG' else 0.0
@@ -110,338 +101,181 @@ def extract_features(path: str, img: Image.Image) -> np.ndarray:
     return np.array([
         file_size_norm, exif_present, exif_length_norm, comment_length,
         exif_entropy, palette_present, palette_length, palette_entropy_value,
-        eof_length_norm, has_alpha, alpha_variance, is_jpeg, is_png
+        eof_length_norm, has_alpha, alpha_variance, alpha_mean, alpha_unique_ratio,
+        is_jpeg, is_png
     ], dtype=np.float32)
 
-class StarlightTrainerModel(nn.Module):
-    """Model structure aligned with trainer.py's Starlight model."""
-    def __init__(self, num_classes=NUM_CLASSES, feature_dim=13):
-        super(StarlightTrainerModel, self).__init__()
-        
-        # SRM Convolution
-        kernel = torch.tensor([[[ -1.,  2., -1.],
-                                [  2., -4.,  2.],
-                                [ -1.,  2., -1.]]]).repeat(3, 1, 1, 1)
-        self.srm_conv = nn.Conv2d(3, 3, kernel_size=3, padding=1, groups=3, bias=False)
-        self.srm_conv.weight = nn.Parameter(kernel, requires_grad=False)
-        
-        # Pixel Domain Backbone (ResNet-18)
-        resnet = models.resnet18(weights=None)
-        self.pd_backbone = nn.Sequential(*list(resnet.children())[:-1])
-        
-        # Spatial Feature MLP
-        self.sf_mlp = nn.Sequential(
-            nn.Linear(feature_dim, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 256),
-            nn.ReLU()
-        )
-        
-        # Frequency Domain CNN
-        self.fd_cnn = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(128, 256),
-            nn.ReLU()
-        )
-        
-        # Gating Networks
-        self.gate_pd = nn.Sequential(
-            nn.Linear(feature_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
-        )
-        self.gate_fd = nn.Sequential(
-            nn.Linear(feature_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
-        )
-        
-        # Fusion Block (512 + 256 + 256 = 1024 input features)
-        self.fusion = nn.Sequential(
-            nn.Linear(512 + 256 + 256, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, num_classes)
-        )
-
-    def forward(self, image: torch.Tensor, features: torch.Tensor, labels: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # Spatial Features Path
-        sf_feat = self.sf_mlp(features)
-        
-        # Compute Gates
-        gate_pd = self.gate_pd(features)
-        gate_fd = self.gate_fd(features)
-        
-        # Pixel Domain Path
-        filtered = self.srm_conv(image)
-        pd_feat = self.pd_backbone(filtered).flatten(1)
-        pd_feat_gated = pd_feat * gate_pd
-        
-        # Frequency Domain Path
-        dct_img = self.dct2d(image)
-        fd_feat = self.fd_cnn(dct_img)
-        fd_feat_gated = fd_feat * gate_fd
-        
-        # Concatenate and Fuse
-        concatenated = torch.cat([pd_feat_gated, sf_feat, fd_feat_gated], dim=1)
-        out = self.fusion(concatenated)
-        
-        if self.training:
-            return out, gate_pd, gate_fd
-        return out
+def scan_directory(model, device, directory, clean_threshold, class_map, batch_size=32):
+    """Scan a directory of images for steganography."""
+    image_paths = []
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+                image_paths.append(os.path.join(root, file))
     
-    def dct2d(self, x: torch.Tensor) -> torch.Tensor:
-        def dct1d(y):
-            N = y.size(-1)
-            even = y[..., ::2]
-            odd = y[..., 1::2].flip(-1)
-            v = torch.cat([even, odd], dim=-1)
-            Vc = torch.fft.fft(v, dim=-1)
-            k = torch.arange(N, dtype=x.dtype, device=x.device) * (math.pi / (2 * N))
-            W_r = torch.cos(k)
-            W_i = torch.sin(k)
-            V = 2 * (Vc.real * W_r - Vc.imag * W_i)
-            return V
-        dct_col = dct1d(x)
-        dct_col = dct_col.transpose(2, 3)
-        dct_row = dct1d(dct_col)
-        dct_row = dct_row.transpose(2, 3)
-        return dct_row
-
-class ImageDataset(Dataset):
-    """Dataset for loading images and extracting features."""
-    def __init__(self, image_paths: List[Path], transform=None):
-        self.image_paths = image_paths
-        self.transform = transform
-
-    def __len__(self) -> int:
-        return len(self.image_paths)
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, str]:
-        img_path = self.image_paths[idx]
-        try:
-            image = Image.open(img_path).convert('RGB')
-            features = extract_features(str(img_path), image)
-        except Exception:
-            # Handle unreadable/corrupt files
-            return torch.zeros(3, 224, 224), torch.zeros(13, dtype=torch.float32), str(img_path)
+    if not image_paths:
+        print(f"No images found in {directory}")
+        return []
+    
+    results = []
+    discrepancies = {'clean_low_prob': 0, 'stego_high_prob': 0}
+    model.eval()
+    
+    # Process in batches
+    for i in range(0, len(image_paths), batch_size):
+        batch_paths = image_paths[i:i + batch_size]
+        batch_images = []
+        batch_features = []
+        valid_paths = []
         
-        if self.transform:
-            image = self.transform(image)
+        for path in batch_paths:
+            try:
+                # Open and preserve original format
+                img_original = Image.open(path)
+                features = extract_features(path, img_original)
+                
+                # Convert to RGBA for model
+                img_rgba = img_original.convert('RGBA')
+                img_tensor = transform(img_rgba)
+                
+                batch_images.append(img_tensor)
+                batch_features.append(torch.tensor(features))
+                valid_paths.append(path)
+            except Exception as e:
+                print(f"Error processing {path}: {e}")
+                continue
         
-        return image, torch.tensor(features, dtype=torch.float32), str(img_path)
-
-# --- 2. SCANNER CLASS ---
-
-class StegoScanner:
-    def __init__(self, model_path: str, device: str = 'auto', batch_size: int = 16):
-        if device == 'auto':
-            if torch.backends.mps.is_available():
-                self.device = torch.device("mps")
-            elif torch.cuda.is_available():
-                self.device = torch.device("cuda")
-            else:
-                self.device = torch.device("cpu")
-        else:
-            self.device = torch.device(device)
-            
-        self.batch_size = batch_size
-        self.model = StarlightTrainerModel(num_classes=NUM_CLASSES, feature_dim=13).to(self.device)
-        self.load_model(model_path)
-        self.model.eval()
-        self.transform = StegoTransform
-        self.algo_names = ALGO_NAMES
-        self.num_classes = len(ALGO_NAMES)
-
-    def load_model(self, model_path: str):
-        """Loads the pre-trained model weights."""
-        print(f"Loading model from {model_path}...")
-        try:
-            state_dict = torch.load(model_path, map_location=self.device)
-            self.model.load_state_dict(state_dict, strict=True)
-            print("Model loaded successfully.")
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Model file not found at: {model_path}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to load model state: {e}. Ensure the model structure matches the trained model.")
-
-    def scan_folder(self, folder_path: str, threshold: float = 0.5, output_json: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Scans all supported images in a folder and returns results."""
-        image_paths = list(Path(folder_path).glob('**/*'))
-        image_paths = [p for p in image_paths if p.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp']]
+        if not batch_images:
+            continue
         
-        if not image_paths:
-            print(f"No supported images found in: {folder_path}")
-            return []
-
-        dataset = ImageDataset(image_paths, transform=self.transform)
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
-        
-        results: List[Dict[str, Any]] = []
+        # Stack batch
+        batch_images = torch.stack(batch_images).to(device)
+        batch_features = torch.stack(batch_features).to(device)
         
         with torch.no_grad():
-            for i, (images, features, paths) in enumerate(dataloader):
-                images = images.to(self.device)
-                features = features.to(self.device)
-                
-                # Forward pass
-                outputs = self.model(images, features)
-                probabilities = F.softmax(outputs, dim=1)
-                
-                # Process batch results
-                for prob, path in zip(probabilities, paths):
-                    prob_clean = prob[0].item()
-                    prob_stego_only = prob[1:]
-                    prob_max_stego, pred_stego_idx = torch.max(prob_stego_only, dim=0)
-                    
-                    overall_max_prob, overall_max_idx = torch.max(prob, dim=0)
-                    predicted_label = self.algo_names[overall_max_idx.item()]
-                    confidence = overall_max_prob.item()
-                    is_flagged = (prob_clean < threshold) and (overall_max_idx.item() != 0)
-                    
-                    result = {
-                        'path': path,
-                        'is_stego': is_flagged,
-                        'prediction': predicted_label,
-                        'confidence': round(confidence, 4),
-                        'clean_confidence': round(prob_clean, 4),
-                        'probabilities': {self.algo_names[i]: round(p.item(), 4) for i, p in enumerate(prob)},
-                    }
-                    results.append(result)
-                    
-                print(f"Processed batch {i+1} of {len(dataloader)}", end='\r')
-
-        # Sort results by stego confidence
-        def get_stego_conf(r):
-            stego_probs = [v for k, v in r['probabilities'].items() if k != 'clean']
-            return max(stego_probs) if stego_probs else 0.0
-
-        results.sort(key=get_stego_conf, reverse=True)
+            all_logits, normality_score, stego_type_logits = model(batch_images, batch_features)
+            probs = F.softmax(all_logits, dim=1).cpu().numpy()
+            normality_probs = normality_score.cpu().numpy()
         
-        if output_json:
-            with open(output_json, 'w') as f:
-                json.dump(results, f, indent=4)
-            print(f"\nResults saved to {output_json}")
-
-        return results
-
-    def print_results(self, results: List[Dict[str, Any]], threshold: float, show_all: bool, top: Optional[int]):
-        """Prints a human-readable summary of the scan results."""
-        flagged_count = sum(1 for r in results if r['is_stego'])
+        # Process results
+        for path, prob, norm_prob in zip(valid_paths, probs, normality_probs):
+            clean_prob = norm_prob.item()  # Use normality score for clean probability
+            pred_class = np.argmax(prob)
+            pred_label = class_map[pred_class]
+            
+            # Flag as stego only if the predicted class is not clean
+            is_stego = pred_class != 0
+            
+            # Track discrepancies
+            if is_stego and clean_prob > clean_threshold:
+                discrepancies['stego_high_prob'] += 1
+            elif not is_stego and clean_prob < clean_threshold:
+                discrepancies['clean_low_prob'] += 1
+            
+            results.append({
+                'path': path,
+                'is_stego': is_stego,
+                'clean_prob': clean_prob,
+                'pred_class': pred_label,
+                'pred_conf': prob[pred_class],
+                'all_probs': prob
+            })
         
-        print("\n\n--- SCAN SUMMARY ---")
-        print(f"Total Images Scanned: {len(results)}")
-        print(f"Images Flagged as Stego: {flagged_count} (Clean Prob. Threshold: {threshold:.2f})")
-        print("--------------------")
-
-        display_results = [r for r in results if r['is_stego']] if not show_all else results
-        
-        if top is not None:
-            display_results = display_results[:top]
-
-        if not display_results:
-            print("No images flagged for steganography above the confidence threshold.")
-            return
-
-        print(f"\n--- Detailed Results ({len(display_results)} images displayed) ---")
-        
-        for i, res in enumerate(display_results):
-            status = "✅ CLEAN" if res['prediction'] == 'clean' else "🚨 STEGO"
-            stego_probs = [(name, prob) for name, prob in res['probabilities'].items() if name != 'clean']
-            stego_probs.sort(key=lambda x: x[1], reverse=True)
-            top_stego_algo = stego_probs[0][0] if stego_probs else 'N/A'
-            top_stego_conf = stego_probs[0][1] if stego_probs else 0.0
-
-            print(f"\n[{i+1}] {Path(res['path']).name}")
-            print(f"  Status: {status}")
-            print(f"  Overall Prediction: {res['prediction'].upper()} (Conf: {res['confidence']:.4f})")
-            print(f"  Most Likely Stego Type: {top_stego_algo.upper()} (Conf: {top_stego_conf:.4f})")
-
-# --- 3. MAIN EXECUTION ---
+        print(f"\rProcessed batch {(i // batch_size) + 1} of {(len(image_paths) + batch_size - 1) // batch_size}", end='')
+    
+    print()  # New line after progress
+    return results, discrepancies
 
 def main():
-    """Main function to parse arguments and run the Stego Scanner."""
-    parser = argparse.ArgumentParser(
-        description="Project Starlight Steganography Scanner: Detects and classifies hidden data algorithms in images."
-    )
-    
-    parser.add_argument('input', type=str, help="Path to the folder containing images to scan.")
-    parser.add_argument('--model', type=str, required=True, help="Path to the trained Starlight model weights file (.pth).")
-    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda', 'mps'],
-                       help="Device to use for inference ('cpu', 'cuda', 'mps', or 'auto'). Default: auto")
-    parser.add_argument('--threshold', type=float, default=0.8,
-                       help="Probability threshold for the 'clean' class. If clean_prob < threshold, it's flagged as stego.")
-    parser.add_argument('--batch-size', type=int, default=32,
-                       help="Batch size for parallel processing during inference.")
-    parser.add_argument('--output', type=str, default=None,
-                       help="Save results to JSON file.")
-    parser.add_argument('--show-all', action='store_true',
-                       help="Show results for all images, not just flagged ones.")
-    parser.add_argument('--top', type=int, default=None,
-                       help="Show only top N images by stego probability.")
-    
+    parser = argparse.ArgumentParser(description="Project Starlight - Steganography Scanner")
+    parser.add_argument('directory', help="Directory containing images to scan")
+    parser.add_argument('--model', default='best_model.pth', help="Path to trained model")
+    parser.add_argument('--threshold', type=float, default=0.8, 
+                       help="Clean probability threshold (default: 0.8)")
+    parser.add_argument('--batch-size', type=int, default=32, help="Batch size for processing")
+    parser.add_argument('--verbose', action='store_true', default=False, 
+                       help="Print detailed results for all images (default: False, shows only summary)")
+    parser.add_argument('--trainer-path', default='trainer.py', 
+                       help="Path to trainer.py containing the model definition (default: trainer.py)")
     args = parser.parse_args()
-
-    print("="*80)
+    
+    print("=" * 80)
     print("Project Starlight - Steganography Scanner")
-    print("Unified Detection & Algorithm Classification")
-    print("="*80)
-
+    print("Two-Stage Detection & Algorithm Classification")
+    print("=" * 80)
+    
+    # Load model class from trainer.py
+    print(f"Loading model class from {args.trainer_path}...")
     try:
-        scanner = StegoScanner(
-            model_path=args.model,
-            device=args.device,
-            batch_size=args.batch_size
-        )
+        StarlightTwoStage = load_model_class(args.trainer_path)
     except Exception as e:
-        print(f"\n❌ Error initializing scanner: {e}")
-        if "Model file not found" in str(e):
-            print("\nACTION REQUIRED: Please ensure you provide the correct path to your *trained model weights* file (e.g., --model best_model.pth).")
-        return 1
-
-    print(f"Using device: {scanner.device.type}")
-    print(f"Model: StarlightTrainerModel ({scanner.num_classes} classes)")
-    print(f"Model classes: {', '.join(scanner.algo_names.values())}")
+        print(f"Error loading model class from {args.trainer_path}: {e}")
+        sys.exit(1)
+    
+    # Load model weights
+    print(f"Loading model weights from {args.model}...")
+    class_map = {0: 'clean', 1: 'alpha', 2: 'palette', 3: 'dct', 4: 'lsb', 5: 'eoi', 6: 'exif'}
+    
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+    
+    try:
+        model = StarlightTwoStage(num_stego_classes=6, feature_dim=15)
+        model.load_state_dict(torch.load(args.model, map_location=device))
+        print("Model loaded successfully.")
+    except Exception as e:
+        print(f"Error loading model weights: {e}")
+        sys.exit(1)
+    
+    model.to(device)
+    model.eval()
+    
+    print(f"Using device: {device}")
+    print(f"Model: StarlightTwoStage (7 classes)")
+    print(f"Model classes: {', '.join(class_map.values())}")
     print(f"Clean Probability Threshold: {args.threshold}")
     
-    try:
-        results = scanner.scan_folder(
-            args.input, 
-            threshold=args.threshold,
-            output_json=args.output
-        )
-    except Exception as e:
-        print(f"\n❌ Error during scanning: {e}")
-        return 1
+    # Scan directory
+    results, discrepancies = scan_directory(model, device, args.directory, args.threshold, class_map, args.batch_size)
     
-    scanner.print_results(
-        results, 
-        threshold=args.threshold,
-        show_all=args.show_all,
-        top=args.top
-    )
+    if not results:
+        print("\nNo images processed.")
+        return
     
-    return 0
+    # Summary
+    total = len(results)
+    flagged = sum(1 for r in results if r['is_stego'])
+    
+    print("\n--- SCAN SUMMARY ---")
+    print(f"Total Images Scanned: {total}")
+    print(f"Images Flagged as Stego: {flagged} (Clean Prob. Threshold: {args.threshold:.2f})")
+    print(f"Discrepancies Detected:")
+    print(f"  Predicted Clean with Low Clean Probability (< {args.threshold:.2f}): {discrepancies['clean_low_prob']}")
+    print(f"  Predicted Stego with High Clean Probability (> {args.threshold:.2f}): {discrepancies['stego_high_prob']}")
+    print("-" * 20)
+    
+    # Detailed results only if verbose is True
+    if args.verbose:
+        print(f"\n--- Detailed Results for All Images ({total} images) ---\n")
+        for idx, result in enumerate(results, 1):
+            status = "🚨 STEGO" if result['is_stego'] else "✓ CLEAN"
+            print(f"[{idx}] {os.path.basename(result['path'])}")
+            print(f"  Status: {status}")
+            print(f"  Overall Prediction: {result['pred_class'].upper()} (Conf: {result['pred_conf']:.4f})")
+            
+            if result['is_stego']:
+                # Find highest non-clean class
+                stego_probs = result['all_probs'][1:]
+                stego_idx = np.argmax(stego_probs) + 1
+                stego_type = class_map[stego_idx]
+                print(f"  Most Likely Stego Type: {stego_type.upper()} (Conf: {result['all_probs'][stego_idx]:.4f})")
+            else:
+                print(f"  Clean Confidence: {result['clean_prob']:.4f}")
+            print()
 
 if __name__ == "__main__":
     main()
