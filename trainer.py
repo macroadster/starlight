@@ -285,7 +285,6 @@ class StarlightTwoStage(nn.Module):
             return normality_score
         
         # ============== STAGE 2: Stego Type Classification ==============
-        # Compute features for type classification
         filtered = self.srm_conv(image)
         pd_feat = self.pd_backbone(filtered).flatten(1)
         
@@ -298,19 +297,11 @@ class StarlightTwoStage(nn.Module):
         concatenated = torch.cat([pd_feat, sf_feat, fd_feat], dim=1)
         stego_type_logits = self.type_fusion(concatenated)  # [batch, 6]
         
-        # IMPROVED COMBINATION: Use logits, not weighted probabilities
-        # This allows Stage 2 to override Stage 1 for subtle stego
-        
-        # Convert normality score to logit scale
+        # Combine as: [clean_logit, stego_type_logits]
+        temperature = 0.5  # Reduced to balance clean/stego logits
         eps = 1e-7
         normality_logit = torch.log(normality_score + eps) - torch.log(1 - normality_score + eps)
-        
-        # Combine as: [clean_logit, stego_type_logits]
-        # Use temperature scaling to balance - higher temp = more balanced
-        temperature = 1.5
         clean_logit = normality_logit * temperature
-        
-        # Stack all logits
         all_logits = torch.cat([clean_logit, stego_type_logits], dim=1)  # [batch, 7]
         
         return all_logits, normality_score, stego_type_logits
@@ -408,7 +399,7 @@ if __name__ == "__main__":
                 overall_loss = F.cross_entropy(outputs, labels_batch)
                 
                 # Rebalanced: Stage 1 gets highest weight to learn anomaly detection properly
-                loss = 1.0 * stage1_loss + 0.7 * stage2_loss + 0.3 * overall_loss
+                loss = 1.5 * stage1_loss + 0.7 * stage2_loss + 0.3 * overall_loss  # Increased stage1_loss weight
                 
                 loss.backward()
                 optimizer.step()
@@ -457,7 +448,7 @@ if __name__ == "__main__":
                     
                     overall_loss = F.cross_entropy(outputs, labels_batch)
                     
-                    loss = 1.0 * stage1_loss + 0.7 * stage2_loss + 0.3 * overall_loss
+                    loss = 1.5 * stage1_loss + 0.7 * stage2_loss + 0.3 * overall_loss  # Consistent with training
                     val_loss += loss.item()
                     
                     preds = outputs.argmax(1).cpu().tolist()
@@ -503,6 +494,7 @@ if __name__ == "__main__":
         # Save condition: balanced requirements
         min_stego_acc = np.min([per_class_acc[i] for i in range(1, 7)])
         save_condition = (clean_recall > 0.60 and  # More realistic
+                         clean_precision > 0.80 and  # Added to reduce false positives
                          stego_recall > 0.80 and 
                          min_stego_acc > 0.50 and 
                          bal_acc > 0.75 and  # Add balanced accuracy requirement
@@ -519,6 +511,8 @@ if __name__ == "__main__":
             reasons = []
             if clean_recall <= 0.60:
                 reasons.append(f"Clean recall: {clean_recall:.4f} ≤ 0.60")
+            if clean_precision <= 0.80:
+                reasons.append(f"Clean precision: {clean_precision:.4f} ≤ 0.80")
             if stego_recall <= 0.80:
                 reasons.append(f"Stego recall: {stego_recall:.4f} ≤ 0.80")
             if min_stego_acc <= 0.50:
