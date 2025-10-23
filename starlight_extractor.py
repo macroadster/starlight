@@ -270,17 +270,17 @@ def extract_bits_by_strategy(img, strategy, max_bits):
                 if i >= max_bits:
                     break
                 bits += str(val & 1)
-    
+
     elif strategy == 'alpha':
         if img.mode != 'RGBA':
             return ''
         data = np.array(img)
         alpha_data = data[:, :, 3].flatten()
         for i, val in enumerate(alpha_data):
-            if i >= max_bits:
+           if i >= max_bits:
                 break
-            bits += str(val & 1)
-    
+           bits += str(val & 1)
+ 
     return bits
 
 def calculate_message_confidence(message):
@@ -332,16 +332,12 @@ def extract_lsb(image_path, channel='all', max_bits=1000000):
         message, remaining = extract_message_from_bits(bits)
         if message and len(message) > 10:
             return message, remaining
-    
+
+    # Use the robust strategy extraction for auto-detection
     return extract_lsb_strategy(image_path, strategy='auto', channel=channel, max_bits=max_bits)
 
 def extract_alpha(image_path):
-    img = Image.open(image_path)
-    if img.mode != 'RGBA':
-        return None, None
-    data = np.array(img)[:, :, 3]
-    bits = ''.join(bin(value)[-1] for value in data.flatten())
-    return extract_message_from_bits(bits)
+    return extract_lsb_strategy(image_path, strategy='alpha')
 
 def extract_palette(image_path):
     img = Image.open(image_path)
