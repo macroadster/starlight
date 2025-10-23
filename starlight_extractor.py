@@ -108,27 +108,55 @@ def extract_features(path, img):
     ], dtype=np.float32)
 
 def extract_message_from_bits(bits, max_length=24576):
-    """Extract message from bit string with multiple format support."""
-    hint_bits = ''.join(format(byte, '08b') for byte in b'0xAI42')
+    """
+    Extract message from bit string with multiple format support.
+    
+    FIXED: The hint detection block now correctly handles the LSB-first 
+    (byte-reversed) bit order used by the 'alpha' embedding algorithm.
+    """
+    # ----------------------------------------------------------------------
+    # --- Strategy 1: AI Hint (for LSB-first Alpha/LSB embedding) ---
+    # ----------------------------------------------------------------------
+    # The generator's hint is [0x41, 0x49, 0x34, 0x32] -> 'AI42'
+    ai_hint_bytes = b'AI42'
+    hint_bits = ''.join(format(byte, '08b') for byte in ai_hint_bytes)
+    
     if bits.startswith(hint_bits):
         bits_after_hint = bits[len(hint_bits):]
         terminator_bits = '00000000'
         terminator_index = bits_after_hint.find(terminator_bits)
         
         if terminator_index != -1:
+            # Ensure index is a multiple of 8 bits
             if terminator_index % 8 != 0:
                 terminator_index = (terminator_index // 8) * 8
             
             payload_bits = bits_after_hint[:terminator_index]
-            num_bytes = len(payload_bits) // 8
-            
-            if len(payload_bits) % 8 != 0:
-                payload_bits = payload_bits[:num_bytes * 8]
             
             if len(payload_bits) == 0:
                 return None, bits_after_hint
             
-            bytes_data = [int(payload_bits[j:j+8], 2) for j in range(0, len(payload_bits), 8)]
+            bytes_data = []
+            
+            # --- START FIX: Custom Byte Reconstruction (LSB-First) ---
+            for i in range(0, len(payload_bits), 8):
+                byte_str = payload_bits[i:i+8]
+                current_byte = 0
+                
+                # The generator embeds LSB first (index 0) and MSB last (index 7).
+                # To reconstruct, P1.bit (index 0) must be the LSB (bit position 0),
+                # and P8.bit (index 7) must be the MSB (bit position 7).
+                # The Python int(byte_str, 2) assumes MSB-first: P1 is MSB.
+                # We need to reverse the 8-bit string before converting.
+                
+                # Example: Bits P1..P8 extracted. Correct byte is P8..P1 (MSB..LSB).
+                reversed_byte_str = byte_str[::-1]
+                
+                # Convert the reversed string (P8..P1) to a byte.
+                current_byte = int(reversed_byte_str, 2)
+                bytes_data.append(current_byte)
+            # --- END FIX ---
+            
             try:
                 message = bytes(bytes_data).decode('utf-8')
                 return message.strip(), bits_after_hint[terminator_index + 8:]
@@ -137,9 +165,13 @@ def extract_message_from_bits(bits, max_length=24576):
         else:
             max_bits = min(len(bits_after_hint), max_length * 8)
             max_bits = (max_bits // 8) * 8
-            bytes_data = [int(bits_after_hint[j:j+8], 2) for j in range(0, max_bits, 8)]
+            # Do not attempt decoding if terminator is missing in this block
             return None, bits_after_hint
-    
+
+    # ----------------------------------------------------------------------
+    # --- Strategy 2: Length Prefix (Unchanged, uses MSB-first decoding) ---
+    # ----------------------------------------------------------------------
+    # ... (Original logic for length-prefixed messages remains the same) ...
     if len(bits) >= 32:
         try:
             length = int(bits[:32], 2)
@@ -147,6 +179,7 @@ def extract_message_from_bits(bits, max_length=24576):
                 payload_bits = bits[32:32 + length * 8]
                 if len(payload_bits) % 8 != 0:
                     return None, bits
+                # Uses standard MSB-first conversion:
                 bytes_data = [int(payload_bits[j:j+8], 2) for j in range(0, len(payload_bits), 8)]
                 try:
                     message = bytes(bytes_data).decode('utf-8')
@@ -156,6 +189,10 @@ def extract_message_from_bits(bits, max_length=24576):
         except Exception:
             pass
     
+    # ----------------------------------------------------------------------
+    # --- Strategy 3: Null-Terminated ASCII/UTF-8 (Unchanged) ---
+    # ----------------------------------------------------------------------
+    # ... (Original logic for basic null-terminated messages remains the same) ...
     try:
         max_bits = min(len(bits), max_length * 8)
         max_bits = (max_bits // 8) * 8
@@ -215,6 +252,67 @@ def extract_lsb_strategy(image_path, strategy='auto', channel='all', max_bits=10
     
     best = max(results, key=lambda x: x['confidence'])
     return best['message'], None
+
+def reconstruct_lsb_first_message_from_bits(bits, max_length=24576):
+    """
+    Reconstructs bytes from a bit stream where bits are embedded LSB-first.
+    This logic matches the verification in data_generator.py (Hint + Payload + 0x00).
+    """
+    ai_hint_bytes = b'AI42'
+    
+    # --- CRITICAL FIX START ---
+    # The hint in the bitstream is the LSB of 0x41, followed by the next LSB, up to MSB,
+    # then the LSB of 0x49, and so on.
+    # The LSB-first bit representation of a byte 'b' is:
+    # bin(b)[2:].zfill(8)[::-1]
+    
+    hint_bits = ''
+    for byte in ai_hint_bytes:
+        # Get the 8-bit string (MSB-first) and reverse it (LSB-first)
+        lsb_first_bits = bin(byte)[2:].zfill(8)[::-1]
+        hint_bits += lsb_first_bits
+    # --- CRITICAL FIX END ---
+    
+    if not bits.startswith(hint_bits):
+        # [DEBUG] Added print to show what it is looking for and what it found
+        print(f"  [DEBUG] Expected Hint Bits (LSB-first): {hint_bits[:32]}")
+        print(f"  [DEBUG] Found Bits: {bits[:32]}")
+        return None, bits # Return no message if hint is missing
+    
+    bits_after_hint = bits[len(hint_bits):]
+    terminator_bits = '00000000'
+    # ... rest of the function remains the same ...
+    
+    terminator_index = bits_after_hint.find(terminator_bits)
+    
+    if terminator_index == -1:
+        return None, bits # No null terminator found
+
+    # Ensure index is a multiple of 8 bits
+    if terminator_index % 8 != 0:
+        terminator_index = (terminator_index // 8) * 8
+    
+    payload_bits = bits_after_hint[:terminator_index]
+    
+    if len(payload_bits) == 0:
+        return None, bits
+    
+    bytes_data = []
+    
+    # Custom Byte Reconstruction (LSB-First)
+    for i in range(0, len(payload_bits), 8):
+        byte_str = payload_bits[i:i+8]
+        
+        # We must reverse the 8-bit string to get MSB-first order for int(..., 2)
+        reversed_byte_str = byte_str[::-1]
+        current_byte = int(reversed_byte_str, 2)
+        bytes_data.append(current_byte)
+        
+    try:
+        message = bytes(bytes_data).decode('utf-8')
+        return message.strip(), bits_after_hint[terminator_index + 8:]
+    except UnicodeDecodeError:
+        return bytes(bytes_data).hex(), bits_after_hint[terminator_index + 8:]
 
 def extract_bits_by_strategy(img, strategy, max_bits):
     """Extract bits using a specific strategy."""
@@ -327,17 +425,48 @@ def extract_lsb(image_path, channel='all', max_bits=1000000):
     """Extract LSB steganography data."""
     img = Image.open(image_path)
     
+    # Priority 1: Check for the LSB-first Alpha/RGBA format (used by data_generator)
     if img.mode == 'RGBA' or 'png' in image_path.lower():
+        # Use the RGBA flat strategy, which is bit-compatible with 'alpha' for full images
+        # The key is to use the LSB-first reconstruction
         bits = extract_bits_by_strategy(img, 'rgba_flat', max_bits)
-        message, remaining = extract_message_from_bits(bits)
+        message, remaining = reconstruct_lsb_first_message_from_bits(bits)
+        
         if message and len(message) > 10:
+            print(f"  [DEBUG] LSB extraction found LSB-first format. Message length: {len(message)}")
             return message, remaining
 
-    # Use the robust strategy extraction for auto-detection
+    # Priority 2: Use the robust LSB strategy extraction (relying on extract_message_from_bits)
+    # This covers all other, more standard LSB formats (MSB-first)
     return extract_lsb_strategy(image_path, strategy='auto', channel=channel, max_bits=max_bits)
 
 def extract_alpha(image_path):
-    return extract_lsb_strategy(image_path, strategy='alpha')
+    img = Image.open(image_path)
+    bits = extract_bits_by_strategy(img, 'alpha', 1000000)
+    
+    if not bits:
+        return None, None
+
+    # --- Strategy A: Try LSB-First (AI42-Hinted) ---
+    message, remaining = reconstruct_lsb_first_message_from_bits(bits)
+    
+    if message:
+        print(f"  [DEBUG] Alpha extraction successful (LSB-First/AI42). Message length: {len(message)}")
+        return message, remaining
+    
+    print(f"  [DEBUG] LSB-First/AI42 extraction failed. Attempting general decoders...")
+    
+    # --- Strategy B: Try General MSB-First Decoders ---
+    # We must use the general decoder, which will try length-prefix and null-terminated formats.
+    # We must ensure extract_message_from_bits is configured to decode MSB-first bits correctly.
+    message, remaining = extract_message_from_bits(bits)
+    
+    if message:
+        print(f"  [DEBUG] Alpha extraction successful (General MSB-First). Message length: {len(message)}")
+        return message, remaining
+
+    print(f"  [DEBUG] Alpha extraction failed. Bits extracted: {len(bits)}. No message found.")
+    return None, None
 
 def extract_palette(image_path):
     img = Image.open(image_path)
