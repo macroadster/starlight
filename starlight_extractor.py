@@ -477,28 +477,145 @@ def extract_palette(image_path):
     return extract_message_from_bits(bits)
 
 def extract_dct(image_path, clean_path=None):
-    img = np.array(Image.open(image_path).convert('YCbCr'))[:, :, 0].astype(float)
-    dct_coeffs = dct(dct(img.T, norm='ortho').T, norm='ortho')
+    """
+    Extract data from PNG DCT embedding.
+    The generator embeds by modifying pixel values in 8x8 blocks (±15 from original),
+    NOT by manipulating actual DCT coefficients.
+    
+    Two modes:
+    1. With clean image: Direct comparison (most accurate)
+    2. Without clean image: Pattern detection in block center pixels
+    """
+    stego_img = Image.open(image_path).convert('RGB')
+    stego_array = np.array(stego_img, dtype=np.float32)
+    
+    block_size = 8
+    height, width = stego_array.shape[:2]
+    
+    # MODE 1: With clean image (most accurate)
     if clean_path and os.path.exists(clean_path):
-        clean_img = np.array(Image.open(clean_path).convert('YCbCr'))[:, :, 0].astype(float)
-        clean_dct = dct(dct(clean_img.T, norm='ortho').T, norm='ortho')
-        diffs = dct_coeffs - clean_dct
-        bits = ''
-        block_size = 8
-        height, width = img.shape
+        print(f"  [DEBUG] DCT extraction using clean image comparison")
+        orig_img = Image.open(clean_path).convert('RGB')
+        orig_array = np.array(orig_img, dtype=np.float32)
+        
+        usable_blocks = []
+        
         for y in range(0, height - block_size, block_size):
             for x in range(0, width - block_size, block_size):
                 if y + block_size <= height and x + block_size <= width:
                     mid_y, mid_x = block_size // 2, block_size // 2
-                    current_val = clean_img[y:y+block_size, x:x+block_size][mid_y, mid_x]
-                    if 15 <= current_val <= 240:
-                        diff = diffs[y + mid_y, x + mid_x]
-                        if abs(diff) > 10:
-                            bits += '1' if diff > 0 else '0'
+                    orig_val = orig_array[y + mid_y, x + mid_x, 0]
+                    
+                    if 15 <= orig_val <= 240:
+                        usable_blocks.append((y, x))
+        
+        bits = []
+        for y, x in usable_blocks:
+            mid_y, mid_x = block_size // 2, block_size // 2
+            stego_val = stego_array[y + mid_y, x + mid_x, 0]
+            orig_val = orig_array[y + mid_y, x + mid_x, 0]
+            diff = stego_val - orig_val
+            
+            if diff > 7.5:
+                bits.append('1')
+            elif diff < -7.5:
+                bits.append('0')
+            else:
+                bits.append('0')
+    
+    # MODE 2: Without clean image (pattern detection)
     else:
-        coeffs_flat = dct_coeffs.flatten()[1:]
-        bits = ''.join(bin(int(coeff))[-1] for coeff in coeffs_flat if abs(coeff) > 10)
-    return extract_message_from_bits(bits)
+        print(f"  [DEBUG] DCT extraction without clean image - using pattern detection")
+        
+        # Collect all block center pixels
+        block_centers = []
+        for y in range(0, height - block_size, block_size):
+            for x in range(0, width - block_size, block_size):
+                if y + block_size <= height and x + block_size <= width:
+                    mid_y, mid_x = block_size // 2, block_size // 2
+                    center_val = stego_array[y + mid_y, x + mid_x, 0]
+                    
+                    # Only use pixels in reasonable range
+                    if 0 <= center_val <= 255:
+                        block_centers.append((y, x, center_val))
+        
+        if len(block_centers) < 100:
+            print(f"  [DEBUG] DCT extraction failed: too few blocks ({len(block_centers)})")
+            return None, None
+        
+        # Analyze the block center pixel distribution to find the baseline
+        # The embedding adds ±15 to original values, creating a bimodal pattern
+        center_values = [val for _, _, val in block_centers]
+        
+        # Look for modified pixels by detecting outliers in local neighborhoods
+        bits = []
+        for y, x, center_val in block_centers:
+            mid_y, mid_x = block_size // 2, block_size // 2
+            
+            # Get surrounding pixels in the same block for context
+            block = stego_array[y:y+block_size, x:x+block_size, 0]
+            
+            # Calculate local average excluding the center pixel
+            surrounding_pixels = []
+            for dy in range(block_size):
+                for dx in range(block_size):
+                    if dy != mid_y or dx != mid_x:
+                        surrounding_pixels.append(block[dy, dx])
+            
+            local_avg = np.mean(surrounding_pixels)
+            diff_from_local = center_val - local_avg
+            
+            # The embedding creates a strong deviation from local average
+            # If center pixel is significantly higher than neighbors: likely bit=1 (+15)
+            # If center pixel is significantly lower than neighbors: likely bit=0 (-15)
+            # Threshold of ~10 works well to detect the ±15 modifications
+            if diff_from_local > 10:
+                bits.append('1')
+            elif diff_from_local < -10:
+                bits.append('0')
+            else:
+                # If unclear, check if the pixel value itself suggests modification
+                # Values very close to 0 or 255 are less likely to be modified
+                if center_val < 30:
+                    bits.append('0')  # Likely modified downward
+                elif center_val > 225:
+                    bits.append('1')  # Likely modified upward
+                else:
+                    bits.append('0')  # Default
+    
+    if len(bits) < 32:
+        print(f"  [DEBUG] DCT extraction failed: only {len(bits)} bits extracted (need at least 32)")
+        return None, None
+    
+    bits_str = ''.join(bits)
+    
+    try:
+        length = int(bits_str[:32], 2)
+        
+        if length > 100000 or length <= 0:
+            print(f"  [DEBUG] DCT extraction failed: invalid length {length}")
+            return None, None
+        
+        total_bits_needed = 32 + length * 8
+        
+        if len(bits_str) < total_bits_needed:
+            print(f"  [DEBUG] DCT extraction failed: need {total_bits_needed} bits, have {len(bits_str)}")
+            return None, None
+        
+        payload_bits = bits_str[32:total_bits_needed]
+        payload_bytes = bytes([int(payload_bits[i:i+8], 2) 
+                               for i in range(0, len(payload_bits), 8)])
+        
+        try:
+            message = payload_bytes.decode('utf-8')
+            print(f"  [DEBUG] DCT extraction successful. Message length: {len(message)} chars")
+            return message, None
+        except UnicodeDecodeError:
+            return payload_bytes.hex(), None
+            
+    except Exception as e:
+        print(f"  [DEBUG] DCT extraction error: {e}")
+        return None, None
 
 def extract_exif(image_path):
     img = Image.open(image_path)
