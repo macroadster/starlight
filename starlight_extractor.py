@@ -1,111 +1,19 @@
 #!/usr/bin/env python3
 import os
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import transforms, models
 from PIL import Image
 import numpy as np
 import argparse
-import math
-from scipy.stats import entropy
-from scipy.fftpack import dct
-from PIL.ExifTags import TAGS
 
-# Import the two-stage model and the corresponding validation transform from trainer.py
-from trainer import StarlightTwoStage, transform_val as transform_rgba_val 
+# Import the two-stage model and features from starlight_model.py
+from starlight_model import StarlightTwoStage, transform_val as transform_rgba_val, extract_features
 
 try:
     import piexif
 except ImportError:
     piexif = None
     print("Warning: piexif not installed; EXIF extraction may be limited.")
-
-def extract_features(path, img):
-    """
-    Extracts 15 statistical/structural features from the image file.
-    This function is updated to match the 15 features in trainer.py.
-    """
-    width, height = img.size
-    area = width * height if width * height > 0 else 1.0
-    
-    file_size = os.path.getsize(path) / 1024.0
-    file_size_norm = file_size / area
-    
-    exif_bytes = img.info.get('exif')
-    exif_present = 1.0 if exif_bytes else 0.0
-    exif_length = len(exif_bytes) if exif_bytes else 0.0
-    exif_length_norm = min(exif_length / area, 1.0)
-    
-    comment_length = 0.0
-    exif_entropy = 0.0
-    if exif_bytes:
-        try:
-            exif_dict = img.getexif()
-            tag_values = []
-            for tag_id, value in exif_dict.items():
-                tag = TAGS.get(tag_id, tag_id)
-                # Feature: UserComment length
-                if tag == 'UserComment' and isinstance(value, bytes):
-                    comment_length = min(len(value) / area, 1.0)
-                if isinstance(value, (bytes, str)):
-                    tag_values.append(value if isinstance(value, bytes) else value.encode('utf-8'))
-            # Feature: EXIF entropy
-            if tag_values:
-                lengths = [len(v) for v in tag_values]
-                max_len = max(lengths or [1])
-                hist = np.histogram(lengths, bins=10, range=(0, max_len))[0]
-                exif_entropy = entropy(hist + 1e-10) / area if any(hist) else 0.0
-        except:
-            comment_length = 0.0
-            exif_entropy = 0.0
-    
-    # Features: Palette presence, length, and entropy
-    palette_present = 1.0 if img.mode == 'P' else 0.0
-    palette = img.getpalette()
-    palette_length = len(palette) / 3 if palette else 0.0
-    if palette_present:
-        hist = img.histogram()
-        palette_entropy_value = entropy([h + 1 for h in hist if h > 0]) if any(hist) else 0.0
-    else:
-        palette_entropy_value = 0.0
-    
-    # Feature: EOF length (for JPEG EOI)
-    with open(path, 'rb') as f:
-        data = f.read()
-    if img.format == 'JPEG':
-        eoi_pos = data.rfind(b'\xff\xd9')
-        eof_length = len(data) - (eoi_pos + 2) if eoi_pos >= 0 else 0.0
-    else:
-        eof_length = 0.0
-    eof_length_norm = min(eof_length / area, 1.0)
-    
-    # Features: Alpha channel metrics
-    has_alpha = 1.0 if img.mode in ('RGBA', 'LA', 'PA') else 0.0
-    alpha_variance = 0.0
-    alpha_mean = 0.5 # Default to 0.5 for non-RGBA
-    alpha_unique_ratio = 0.0
-    
-    if has_alpha and img.mode == 'RGBA':
-        img_array = np.array(img)
-        if img_array.shape[-1] == 4:
-            alpha_channel = img_array[:, :, 3].astype(float)
-            alpha_variance = np.var(alpha_channel) / 65025.0 # Max variance is 255^2 = 65025
-            alpha_mean = np.mean(alpha_channel) / 255.0
-            unique_alphas = len(np.unique(alpha_channel))
-            total_pixels = alpha_channel.size
-            alpha_unique_ratio = unique_alphas / min(total_pixels, 256)
-    
-    # Features: File format indicators
-    is_jpeg = 1.0 if img.format == 'JPEG' else 0.0
-    is_png = 1.0 if img.format == 'PNG' else 0.0
-    
-    return np.array([
-        file_size_norm, exif_present, exif_length_norm, comment_length, 
-        exif_entropy, palette_present, palette_length, palette_entropy_value, 
-        eof_length_norm, has_alpha, alpha_variance, alpha_mean, alpha_unique_ratio, 
-        is_jpeg, is_png # Total 15 features
-    ], dtype=np.float32)
 
 def extract_message_from_bits(bits, max_length=24576):
     """
@@ -117,7 +25,6 @@ def extract_message_from_bits(bits, max_length=24576):
     # ----------------------------------------------------------------------
     # --- Strategy 1: AI Hint (for LSB-first Alpha/LSB embedding) ---
     # ----------------------------------------------------------------------
-    # The generator's hint is [0x41, 0x49, 0x34, 0x32] -> 'AI42'
     ai_hint_bytes = b'AI42'
     hint_bits = ''.join(format(byte, '08b') for byte in ai_hint_bytes)
     
@@ -127,7 +34,6 @@ def extract_message_from_bits(bits, max_length=24576):
         terminator_index = bits_after_hint.find(terminator_bits)
         
         if terminator_index != -1:
-            # Ensure index is a multiple of 8 bits
             if terminator_index % 8 != 0:
                 terminator_index = (terminator_index // 8) * 8
             
@@ -138,24 +44,11 @@ def extract_message_from_bits(bits, max_length=24576):
             
             bytes_data = []
             
-            # --- START FIX: Custom Byte Reconstruction (LSB-First) ---
             for i in range(0, len(payload_bits), 8):
                 byte_str = payload_bits[i:i+8]
-                current_byte = 0
-                
-                # The generator embeds LSB first (index 0) and MSB last (index 7).
-                # To reconstruct, P1.bit (index 0) must be the LSB (bit position 0),
-                # and P8.bit (index 7) must be the MSB (bit position 7).
-                # The Python int(byte_str, 2) assumes MSB-first: P1 is MSB.
-                # We need to reverse the 8-bit string before converting.
-                
-                # Example: Bits P1..P8 extracted. Correct byte is P8..P1 (MSB..LSB).
                 reversed_byte_str = byte_str[::-1]
-                
-                # Convert the reversed string (P8..P1) to a byte.
                 current_byte = int(reversed_byte_str, 2)
                 bytes_data.append(current_byte)
-            # --- END FIX ---
             
             try:
                 message = bytes(bytes_data).decode('utf-8')
@@ -165,13 +58,11 @@ def extract_message_from_bits(bits, max_length=24576):
         else:
             max_bits = min(len(bits_after_hint), max_length * 8)
             max_bits = (max_bits // 8) * 8
-            # Do not attempt decoding if terminator is missing in this block
             return None, bits_after_hint
 
     # ----------------------------------------------------------------------
     # --- Strategy 2: Length Prefix (Unchanged, uses MSB-first decoding) ---
     # ----------------------------------------------------------------------
-    # ... (Original logic for length-prefixed messages remains the same) ...
     if len(bits) >= 32:
         try:
             length = int(bits[:32], 2)
@@ -179,7 +70,6 @@ def extract_message_from_bits(bits, max_length=24576):
                 payload_bits = bits[32:32 + length * 8]
                 if len(payload_bits) % 8 != 0:
                     return None, bits
-                # Uses standard MSB-first conversion:
                 bytes_data = [int(payload_bits[j:j+8], 2) for j in range(0, len(payload_bits), 8)]
                 try:
                     message = bytes(bytes_data).decode('utf-8')
@@ -192,7 +82,6 @@ def extract_message_from_bits(bits, max_length=24576):
     # ----------------------------------------------------------------------
     # --- Strategy 3: Null-Terminated ASCII/UTF-8 (Unchanged) ---
     # ----------------------------------------------------------------------
-    # ... (Original logic for basic null-terminated messages remains the same) ...
     try:
         max_bits = min(len(bits), max_length * 8)
         max_bits = (max_bits // 8) * 8
@@ -219,100 +108,6 @@ def extract_message_from_bits(bits, max_length=24576):
         pass
     
     return None, bits
-
-def extract_lsb_strategy(image_path, strategy='auto', channel='all', max_bits=1000000):
-    """Extract LSB data using different strategies."""
-    img = Image.open(image_path)
-    
-    strategies_to_try = []
-    
-    if strategy == 'auto':
-        strategies_to_try = ['rgba_flat', 'rgb_flat', 'rgb_interleaved', 'red', 'green', 'blue', 'alpha']
-    elif strategy == 'channel_specific':
-        strategies_to_try = [channel]
-    else:
-        strategies_to_try = [strategy]
-    
-    results = []
-    
-    for strat in strategies_to_try:
-        bits = extract_bits_by_strategy(img, strat, max_bits)
-        if bits:
-            message, remaining = extract_message_from_bits(bits)
-            if message:
-                results.append({
-                    'strategy': strat,
-                    'message': message,
-                    'bits_used': len(bits) - len(remaining) if remaining else len(bits),
-                    'confidence': calculate_message_confidence(message)
-                })
-    
-    if not results:
-        return None, None
-    
-    best = max(results, key=lambda x: x['confidence'])
-    return best['message'], None
-
-def reconstruct_lsb_first_message_from_bits(bits, max_length=24576):
-    """
-    Reconstructs bytes from a bit stream where bits are embedded LSB-first.
-    This logic matches the verification in data_generator.py (Hint + Payload + 0x00).
-    """
-    ai_hint_bytes = b'AI42'
-    
-    # --- CRITICAL FIX START ---
-    # The hint in the bitstream is the LSB of 0x41, followed by the next LSB, up to MSB,
-    # then the LSB of 0x49, and so on.
-    # The LSB-first bit representation of a byte 'b' is:
-    # bin(b)[2:].zfill(8)[::-1]
-    
-    hint_bits = ''
-    for byte in ai_hint_bytes:
-        # Get the 8-bit string (MSB-first) and reverse it (LSB-first)
-        lsb_first_bits = bin(byte)[2:].zfill(8)[::-1]
-        hint_bits += lsb_first_bits
-    # --- CRITICAL FIX END ---
-    
-    if not bits.startswith(hint_bits):
-        # [DEBUG] Added print to show what it is looking for and what it found
-        print(f"  [DEBUG] Expected Hint Bits (LSB-first): {hint_bits[:32]}")
-        print(f"  [DEBUG] Found Bits: {bits[:32]}")
-        return None, bits # Return no message if hint is missing
-    
-    bits_after_hint = bits[len(hint_bits):]
-    terminator_bits = '00000000'
-    # ... rest of the function remains the same ...
-    
-    terminator_index = bits_after_hint.find(terminator_bits)
-    
-    if terminator_index == -1:
-        return None, bits # No null terminator found
-
-    # Ensure index is a multiple of 8 bits
-    if terminator_index % 8 != 0:
-        terminator_index = (terminator_index // 8) * 8
-    
-    payload_bits = bits_after_hint[:terminator_index]
-    
-    if len(payload_bits) == 0:
-        return None, bits
-    
-    bytes_data = []
-    
-    # Custom Byte Reconstruction (LSB-First)
-    for i in range(0, len(payload_bits), 8):
-        byte_str = payload_bits[i:i+8]
-        
-        # We must reverse the 8-bit string to get MSB-first order for int(..., 2)
-        reversed_byte_str = byte_str[::-1]
-        current_byte = int(reversed_byte_str, 2)
-        bytes_data.append(current_byte)
-        
-    try:
-        message = bytes(bytes_data).decode('utf-8')
-        return message.strip(), bits_after_hint[terminator_index + 8:]
-    except UnicodeDecodeError:
-        return bytes(bytes_data).hex(), bits_after_hint[terminator_index + 8:]
 
 def extract_bits_by_strategy(img, strategy, max_bits):
     """Extract bits using a specific strategy."""
@@ -421,14 +216,91 @@ def calculate_message_confidence(message):
     
     return max(0.0, min(100.0, score))
 
+def extract_lsb_strategy(image_path, strategy='auto', channel='all', max_bits=1000000):
+    """Extract LSB data using different strategies."""
+    img = Image.open(image_path)
+    
+    strategies_to_try = []
+    
+    if strategy == 'auto':
+        strategies_to_try = ['rgba_flat', 'rgb_flat', 'rgb_interleaved', 'red', 'green', 'blue', 'alpha']
+    elif strategy == 'channel_specific':
+        strategies_to_try = [channel]
+    else:
+        strategies_to_try = [strategy]
+    
+    results = []
+    
+    for strat in strategies_to_try:
+        bits = extract_bits_by_strategy(img, strat, max_bits)
+        if bits:
+            message, remaining = extract_message_from_bits(bits)
+            if message:
+                results.append({
+                    'strategy': strat,
+                    'message': message,
+                    'bits_used': len(bits) - len(remaining) if remaining else len(bits),
+                    'confidence': calculate_message_confidence(message)
+                })
+    
+    if not results:
+        return None, None
+    
+    best = max(results, key=lambda x: x['confidence'])
+    return best['message'], None
+
+def reconstruct_lsb_first_message_from_bits(bits, max_length=24576):
+    """
+    Reconstructs bytes from a bit stream where bits are embedded LSB-first.
+    This logic matches the verification in data_generator.py (Hint + Payload + 0x00).
+    """
+    ai_hint_bytes = b'AI42'
+    
+    hint_bits = ''
+    for byte in ai_hint_bytes:
+        lsb_first_bits = bin(byte)[2:].zfill(8)[::-1]
+        hint_bits += lsb_first_bits
+    
+    if not bits.startswith(hint_bits):
+        print(f"  [DEBUG] Expected Hint Bits (LSB-first): {hint_bits[:32]}")
+        print(f"  [DEBUG] Found Bits: {bits[:32]}")
+        return None, bits
+    
+    bits_after_hint = bits[len(hint_bits):]
+    terminator_bits = '00000000'
+    terminator_index = bits_after_hint.find(terminator_bits)
+    
+    if terminator_index == -1:
+        return None, bits
+
+    if terminator_index % 8 != 0:
+        terminator_index = (terminator_index // 8) * 8
+    
+    payload_bits = bits_after_hint[:terminator_index]
+    
+    if len(payload_bits) == 0:
+        return None, bits
+    
+    bytes_data = []
+    
+    for i in range(0, len(payload_bits), 8):
+        byte_str = payload_bits[i:i+8]
+        reversed_byte_str = byte_str[::-1]
+        current_byte = int(reversed_byte_str, 2)
+        bytes_data.append(current_byte)
+        
+    try:
+        message = bytes(bytes_data).decode('utf-8')
+        return message.strip(), bits_after_hint[terminator_index + 8:]
+    except UnicodeDecodeError:
+        return bytes(bytes_data).hex(), bits_after_hint[terminator_index + 8:]
+
 def extract_lsb(image_path, channel='all', max_bits=1000000):
     """Extract LSB steganography data."""
     img = Image.open(image_path)
     
-    # Priority 1: Check for the LSB-first Alpha/RGBA format (used by data_generator)
+    # Priority 1: Check for the LSB-first Alpha/RGBA format
     if img.mode == 'RGBA' or 'png' in image_path.lower():
-        # Use the RGBA flat strategy, which is bit-compatible with 'alpha' for full images
-        # The key is to use the LSB-first reconstruction
         bits = extract_bits_by_strategy(img, 'rgba_flat', max_bits)
         message, remaining = reconstruct_lsb_first_message_from_bits(bits)
         
@@ -436,8 +308,7 @@ def extract_lsb(image_path, channel='all', max_bits=1000000):
             print(f"  [DEBUG] LSB extraction found LSB-first format. Message length: {len(message)}")
             return message, remaining
 
-    # Priority 2: Use the robust LSB strategy extraction (relying on extract_message_from_bits)
-    # This covers all other, more standard LSB formats (MSB-first)
+    # Priority 2: Use the robust LSB strategy extraction
     return extract_lsb_strategy(image_path, strategy='auto', channel=channel, max_bits=max_bits)
 
 def extract_alpha(image_path):
@@ -447,7 +318,7 @@ def extract_alpha(image_path):
     if not bits:
         return None, None
 
-    # --- Strategy A: Try LSB-First (AI42-Hinted) ---
+    # Strategy A: Try LSB-First (AI42-Hinted)
     message, remaining = reconstruct_lsb_first_message_from_bits(bits)
     
     if message:
@@ -456,9 +327,7 @@ def extract_alpha(image_path):
     
     print(f"  [DEBUG] LSB-First/AI42 extraction failed. Attempting general decoders...")
     
-    # --- Strategy B: Try General MSB-First Decoders ---
-    # We must use the general decoder, which will try length-prefix and null-terminated formats.
-    # We must ensure extract_message_from_bits is configured to decode MSB-first bits correctly.
+    # Strategy B: Try General MSB-First Decoders
     message, remaining = extract_message_from_bits(bits)
     
     if message:
@@ -479,12 +348,6 @@ def extract_palette(image_path):
 def extract_dct(image_path, clean_path=None):
     """
     Extract data from PNG DCT embedding.
-    The generator embeds by modifying pixel values in 8x8 blocks (±15 from original),
-    NOT by manipulating actual DCT coefficients.
-    
-    Two modes:
-    1. With clean image: Direct comparison (most accurate)
-    2. Without clean image: Pattern detection in block center pixels
     """
     stego_img = Image.open(image_path).convert('RGB')
     stego_array = np.array(stego_img, dtype=np.float32)
@@ -527,7 +390,6 @@ def extract_dct(image_path, clean_path=None):
     else:
         print(f"  [DEBUG] DCT extraction without clean image - using pattern detection")
         
-        # Collect all block center pixels
         block_centers = []
         for y in range(0, height - block_size, block_size):
             for x in range(0, width - block_size, block_size):
@@ -535,7 +397,6 @@ def extract_dct(image_path, clean_path=None):
                     mid_y, mid_x = block_size // 2, block_size // 2
                     center_val = stego_array[y + mid_y, x + mid_x, 0]
                     
-                    # Only use pixels in reasonable range
                     if 0 <= center_val <= 255:
                         block_centers.append((y, x, center_val))
         
@@ -543,19 +404,12 @@ def extract_dct(image_path, clean_path=None):
             print(f"  [DEBUG] DCT extraction failed: too few blocks ({len(block_centers)})")
             return None, None
         
-        # Analyze the block center pixel distribution to find the baseline
-        # The embedding adds ±15 to original values, creating a bimodal pattern
-        center_values = [val for _, _, val in block_centers]
-        
-        # Look for modified pixels by detecting outliers in local neighborhoods
         bits = []
         for y, x, center_val in block_centers:
             mid_y, mid_x = block_size // 2, block_size // 2
             
-            # Get surrounding pixels in the same block for context
             block = stego_array[y:y+block_size, x:x+block_size, 0]
             
-            # Calculate local average excluding the center pixel
             surrounding_pixels = []
             for dy in range(block_size):
                 for dx in range(block_size):
@@ -565,23 +419,17 @@ def extract_dct(image_path, clean_path=None):
             local_avg = np.mean(surrounding_pixels)
             diff_from_local = center_val - local_avg
             
-            # The embedding creates a strong deviation from local average
-            # If center pixel is significantly higher than neighbors: likely bit=1 (+15)
-            # If center pixel is significantly lower than neighbors: likely bit=0 (-15)
-            # Threshold of ~10 works well to detect the ±15 modifications
             if diff_from_local > 10:
                 bits.append('1')
             elif diff_from_local < -10:
                 bits.append('0')
             else:
-                # If unclear, check if the pixel value itself suggests modification
-                # Values very close to 0 or 255 are less likely to be modified
                 if center_val < 30:
-                    bits.append('0')  # Likely modified downward
+                    bits.append('0')
                 elif center_val > 225:
-                    bits.append('1')  # Likely modified upward
+                    bits.append('1')
                 else:
-                    bits.append('0')  # Default
+                    bits.append('0')
     
     if len(bits) < 32:
         print(f"  [DEBUG] DCT extraction failed: only {len(bits)} bits extracted (need at least 32)")
@@ -660,22 +508,51 @@ def extract_exif(image_path):
     return message, None
 
 def extract_eoi(image_path):
+    """
+    Extract data hidden after JPEG End-of-Image (EOI) marker.
+    CRITICAL FIX: Only processes JPEG files to avoid false positives.
+    """
+    try:
+        img = Image.open(image_path)
+        if img.format != 'JPEG':
+            return None, None
+    except Exception:
+        return None, None
+    
     with open(image_path, 'rb') as f:
         data = f.read()
+    
+    if not data.startswith(b'\xff\xd8'):
+        return None, None
+    
     eoi_pos = data.rfind(b'\xff\xd9')
-    if eoi_pos >= 0:
-        payload = data[eoi_pos + 2:]
-        if payload.startswith(b'0xAI42'):
-            payload = payload[6:]
-            terminator_pos = payload.find(b'\x00')
-            if terminator_pos != -1:
-                payload = payload[:terminator_pos]
-        try:
-            message = payload.decode('utf-8')
+    
+    if eoi_pos < 0:
+        return None, None
+    
+    if eoi_pos + 2 >= len(data):
+        return None, None
+    
+    payload = data[eoi_pos + 2:]
+    
+    if len(payload) < 4:
+        return None, None
+    
+    if payload.startswith(b'0xAI42'):
+        payload = payload[6:]
+        terminator_pos = payload.find(b'\x00')
+        if terminator_pos != -1:
+            payload = payload[:terminator_pos]
+    
+    try:
+        message = payload.decode('utf-8')
+        printable_ratio = sum(c.isprintable() or c in '\n\r\t' for c in message) / len(message)
+        if printable_ratio > 0.8:
             return message, None
-        except UnicodeDecodeError:
+        else:
             return payload.hex(), None
-    return None, None
+    except UnicodeDecodeError:
+        return payload.hex(), None
 
 extraction_functions = {
     'alpha': extract_alpha,
@@ -689,24 +566,26 @@ extraction_functions = {
 def predict(model, device, image_path, class_map):
     """
     Predicts the steganography type using the StarlightTwoStage model.
+    Now uses 24 enhanced features instead of 15.
     """
     model.eval()
     
-    # Open image and convert to RGBA for feature extraction and new model input
-    img = Image.open(image_path).convert('RGBA')
+    # Open image in original format first for proper feature extraction
+    img_original = Image.open(image_path)
     
-    # Extract the 15 features
-    features = extract_features(image_path, img)
+    # Extract the 24 enhanced features from ORIGINAL image
+    features = extract_features(image_path, img_original)
+    
+    # Now convert to RGBA for model input
+    img = img_original.convert('RGBA')
     
     # Apply the RGBA transform
     img_tensor = transform_rgba_val(img).unsqueeze(0).to(device)
     features_tensor = torch.tensor(features).unsqueeze(0).to(device)
     
     with torch.no_grad():
-        # The StarlightTwoStage model returns: (all_logits, normality_score, stego_type_logits)
         all_logits, normality_score, stego_type_logits = model(img_tensor, features_tensor)
         
-        # We use all_logits (7 classes: clean + 6 stego) for the final prediction
         outputs = all_logits 
         
         probs = F.softmax(outputs, dim=1).cpu().numpy()[0]
@@ -722,7 +601,6 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', default='best_model.pth', help="Path to the trained model file")
     parser.add_argument('--channel', default='all', choices=['all', 'red', 'green', 'blue'], help="Channel for LSB extraction")
     parser.add_argument('--clean_path', default=None, help="Path to the corresponding clean image for DCT extraction")
-    # Added new parameter for explicit algorithm choice
     parser.add_argument('--extract_algo', default=None, choices=list(extraction_functions.keys()), help="Explicitly specify the stego algorithm to attempt extraction for, overriding the model's prediction.")
     args = parser.parse_args()
 
@@ -736,10 +614,18 @@ if __name__ == "__main__":
         device = torch.device('cpu')
     print(f"Using device: {device}")
 
-    # Instantiate the new StarlightTwoStage model. num_stego_classes=6 and feature_dim=15.
-    model = StarlightTwoStage(num_stego_classes=6, feature_dim=15)
+    # Instantiate the StarlightTwoStage model with 24 features
+    model = StarlightTwoStage(num_stego_classes=6, feature_dim=24)
     try:
-        model.load_state_dict(torch.load(args.model_path, map_location=device))
+        # Load checkpoint - handle both old format (direct state_dict) and new format (checkpoint dict)
+        checkpoint = torch.load(args.model_path, map_location=device)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            # New format with extra metadata
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"Loaded model from epoch {checkpoint.get('epoch', 'unknown')}")
+        else:
+            # Old format - direct state_dict
+            model.load_state_dict(checkpoint)
     except Exception as e:
         print(f"Error: Failed to load model from {args.model_path}: {str(e)}")
         exit(1)

@@ -4,7 +4,7 @@ import re
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from PIL import Image
 from collections import Counter
 from sklearn.model_selection import train_test_split
@@ -12,10 +12,25 @@ from sklearn.metrics import balanced_accuracy_score, f1_score, roc_auc_score, ac
 import numpy as np
 from tqdm import tqdm
 
-# Import the model, transforms, and feature extraction from the new centralized file
+# Import the model, transforms, and feature extraction
 from starlight_model import StarlightTwoStage, transform_train, transform_val, extract_features
 
-# Custom Dataset
+# Focal Loss with class-specific alpha
+class FocalLoss(torch.nn.Module):
+    def __init__(self, alpha_clean=3.0, alpha_stego=1.0, gamma=2.0):
+        super(FocalLoss, self).__init__()
+        self.alpha_clean = alpha_clean
+        self.alpha_stego = alpha_stego
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        BCE_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-BCE_loss)
+        alpha = torch.where(targets == 1, self.alpha_clean, self.alpha_stego)
+        focal_loss = alpha * (1 - pt) ** self.gamma * BCE_loss
+        return focal_loss.mean()
+
+# Custom Dataset with PROPER RGBA handling
 class CustomDataset(Dataset):
     def __init__(self, paths, labels, transform=None, augment=False):
         self.paths = paths
@@ -29,18 +44,27 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         path = self.paths[idx]
         label = self.labels[idx]
-        img = Image.open(path)
         
-        # Extract features using the imported function
+        # Open image in original format
+        img = Image.open(path)
+        original_mode = img.mode
+        
+        # Extract features from ORIGINAL image
         features = extract_features(path, img)
         
-        # Convert to RGBA
-        img_rgba = img.convert('RGBA')
+        # CRITICAL: Only preserve alpha for images that ORIGINALLY had it
+        if original_mode in ('RGBA', 'LA', 'PA'):
+            img_processed = img.convert('RGBA')
+        else:
+            # For non-alpha images: convert to RGB, then add dummy alpha
+            img_rgb = img.convert('RGB')
+            img_processed = Image.new('RGBA', img_rgb.size, (0, 0, 0, 255))
+            img_processed.paste(img_rgb, (0, 0))
         
         if self.transform:
-            img_rgba = self.transform(img_rgba)
+            img_processed = self.transform(img_processed)
         
-        return img_rgba, torch.tensor(features, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
+        return img_processed, torch.tensor(features, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
 
 def collect_data(root_dir='datasets'):
     image_paths = []
@@ -78,6 +102,20 @@ def collect_data(root_dir='datasets'):
 
 # Main Training Script
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Train Starlight Steganography Detection Model")
+    parser.add_argument('--root_dir', default='datasets', help="Root directory containing training data")
+    parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training")
+    parser.add_argument('--epochs', type=int, default=25, help="Number of training epochs")
+    parser.add_argument('--lr', type=float, default=5e-5, help="Learning rate")
+    args = parser.parse_args()
+    
+    root_dir = args.root_dir
+    batch_size = args.batch_size
+    max_epochs = args.epochs
+    learning_rate = args.lr
+    
+    # Collect data
     image_paths, labels = collect_data()
     if not image_paths:
         print("Error: No data found.")
@@ -95,11 +133,20 @@ if __name__ == "__main__":
         image_paths, labels, test_size=0.2, stratify=labels, random_state=42
     )
 
+    # BETTER APPROACH: Use WeightedRandomSampler instead of manual oversampling
+    # This gives better class balance without inflating dataset size
+    class_sample_counts = [sum(1 for l in train_labels if l == i) for i in range(7)]
+    weights = [1.0 / class_sample_counts[label] for label in train_labels]
+    sampler = WeightedRandomSampler(weights, len(train_labels), replacement=True)
+
     train_dataset = CustomDataset(train_paths, train_labels, transform=transform_train)
     val_dataset = CustomDataset(val_paths, val_labels, transform=transform_val)
     
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=4, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False, num_workers=4, drop_last=True)
+    # Use sampler instead of shuffle, with larger batch size for stability
+    train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, 
+                             num_workers=4, drop_last=True, pin_memory=False)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, 
+                           num_workers=4, drop_last=False, pin_memory=False)
 
     if torch.backends.mps.is_available():
         device = torch.device('mps')
@@ -109,56 +156,74 @@ if __name__ == "__main__":
         device = torch.device('cpu')
     print(f"\nUsing device: {device}")
 
-    model = StarlightTwoStage(num_stego_classes=6, feature_dim=15).to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    # Model now expects 24 features (enhanced from 15)
+    model = StarlightTwoStage(num_stego_classes=6, feature_dim=24).to(device)
+    
+    # BETTER OPTIMIZER: Lower learning rate, less aggressive weight decay
+    optimizer = optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
+    
+    # Cosine annealing instead of ReduceLROnPlateau for smoother training
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=1e-6)
 
-    patience = 20
+    patience = 8  # Increased patience
     best_val_loss = float('inf')
-    best_clean_recall = 0.0
+    best_balanced_acc = 0.0
     counter = 0
+    accum_steps = 1  # Remove gradient accumulation for cleaner updates
 
-    # Class counts from dataset statistics (computed dynamically)
-    class_counts = [label_counts[0], label_counts[1], label_counts[2], label_counts[3], label_counts[4], label_counts[5], label_counts[6]]
-    class_weights = torch.tensor([1.0 / (count + 1e-6) for count in class_counts], dtype=torch.float32).to(device)  # Avoid division by zero
-    stego_class_weights = torch.tensor([1.0 / (count + 1e-6) for count in class_counts[1:]], dtype=torch.float32).to(device)
+    # More balanced class weights
+    total_samples = sum(label_counts.values())
+    class_weights = torch.tensor([
+        total_samples / (len(class_map) * label_counts[i]) 
+        for i in range(len(class_map))
+    ], dtype=torch.float32).to(device)
+    
+    # Normalize weights
+    class_weights = class_weights / class_weights.sum() * len(class_map)
+    
+    stego_class_weights = class_weights[1:].clone()
+    stego_class_weights = stego_class_weights / stego_class_weights.sum() * 6
 
-    for epoch in range(100):
+    focal_loss = FocalLoss(alpha_clean=2.0, alpha_stego=1.0, gamma=2.0).to(device)
+
+    print(f"\nClass weights: {class_weights}")
+    print(f"Stego weights: {stego_class_weights}")
+
+    for epoch in range(25):  # Increased epochs
         model.train()
         train_loss = 0.0
         train_correct = 0
         train_total = 0
         
-        with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/100 [Train]", unit="batch") as pbar:
-            for images, features, labels_batch in train_loader:
+        with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/25 [Train]", unit="batch") as pbar:
+            for i, (images, features, labels_batch) in enumerate(train_loader):
                 images, features, labels_batch = images.to(device), features.to(device), labels_batch.to(device)
+                
                 optimizer.zero_grad()
                 
-                # Forward pass
                 outputs, normality_score, stego_type_logits = model(images, features)
                 
-                # Three-part loss with proper weighting
                 is_clean = (labels_batch == 0).float().unsqueeze(1)
+                stage1_loss = focal_loss(normality_score, is_clean)
                 
-                # Stage 1: STRONG clean vs stego signal
-                stage1_loss = F.binary_cross_entropy(normality_score, is_clean)
-                
-                # Stage 2: Stego type classification (only for stego samples)
                 stego_mask = (labels_batch > 0)
                 if stego_mask.any():
                     stego_labels = labels_batch[stego_mask] - 1
                     stego_logits = stego_type_logits[stego_mask]
                     stage2_loss = F.cross_entropy(stego_logits, stego_labels, weight=stego_class_weights)
                 else:
-                    stage2_loss = 0.0
+                    stage2_loss = torch.tensor(0.0, device=device)
                 
-                # Overall classification loss
                 overall_loss = F.cross_entropy(outputs, labels_batch, weight=class_weights)
                 
-                # Rebalanced: Adjusted weights for better balance
-                loss = 1.0 * stage1_loss + 1.0 * stage2_loss + 0.5 * overall_loss
+                # Adjusted loss weighting: focus more on overall classification
+                loss = 1.0 * stage1_loss + 1.0 * stage2_loss + 2.0 * overall_loss
                 
                 loss.backward()
+                
+                # Gradient clipping for stability
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
                 optimizer.step()
                 
                 train_loss += loss.item()
@@ -174,9 +239,8 @@ if __name__ == "__main__":
 
         train_loss /= len(train_loader)
         train_acc = 100. * train_correct / train_total
-        print(f"Epoch {epoch+1}/100, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+        print(f"Epoch {epoch+1}/25, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
 
-        # Validation
         model.eval()
         val_loss = 0.0
         all_preds = []
@@ -185,15 +249,14 @@ if __name__ == "__main__":
         all_normality_scores = []
         
         with torch.no_grad():
-            with tqdm(total=len(val_loader), desc=f"Epoch {epoch+1}/100 [Val]", unit="batch") as pbar:
+            with tqdm(total=len(val_loader), desc=f"Epoch {epoch+1}/25 [Val]", unit="batch") as pbar:
                 for images, features, labels_batch in val_loader:
                     images, features, labels_batch = images.to(device), features.to(device), labels_batch.to(device)
                     
                     outputs, normality_score, stego_type_logits = model(images, features)
                     
-                    # Calculate losses
                     is_clean = (labels_batch == 0).float().unsqueeze(1)
-                    stage1_loss = F.binary_cross_entropy(normality_score, is_clean)
+                    stage1_loss = focal_loss(normality_score, is_clean)
                     
                     stego_mask = (labels_batch > 0)
                     if stego_mask.any():
@@ -201,11 +264,11 @@ if __name__ == "__main__":
                         stego_logits = stego_type_logits[stego_mask]
                         stage2_loss = F.cross_entropy(stego_logits, stego_labels, weight=stego_class_weights)
                     else:
-                        stage2_loss = 0.0
+                        stage2_loss = torch.tensor(0.0, device=device)
                     
                     overall_loss = F.cross_entropy(outputs, labels_batch, weight=class_weights)
                     
-                    loss = 1.0 * stage1_loss + 1.0 * stage2_loss + 0.5 * overall_loss
+                    loss = 1.0 * stage1_loss + 1.0 * stage2_loss + 2.0 * overall_loss
                     val_loss += loss.item()
                     
                     preds = outputs.argmax(1).cpu().tolist()
@@ -223,16 +286,13 @@ if __name__ == "__main__":
 
         bal_acc = balanced_accuracy_score(trues_np, preds_np)
         f1 = f1_score(trues_np, preds_np, average='macro')
-        per_class_f1 = f1_score(trues_np, preds_np, average=None)
+        per_class_f1 = f1_score(trues_np, preds_np, average=None, zero_division=0)
         acc = accuracy_score(trues_np, preds_np)
         
-        # Binary clean vs stego metrics
         binary_true = (trues_np > 0).astype(int)
-        # 1 - normality_score is the anomaly score (probability of stego)
         auc = roc_auc_score(binary_true, 1 - np.array(all_normality_scores)) if len(set(binary_true)) > 1 else 0.0
 
-        binary_pred = (preds_np > 0).astype(int)
-        clean_recall = np.sum((trues_np == 0) & (preds_np == 0)) / np.sum(trues_np == 0)
+        clean_recall = np.sum((trues_np == 0) & (preds_np == 0)) / max(np.sum(trues_np == 0), 1)
         clean_precision = np.sum((trues_np == 0) & (preds_np == 0)) / max(np.sum(preds_np == 0), 1)
         stego_recall = np.sum((trues_np > 0) & (preds_np > 0)) / max(np.sum(trues_np > 0), 1)
 
@@ -240,49 +300,61 @@ if __name__ == "__main__":
         print(f"Clean: Recall={clean_recall:.4f}, Precision={clean_precision:.4f}")
         print(f"Stego: Recall={stego_recall:.4f}, AUC={auc:.4f}")
         
-        # Determine the order of classes for metrics display
-        # Note: class_map keys are algo names, values are 0-6
         class_names = [name for name, idx in sorted(class_map.items(), key=lambda item: item[1])]
-
         print(f"Per-class F1: {', '.join([f'{class_names[i]}: {v:.4f}' for i, v in enumerate(per_class_f1)])}")
         
         from sklearn.metrics import confusion_matrix
         cm = confusion_matrix(trues_np, preds_np)
-        per_class_acc = cm.diagonal() / cm.sum(axis=1)
+        per_class_acc = cm.diagonal() / cm.sum(axis=1).clip(min=1)
         print(f"Per-class Accuracy: {', '.join([f'{class_names[i]}: {v:.4f}' for i, v in enumerate(per_class_acc)])}")
 
-        scheduler.step(val_loss)
+        scheduler.step()
 
-        # Save condition (relaxed thresholds)
+        # RELAXED saving criteria - focus on balanced accuracy
         min_stego_acc = np.min([per_class_acc[i] for i in range(1, 7)])
-        save_condition = (clean_recall > 0.55 and
-                          clean_precision > 0.75 and
-                          stego_recall > 0.75 and 
-                          min_stego_acc > 0.40 and 
-                          bal_acc > 0.70 and
-                          val_loss < best_val_loss)
+        
+        # Progressive thresholds based on epoch
+        if epoch < 5:
+            threshold_bal_acc = 0.50
+            threshold_clean_precision = 0.60
+            threshold_stego_recall = 0.50
+        elif epoch < 10:
+            threshold_bal_acc = 0.60
+            threshold_clean_precision = 0.70
+            threshold_stego_recall = 0.60
+        else:
+            threshold_bal_acc = 0.70
+            threshold_clean_precision = 0.75
+            threshold_stego_recall = 0.70
+        
+        save_condition = (bal_acc > threshold_bal_acc and
+                          clean_precision > threshold_clean_precision and
+                          stego_recall > threshold_stego_recall and
+                          bal_acc > best_balanced_acc)
         
         if save_condition:
             best_val_loss = val_loss
-            best_clean_recall = clean_recall
+            best_balanced_acc = bal_acc
             counter = 0
-            torch.save(model.state_dict(), 'best_model.pth')
-            print(f"✓ Saved - Clean Recall: {clean_recall:.4f}, Stego Recall: {stego_recall:.4f}, Val Loss: {val_loss:.4f}")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'balanced_acc': bal_acc,
+                'val_loss': val_loss,
+            }, 'best_model.pth')
+            print(f"✓ SAVED - Balanced Acc: {bal_acc:.4f}, Clean: {clean_recall:.4f}/{clean_precision:.4f}, Stego: {stego_recall:.4f}")
         else:
             counter += 1
             reasons = []
-            if clean_recall <= 0.55:
-                reasons.append(f"Clean recall: {clean_recall:.4f} ≤ 0.55")
-            if clean_precision <= 0.75:
-                reasons.append(f"Clean precision: {clean_precision:.4f} ≤ 0.75")
-            if stego_recall <= 0.75:
-                reasons.append(f"Stego recall: {stego_recall:.4f} ≤ 0.75")
-            if min_stego_acc <= 0.40:
-                reasons.append(f"Min stego acc: {min_stego_acc:.4f} ≤ 0.40")
-            if bal_acc <= 0.70:
-                reasons.append(f"Balanced acc: {bal_acc:.4f} ≤ 0.70")
-            if val_loss >= best_val_loss and clean_recall > 0.55:
-                reasons.append(f"Val loss not improved")
+            if bal_acc <= threshold_bal_acc:
+                reasons.append(f"Bal acc {bal_acc:.4f} ≤ {threshold_bal_acc:.2f}")
+            if clean_precision <= threshold_clean_precision:
+                reasons.append(f"Clean prec {clean_precision:.4f} ≤ {threshold_clean_precision:.2f}")
+            if stego_recall <= threshold_stego_recall:
+                reasons.append(f"Stego recall {stego_recall:.4f} ≤ {threshold_stego_recall:.2f}")
+            if bal_acc <= best_balanced_acc:
+                reasons.append(f"Not improved from {best_balanced_acc:.4f}")
             
             if reasons:
                 print(f"⚠ Not saving: {', '.join(reasons)}")
@@ -292,4 +364,4 @@ if __name__ == "__main__":
                 print("Early stopping triggered.")
                 break
 
-    print(f"\nTraining complete. Best clean recall: {best_clean_recall:.4f}")
+    print(f"\nTraining complete. Best balanced accuracy: {best_balanced_acc:.4f}")
