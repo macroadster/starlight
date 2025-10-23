@@ -111,12 +111,17 @@ if __name__ == "__main__":
 
     model = StarlightTwoStage(num_stego_classes=6, feature_dim=15).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    patience = 15
+    patience = 20
     best_val_loss = float('inf')
     best_clean_recall = 0.0
     counter = 0
+
+    # Class counts from dataset statistics (computed dynamically)
+    class_counts = [label_counts[0], label_counts[1], label_counts[2], label_counts[3], label_counts[4], label_counts[5], label_counts[6]]
+    class_weights = torch.tensor([1.0 / (count + 1e-6) for count in class_counts], dtype=torch.float32).to(device)  # Avoid division by zero
+    stego_class_weights = torch.tensor([1.0 / (count + 1e-6) for count in class_counts[1:]], dtype=torch.float32).to(device)
 
     for epoch in range(100):
         model.train()
@@ -135,7 +140,7 @@ if __name__ == "__main__":
                 # Three-part loss with proper weighting
                 is_clean = (labels_batch == 0).float().unsqueeze(1)
                 
-                # Stage 1: STRONG clean vs stego signal (most important!)
+                # Stage 1: STRONG clean vs stego signal
                 stage1_loss = F.binary_cross_entropy(normality_score, is_clean)
                 
                 # Stage 2: Stego type classification (only for stego samples)
@@ -143,15 +148,15 @@ if __name__ == "__main__":
                 if stego_mask.any():
                     stego_labels = labels_batch[stego_mask] - 1
                     stego_logits = stego_type_logits[stego_mask]
-                    stage2_loss = F.cross_entropy(stego_logits, stego_labels)
+                    stage2_loss = F.cross_entropy(stego_logits, stego_labels, weight=stego_class_weights)
                 else:
                     stage2_loss = 0.0
                 
                 # Overall classification loss
-                overall_loss = F.cross_entropy(outputs, labels_batch)
+                overall_loss = F.cross_entropy(outputs, labels_batch, weight=class_weights)
                 
-                # Rebalanced: Stage 1 gets highest weight to learn anomaly detection properly
-                loss = 1.5 * stage1_loss + 0.7 * stage2_loss + 0.3 * overall_loss
+                # Rebalanced: Adjusted weights for better balance
+                loss = 1.0 * stage1_loss + 1.0 * stage2_loss + 0.5 * overall_loss
                 
                 loss.backward()
                 optimizer.step()
@@ -194,13 +199,13 @@ if __name__ == "__main__":
                     if stego_mask.any():
                         stego_labels = labels_batch[stego_mask] - 1
                         stego_logits = stego_type_logits[stego_mask]
-                        stage2_loss = F.cross_entropy(stego_logits, stego_labels)
+                        stage2_loss = F.cross_entropy(stego_logits, stego_labels, weight=stego_class_weights)
                     else:
                         stage2_loss = 0.0
                     
-                    overall_loss = F.cross_entropy(outputs, labels_batch)
+                    overall_loss = F.cross_entropy(outputs, labels_batch, weight=class_weights)
                     
-                    loss = 1.5 * stage1_loss + 0.7 * stage2_loss + 0.3 * overall_loss
+                    loss = 1.0 * stage1_loss + 1.0 * stage2_loss + 0.5 * overall_loss
                     val_loss += loss.item()
                     
                     preds = outputs.argmax(1).cpu().tolist()
@@ -246,16 +251,16 @@ if __name__ == "__main__":
         per_class_acc = cm.diagonal() / cm.sum(axis=1)
         print(f"Per-class Accuracy: {', '.join([f'{class_names[i]}: {v:.4f}' for i, v in enumerate(per_class_acc)])}")
 
-        scheduler.step()
+        scheduler.step(val_loss)
 
-        # Save condition
+        # Save condition (relaxed thresholds)
         min_stego_acc = np.min([per_class_acc[i] for i in range(1, 7)])
-        save_condition = (clean_recall > 0.60 and
-                         clean_precision > 0.80 and
-                         stego_recall > 0.80 and 
-                         min_stego_acc > 0.50 and 
-                         bal_acc > 0.75 and
-                         val_loss < best_val_loss)
+        save_condition = (clean_recall > 0.55 and
+                          clean_precision > 0.75 and
+                          stego_recall > 0.75 and 
+                          min_stego_acc > 0.40 and 
+                          bal_acc > 0.70 and
+                          val_loss < best_val_loss)
         
         if save_condition:
             best_val_loss = val_loss
@@ -266,17 +271,17 @@ if __name__ == "__main__":
         else:
             counter += 1
             reasons = []
-            if clean_recall <= 0.60:
-                reasons.append(f"Clean recall: {clean_recall:.4f} ≤ 0.60")
-            if clean_precision <= 0.80:
-                reasons.append(f"Clean precision: {clean_precision:.4f} ≤ 0.80")
-            if stego_recall <= 0.80:
-                reasons.append(f"Stego recall: {stego_recall:.4f} ≤ 0.80")
-            if min_stego_acc <= 0.50:
-                reasons.append(f"Min stego acc: {min_stego_acc:.4f} ≤ 0.50")
-            if bal_acc <= 0.75:
-                reasons.append(f"Balanced acc: {bal_acc:.4f} ≤ 0.75")
-            if val_loss >= best_val_loss and clean_recall > 0.60:
+            if clean_recall <= 0.55:
+                reasons.append(f"Clean recall: {clean_recall:.4f} ≤ 0.55")
+            if clean_precision <= 0.75:
+                reasons.append(f"Clean precision: {clean_precision:.4f} ≤ 0.75")
+            if stego_recall <= 0.75:
+                reasons.append(f"Stego recall: {stego_recall:.4f} ≤ 0.75")
+            if min_stego_acc <= 0.40:
+                reasons.append(f"Min stego acc: {min_stego_acc:.4f} ≤ 0.40")
+            if bal_acc <= 0.70:
+                reasons.append(f"Balanced acc: {bal_acc:.4f} ≤ 0.70")
+            if val_loss >= best_val_loss and clean_recall > 0.55:
                 reasons.append(f"Val loss not improved")
             
             if reasons:

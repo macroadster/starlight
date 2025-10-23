@@ -240,7 +240,7 @@ class StarlightTwoStage(nn.Module):
         stego_type_logits = self.type_fusion(concatenated)  # [batch, 6]
         
         # Combine as: [clean_logit, stego_type_logits]
-        temperature = 0.5
+        temperature = 0.7
         eps = 1e-7
         # Logit for normality_score = log(p/(1-p))
         normality_logit = torch.log(normality_score + eps) - torch.log(1 - normality_score + eps)
