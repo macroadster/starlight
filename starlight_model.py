@@ -123,7 +123,7 @@ def extract_features(path, img):
         except Exception:
             pass
     
-    # EOI features (only for JPEG) - IMPROVED: Filter out legitimate post-EOI data
+    # EOI features (only for JPEG) - BALANCED: Detect stego while filtering common metadata
     eof_length_norm = 0.0
     if original_format == 'JPEG':
         try:
@@ -131,46 +131,54 @@ def extract_features(path, img):
                 data = f.read()
             if data.startswith(b'\xff\xd8'):
                 eoi_pos = data.rfind(b'\xff\xd9')
-                if eoi_pos >= 0:
+                if eoi_pos >= 0 and eoi_pos + 2 < len(data):
                     payload = data[eoi_pos + 2:]
+                    payload_len = len(payload)
                     
-                    # Check if payload looks like legitimate JPEG metadata vs steganography
-                    is_suspicious = False
-                    
-                    if len(payload) > 0:
-                        # Check for stego markers
-                        if payload.startswith(b'0xAI42') or payload.startswith(b'AI42'):
+                    # Skip if too small (just padding)
+                    if payload_len < 10:
+                        pass
+                    # Check for stego markers (high priority)
+                    elif payload.startswith(b'0xAI42') or payload.startswith(b'AI42'):
+                        eof_length_norm = min(payload_len / area, 1.0)
+                    # Skip ONLY very specific legitimate formats
+                    elif (payload.startswith(b'\xff\xd8\xff') or  # Complete embedded JPEG (thumbnail)
+                          payload.startswith(b'Exif\x00\x00') or  # Standard EXIF
+                          payload.startswith(b'ICC_PROFILE\x00') or  # ICC profile
+                          payload.startswith(b'<?xpacket begin')):  # XMP
+                        pass
+                    # For everything else, use heuristics
+                    else:
+                        is_suspicious = False
+                        
+                        # Large payloads are suspicious
+                        if payload_len > 5000:  # >5KB
                             is_suspicious = True
-                        # Check for high entropy (random data suggests stego)
-                        elif len(payload) > 100:
-                            # Calculate byte entropy
-                            byte_counts = np.bincount(np.frombuffer(payload[:min(1000, len(payload))], dtype=np.uint8), minlength=256)
+                        # Check byte entropy for random/encrypted data
+                        elif payload_len > 100:
+                            sample = payload[:min(500, payload_len)]
+                            byte_counts = np.bincount(np.frombuffer(sample, dtype=np.uint8), minlength=256)
                             payload_entropy = entropy(byte_counts + 1)
-                            # High entropy (>7.0) suggests encrypted/random data
-                            if payload_entropy > 7.0:
+                            # High entropy (>6.5) suggests encrypted/compressed/random data
+                            if payload_entropy > 6.5:
                                 is_suspicious = True
-                        # Check for unusual length (very long trailing data)
-                        elif len(payload) > 10000:  # >10KB is suspicious
-                            is_suspicious = True
-                        # Check if it's NOT a known format
-                        # Legitimate data often starts with known markers:
-                        # - FF D8 (JPEG thumbnail)
-                        # - Exif, JFIF, ICC, XMP markers
-                        # - Padding (00 00 00...)
-                        elif not (payload.startswith(b'\xff\xd8') or  # JPEG thumbnail
-                                  payload.startswith(b'Exif') or
-                                  payload.startswith(b'ICC_PROFILE') or
-                                  payload.startswith(b'<?xpacket') or
-                                  payload.startswith(b'http://ns.adobe.com') or
-                                  all(b == 0 for b in payload[:min(20, len(payload))])):  # Padding
-                            # Unknown format - potentially suspicious
-                            if len(payload) > 50:  # Only flag if substantial
-                                is_suspicious = True
-                    
-                    # Only set feature if suspicious
-                    if is_suspicious:
-                        eof_length = len(payload)
-                        eof_length_norm = min(eof_length / area, 1.0)
+                        
+                        # Try UTF-8 decode - text is suspicious for EOI
+                        if not is_suspicious and payload_len > 20:
+                            try:
+                                decoded = payload.decode('utf-8', errors='strict')
+                                # If it decodes as mostly printable text, it's likely stego
+                                printable_ratio = sum(c.isprintable() or c in '\n\r\t' for c in decoded) / len(decoded)
+                                if printable_ratio > 0.7:
+                                    is_suspicious = True
+                            except UnicodeDecodeError:
+                                # Binary data - check if it's NOT null padding
+                                non_null = sum(1 for b in payload[:min(50, payload_len)] if b != 0)
+                                if non_null > 10:  # Has substantial non-null data
+                                    is_suspicious = True
+                        
+                        if is_suspicious:
+                            eof_length_norm = min(payload_len / area, 1.0)
         except:
             pass
     

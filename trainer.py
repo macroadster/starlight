@@ -49,6 +49,9 @@ class CustomDataset(Dataset):
         img = Image.open(path)
         original_mode = img.mode
         
+        # Extract features from ORIGINAL image
+        features = extract_features(path, img)
+        
         # CRITICAL: Only preserve alpha for images that ORIGINALLY had it
         if original_mode in ('RGBA', 'LA', 'PA'):
             img_processed = img.convert('RGBA')
@@ -57,9 +60,6 @@ class CustomDataset(Dataset):
             img_rgb = img.convert('RGB')
             img_processed = Image.new('RGBA', img_rgb.size, (0, 0, 0, 255))
             img_processed.paste(img_rgb, (0, 0))
-        
-        # Extract features from ORIGINAL image
-        features = extract_features(path, img_processed)
         
         if self.transform:
             img_processed = self.transform(img_processed)
@@ -108,15 +108,19 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training")
     parser.add_argument('--epochs', type=int, default=25, help="Number of training epochs")
     parser.add_argument('--lr', type=float, default=5e-5, help="Learning rate")
+    parser.add_argument('--patience', type=int, default=8, help="Early stopping patience")
     args = parser.parse_args()
     
     root_dir = args.root_dir
     batch_size = args.batch_size
     max_epochs = args.epochs
     learning_rate = args.lr
+    patience_val = args.patience
     
     # Collect data
-    image_paths, labels = collect_data()
+    
+    # Collect data
+    image_paths, labels = collect_data(root_dir)
     if not image_paths:
         print("Error: No data found.")
         exit()
@@ -142,8 +146,9 @@ if __name__ == "__main__":
     train_dataset = CustomDataset(train_paths, train_labels, transform=transform_train)
     val_dataset = CustomDataset(val_paths, val_labels, transform=transform_val)
     
-    # Use sampler instead of shuffle, with larger batch size for stability
-    train_loader = DataLoader(train_dataset, batch_size=32, sampler=sampler, 
+    
+    # Use sampler instead of shuffle, with configurable batch size for stability
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler, 
                              num_workers=4, drop_last=True, pin_memory=False)
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, 
                            num_workers=4, drop_last=False, pin_memory=False)
@@ -159,11 +164,11 @@ if __name__ == "__main__":
     # Model now expects 24 features (enhanced from 15)
     model = StarlightTwoStage(num_stego_classes=6, feature_dim=24).to(device)
     
-    # BETTER OPTIMIZER: Lower learning rate, less aggressive weight decay
-    optimizer = optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
+    # BETTER OPTIMIZER: Configurable learning rate, less aggressive weight decay
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
     # Cosine annealing instead of ReduceLROnPlateau for smoother training
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=1e-6)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, eta_min=1e-6)
 
     patience = 8  # Increased patience
     best_val_loss = float('inf')
@@ -188,14 +193,15 @@ if __name__ == "__main__":
 
     print(f"\nClass weights: {class_weights}")
     print(f"Stego weights: {stego_class_weights}")
+    print(f"Training config: batch_size={batch_size}, epochs={max_epochs}, lr={learning_rate}\n")
 
-    for epoch in range(25):  # Increased epochs
+    for epoch in range(max_epochs):
         model.train()
         train_loss = 0.0
         train_correct = 0
         train_total = 0
         
-        with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/25 [Train]", unit="batch") as pbar:
+        with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/{max_epochs} [Train]", unit="batch") as pbar:
             for i, (images, features, labels_batch) in enumerate(train_loader):
                 images, features, labels_batch = images.to(device), features.to(device), labels_batch.to(device)
                 
@@ -239,7 +245,7 @@ if __name__ == "__main__":
 
         train_loss /= len(train_loader)
         train_acc = 100. * train_correct / train_total
-        print(f"Epoch {epoch+1}/25, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+        print(f"Epoch {epoch+1}/{max_epochs}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
 
         model.eval()
         val_loss = 0.0
@@ -249,7 +255,7 @@ if __name__ == "__main__":
         all_normality_scores = []
         
         with torch.no_grad():
-            with tqdm(total=len(val_loader), desc=f"Epoch {epoch+1}/25 [Val]", unit="batch") as pbar:
+            with tqdm(total=len(val_loader), desc=f"Epoch {epoch+1}/{max_epochs} [Val]", unit="batch") as pbar:
                 for images, features, labels_batch in val_loader:
                     images, features, labels_batch = images.to(device), features.to(device), labels_batch.to(device)
                     
