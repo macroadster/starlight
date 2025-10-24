@@ -35,13 +35,15 @@ def scan_directory(model, device, directory, clean_threshold, class_map, batch_s
         
         for path in batch_paths:
             try:
-                # Open and preserve original format
+                # Open and preserve original format for feature extraction
                 img_original = Image.open(path)
-                # Use imported feature extractor
+                
+                # Extract 24 features from ORIGINAL image
                 features = extract_features(path, img_original)
                 
                 # Convert to RGBA for model
                 img_rgba = img_original.convert('RGBA')
+                
                 # Use imported transform
                 img_tensor = transform(img_rgba)
                 
@@ -62,11 +64,11 @@ def scan_directory(model, device, directory, clean_threshold, class_map, batch_s
         with torch.no_grad():
             all_logits, normality_score, stego_type_logits = model(batch_images, batch_features)
             probs = F.softmax(all_logits, dim=1).cpu().numpy()
-            normality_probs = normality_score.squeeze().cpu().numpy()
+            normality_probs = normality_score.flatten().cpu().numpy()
         
         # Process results
         for path, prob, norm_prob in zip(valid_paths, probs, normality_probs):
-            clean_prob = norm_prob.item() # Normality score is the clean probability estimate
+            clean_prob = norm_prob.item() if isinstance(norm_prob, np.ndarray) else norm_prob
             pred_class = np.argmax(prob)
             pred_label = class_map[pred_class]
             
@@ -118,21 +120,32 @@ def main():
     else:
         device = torch.device('cpu')
     
-    print(f"Loading model weights from {args.model}...")
+    print(f"Loading model from {args.model}...")
     try:
-        # StarlightTwoStage is imported from starlight_model.py
-        model = StarlightTwoStage(num_stego_classes=6, feature_dim=15)
-        model.load_state_dict(torch.load(args.model, map_location=device))
-        print("Model loaded successfully.")
+        # Load model with 24 features (upgraded from 15)
+        model = StarlightTwoStage(num_stego_classes=6, feature_dim=24)
+        
+        # Handle both checkpoint formats
+        checkpoint = torch.load(args.model, map_location=device)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            # New format with metadata
+            model.load_state_dict(checkpoint['model_state_dict'])
+            epoch = checkpoint.get('epoch', 'unknown')
+            bal_acc = checkpoint.get('balanced_acc', 'unknown')
+            print(f"Model loaded successfully (Epoch: {epoch}, Balanced Acc: {bal_acc})")
+        else:
+            # Old format - direct state_dict
+            model.load_state_dict(checkpoint)
+            print("Model loaded successfully.")
     except Exception as e:
-        print(f"Error loading model weights: {e}")
+        print(f"Error loading model: {e}")
         sys.exit(1)
     
     model.to(device)
     model.eval()
     
     print(f"Using device: {device}")
-    print(f"Model: StarlightTwoStage (7 classes)")
+    print(f"Model: StarlightTwoStage (7 classes, 24 features)")
     print(f"Model classes: {', '.join(class_map.values())}")
     print(f"Clean Probability Threshold: {args.threshold}")
     
@@ -147,13 +160,30 @@ def main():
     total = len(results)
     flagged = sum(1 for r in results if r['is_stego'])
     
-    print("\n--- SCAN SUMMARY ---")
+    print("\n" + "=" * 80)
+    print("SCAN SUMMARY")
+    print("=" * 80)
     print(f"Total Images Scanned: {total}")
-    print(f"Images Flagged as Stego: {flagged} (Clean Prob. Threshold: {args.threshold:.2f})")
-    print(f"Discrepancies Detected:")
-    print(f"  Predicted Clean with Low Clean Probability (< {args.threshold:.2f}): {discrepancies['clean_low_prob']}")
-    print(f"  Predicted Stego with High Clean Probability (> {args.threshold:.2f}): {discrepancies['stego_high_prob']}")
-    print("-" * 20)
+    print(f"Images Flagged as Stego: {flagged}")
+    print(f"Clean Probability Threshold: {args.threshold:.2f}")
+    
+    # Breakdown by stego type
+    if flagged > 0:
+        print(f"\nDetected Stego Types:")
+        stego_counts = {}
+        for r in results:
+            if r['is_stego']:
+                stego_type = r['pred_class']
+                stego_counts[stego_type] = stego_counts.get(stego_type, 0) + 1
+        
+        for stego_type in sorted(stego_counts.keys()):
+            count = stego_counts[stego_type]
+            print(f"  {stego_type.upper()}: {count} ({100*count/flagged:.1f}%)")
+    
+    print(f"\nDiscrepancies (Stage 1 vs Stage 2):")
+    print(f"  Predicted Clean but Low Normality Score (< {args.threshold:.2f}): {discrepancies['clean_low_prob']}")
+    print(f"  Predicted Stego but High Normality Score (> {args.threshold:.2f}): {discrepancies['stego_high_prob']}")
+    print("=" * 80)
     
     # Detailed results only if verbose is True
     if args.verbose:
@@ -163,15 +193,22 @@ def main():
             print(f"[{idx}] {os.path.basename(result['path'])}")
             print(f"  Status: {status}")
             print(f"  Overall Prediction: {result['pred_class'].upper()} (Conf: {result['pred_conf']:.4f})")
+            print(f"  Stage 1 Normality Score: {result['clean_prob']:.4f}")
             
             if result['is_stego']:
-                # Find highest non-clean class
-                stego_probs = result['all_probs'][1:]
-                stego_idx = np.argmax(stego_probs) + 1
-                stego_type = class_map[stego_idx]
-                print(f"  Most Likely Stego Type: {stego_type.upper()} (Conf: {result['all_probs'][stego_idx]:.4f})")
-            else:
-                print(f"  Clean Confidence: {result['clean_prob']:.4f}")
+                # Show all stego type probabilities
+                print(f"  Stego Type Probabilities:")
+                for class_idx in range(1, 7):
+                    class_name = class_map[class_idx]
+                    class_prob = result['all_probs'][class_idx]
+                    print(f"    {class_name}: {class_prob:.4f}")
+            
+            # Flag discrepancies
+            if result['is_stego'] and result['clean_prob'] > args.threshold:
+                print(f"  ⚠️  DISCREPANCY: Predicted stego but high normality score!")
+            elif not result['is_stego'] and result['clean_prob'] < args.threshold:
+                print(f"  ⚠️  DISCREPANCY: Predicted clean but low normality score!")
+            
             print()
 
 if __name__ == "__main__":
