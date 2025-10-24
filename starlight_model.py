@@ -123,7 +123,7 @@ def extract_features(path, img):
         except Exception:
             pass
     
-    # EOI features (only for JPEG)
+    # EOI features (only for JPEG) - IMPROVED: Filter out legitimate post-EOI data
     eof_length_norm = 0.0
     if original_format == 'JPEG':
         try:
@@ -132,8 +132,45 @@ def extract_features(path, img):
             if data.startswith(b'\xff\xd8'):
                 eoi_pos = data.rfind(b'\xff\xd9')
                 if eoi_pos >= 0:
-                    eof_length = len(data) - (eoi_pos + 2)
-                    eof_length_norm = min(eof_length / area, 1.0)
+                    payload = data[eoi_pos + 2:]
+                    
+                    # Check if payload looks like legitimate JPEG metadata vs steganography
+                    is_suspicious = False
+                    
+                    if len(payload) > 0:
+                        # Check for stego markers
+                        if payload.startswith(b'0xAI42') or payload.startswith(b'AI42'):
+                            is_suspicious = True
+                        # Check for high entropy (random data suggests stego)
+                        elif len(payload) > 100:
+                            # Calculate byte entropy
+                            byte_counts = np.bincount(np.frombuffer(payload[:min(1000, len(payload))], dtype=np.uint8), minlength=256)
+                            payload_entropy = entropy(byte_counts + 1)
+                            # High entropy (>7.0) suggests encrypted/random data
+                            if payload_entropy > 7.0:
+                                is_suspicious = True
+                        # Check for unusual length (very long trailing data)
+                        elif len(payload) > 10000:  # >10KB is suspicious
+                            is_suspicious = True
+                        # Check if it's NOT a known format
+                        # Legitimate data often starts with known markers:
+                        # - FF D8 (JPEG thumbnail)
+                        # - Exif, JFIF, ICC, XMP markers
+                        # - Padding (00 00 00...)
+                        elif not (payload.startswith(b'\xff\xd8') or  # JPEG thumbnail
+                                  payload.startswith(b'Exif') or
+                                  payload.startswith(b'ICC_PROFILE') or
+                                  payload.startswith(b'<?xpacket') or
+                                  payload.startswith(b'http://ns.adobe.com') or
+                                  all(b == 0 for b in payload[:min(20, len(payload))])):  # Padding
+                            # Unknown format - potentially suspicious
+                            if len(payload) > 50:  # Only flag if substantial
+                                is_suspicious = True
+                    
+                    # Only set feature if suspicious
+                    if is_suspicious:
+                        eof_length = len(payload)
+                        eof_length_norm = min(eof_length / area, 1.0)
         except:
             pass
     

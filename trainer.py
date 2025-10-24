@@ -49,9 +49,6 @@ class CustomDataset(Dataset):
         img = Image.open(path)
         original_mode = img.mode
         
-        # Extract features from ORIGINAL image
-        features = extract_features(path, img)
-        
         # CRITICAL: Only preserve alpha for images that ORIGINALLY had it
         if original_mode in ('RGBA', 'LA', 'PA'):
             img_processed = img.convert('RGBA')
@@ -60,6 +57,9 @@ class CustomDataset(Dataset):
             img_rgb = img.convert('RGB')
             img_processed = Image.new('RGBA', img_rgb.size, (0, 0, 0, 255))
             img_processed.paste(img_rgb, (0, 0))
+        
+        # Extract features from ORIGINAL image
+        features = extract_features(path, img_processed)
         
         if self.transform:
             img_processed = self.transform(img_processed)

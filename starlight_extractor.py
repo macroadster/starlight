@@ -510,7 +510,7 @@ def extract_exif(image_path):
 def extract_eoi(image_path):
     """
     Extract data hidden after JPEG End-of-Image (EOI) marker.
-    CRITICAL FIX: Only processes JPEG files to avoid false positives.
+    CRITICAL FIX: Only processes JPEG files and filters legitimate metadata.
     """
     try:
         img = Image.open(image_path)
@@ -535,17 +535,59 @@ def extract_eoi(image_path):
     
     payload = data[eoi_pos + 2:]
     
+    # Additional validation: Skip legitimate JPEG metadata
     if len(payload) < 4:
         return None, None
     
+    # Skip known legitimate formats
+    if (payload.startswith(b'\xff\xd8') or      # JPEG thumbnail
+        payload.startswith(b'Exif') or           # EXIF data
+        payload.startswith(b'ICC_PROFILE') or    # ICC profile
+        payload.startswith(b'<?xpacket') or      # XMP metadata
+        payload.startswith(b'http://ns.adobe.com')):  # Adobe metadata
+        print(f"  [DEBUG] EOI: Skipping legitimate metadata ({payload[:20]})")
+        return None, None
+    
+    # Skip if it's just padding (all zeros or all 0xFF)
+    if all(b == 0 for b in payload[:min(20, len(payload))]):
+        print(f"  [DEBUG] EOI: Skipping null padding")
+        return None, None
+    
+    if all(b == 0xFF for b in payload[:min(20, len(payload))]):
+        print(f"  [DEBUG] EOI: Skipping 0xFF padding")
+        return None, None
+    
+    # Check for the AI42 hint marker (our stego format)
     if payload.startswith(b'0xAI42'):
         payload = payload[6:]
         terminator_pos = payload.find(b'\x00')
         if terminator_pos != -1:
             payload = payload[:terminator_pos]
+    elif payload.startswith(b'AI42'):
+        payload = payload[4:]
+        terminator_pos = payload.find(b'\x00')
+        if terminator_pos != -1:
+            payload = payload[:terminator_pos]
+    else:
+        # No marker found - be cautious
+        # Check if payload looks like text vs binary
+        try:
+            # Try to decode as text
+            test_decode = payload.decode('utf-8', errors='strict')
+            # If it decodes cleanly and is mostly printable, might be stego
+            printable_ratio = sum(c.isprintable() or c in '\n\r\t' for c in test_decode) / len(test_decode)
+            if printable_ratio < 0.8:
+                print(f"  [DEBUG] EOI: Low printable ratio ({printable_ratio:.2f}), likely not text stego")
+                return None, None
+        except UnicodeDecodeError:
+            # Binary data without marker - probably not our stego
+            print(f"  [DEBUG] EOI: Binary data without AI42 marker, skipping")
+            return None, None
     
+    # Try to decode as UTF-8
     try:
         message = payload.decode('utf-8')
+        # Additional validation: message should be mostly printable
         printable_ratio = sum(c.isprintable() or c in '\n\r\t' for c in message) / len(message)
         if printable_ratio > 0.8:
             return message, None
