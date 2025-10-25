@@ -284,81 +284,18 @@ def extract_features(path, img):
         is_jpeg, is_png
     ], dtype=np.float32)
 
-# TWO-STAGE ARCHITECTURE: Anomaly Detection + Type Classification
-class StarlightTwoStage(nn.Module):
-    def __init__(self, num_stego_classes=6, feature_dim=24):
-        super(StarlightTwoStage, self).__init__()
-        
-        # ============== STAGE 1: ANOMALY DETECTOR ==============
-        # Statistical Feature Analyzer (primary for anomaly detection)
-        self.anomaly_sf_branch = nn.Sequential(
-            nn.Linear(feature_dim, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, 128),
-            nn.ReLU()
-        )
-        
-        # Pixel-level anomaly detection (lightweight)
-        self.anomaly_pixel_branch = nn.Sequential(
+class StarlightCNN(nn.Module):
+    """
+    CNN that learns from RF teacher
+    5 classes: clean, alpha, palette, dct, lsb
+    (EXIF/EOI still handled by RF at runtime)
+    """
+    def __init__(self, num_classes=5, feature_dim=24):
+        super(StarlightCNN, self).__init__()
+
+        # CNN backbone
+        self.cnn = nn.Sequential(
             nn.Conv2d(4, 32, kernel_size=5, padding=2),
-            nn.ReLU(),
-            nn.MaxPool2d(4),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(64, 64),
-            nn.ReLU()
-        )
-        
-        # Anomaly score fusion
-        self.anomaly_fusion = nn.Sequential(
-            nn.Linear(128 + 64, 128),
-            nn.ReLU(),
-            nn.Dropout(0.4),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),  # Single normality score
-            nn.Sigmoid()
-        )
-        
-        # ============== STAGE 2: STEGO TYPE CLASSIFIER ==============
-        
-        # SRM filter for stego type detection
-        kernel = torch.tensor([[[ -1.,  2., -1.],
-                                [  2., -4.,  2.],
-                                [ -1.,  2., -1.]]], dtype=torch.float32)
-        kernel_rgba = kernel.repeat(4, 1, 1, 1)
-        self.srm_conv = nn.Conv2d(4, 4, kernel_size=3, padding=1, groups=4, bias=False)
-        self.srm_conv.weight = nn.Parameter(kernel_rgba, requires_grad=False)
-        
-        # Pixel Domain branch for type classification
-        resnet = models.resnet18(weights=None)
-        self.rgba_conv1 = nn.Conv2d(4, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        with torch.no_grad():
-            nn.init.kaiming_normal_(self.rgba_conv1.weight, mode='fan_out', nonlinearity='relu')
-        resnet.conv1 = self.rgba_conv1
-        self.pd_backbone = nn.Sequential(*list(resnet.children())[:-1])
-        
-        # SF branch for type classification (with enhanced features)
-        self.type_sf_branch = nn.Sequential(
-            nn.Linear(feature_dim, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 256),
-            nn.ReLU()
-        )
-        
-        # Frequency Domain branch
-        self.fd_cnn = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2),
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
@@ -366,71 +303,32 @@ class StarlightTwoStage(nn.Module):
             nn.MaxPool2d(2),
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),
+            nn.AdaptiveAvgPool2d(7),
             nn.Flatten(),
-            nn.Linear(128, 256),
-            nn.ReLU()
-        )
-        
-        # Type classification fusion
-        self.type_fusion = nn.Sequential(
-            nn.Linear(512 + 256 + 256, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, num_stego_classes)  # 6 stego types (no clean)
         )
 
-    def forward(self, image, features, return_stage1=False):
-        # ============== STAGE 1: Anomaly Detection ==============
-        sf_anomaly = self.anomaly_sf_branch(features)
-        pixel_anomaly = self.anomaly_pixel_branch(image)
-        
-        anomaly_features = torch.cat([sf_anomaly, pixel_anomaly], dim=1)
-        normality_score = self.anomaly_fusion(anomaly_features)  # [batch, 1], 1=normal, 0=anomalous
-        
-        if return_stage1:
-            return normality_score
-        
-        # ============== STAGE 2: Stego Type Classification ==============
-        filtered = self.srm_conv(image)
-        pd_feat = self.pd_backbone(filtered).flatten(1)
-        
-        sf_feat = self.type_sf_branch(features)
-        
-        image_rgb = image[:, :3, :, :]
-        dct_img = self.dct2d(image_rgb)
-        fd_feat = self.fd_cnn(dct_img)
-        
-        concatenated = torch.cat([pd_feat, sf_feat, fd_feat], dim=1)
-        stego_type_logits = self.type_fusion(concatenated)  # [batch, 6]
-        
-        # Combine as: [clean_logit, stego_type_logits]
-        temperature = 0.7
-        eps = 1e-7
-        # Logit for normality_score = log(p/(1-p))
-        normality_logit = torch.log(normality_score + eps) - torch.log(1 - normality_score + eps)
-        clean_logit = normality_logit * temperature
-        all_logits = torch.cat([clean_logit, stego_type_logits], dim=1)  # [batch, 7]
-        
-        return all_logits, normality_score, stego_type_logits
-    
-    def dct2d(self, x):
-        def dct1d(y):
-            N = y.size(-1)
-            even = y[..., ::2]
-            odd = y[..., 1::2].flip(-1)
-            v = torch.cat([even, odd], dim=-1)
-            Vc = torch.fft.fft(v, dim=-1)
-            k = torch.arange(N, dtype=x.dtype, device=x.device) * (math.pi / (2 * N))
-            W_r = torch.cos(k)
-            W_i = torch.sin(k)
-            V = 2 * (Vc.real * W_r - Vc.imag * W_i)
-            return V
-        dct_col = dct1d(x)
-        dct_col = dct_col.transpose(2, 3)
-        dct_row = dct1d(dct_col)
-        dct_row = dct_row.transpose(2, 3)
-        return dct_row
+        # Feature branch
+        self.feature_branch = nn.Sequential(
+            nn.Linear(feature_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+        )
+
+        # Classifier (5 classes: clean + 4 pixel-based stego)
+        self.classifier = nn.Sequential(
+            nn.Linear(128 * 7 * 7 + 128, 256),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, images, features):
+        cnn_features = self.cnn(images)
+        stat_features = self.feature_branch(features)
+        combined = torch.cat([cnn_features, stat_features], dim=1)
+        return self.classifier(combined)

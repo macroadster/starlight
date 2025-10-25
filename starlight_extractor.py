@@ -7,7 +7,7 @@ import numpy as np
 import argparse
 
 # Import the two-stage model and features from starlight_model.py
-from starlight_model import StarlightTwoStage, transform_val as transform_rgba_val, extract_features
+from starlight_model import transform_val as transform_rgba_val, extract_features
 
 try:
     import piexif
@@ -345,9 +345,9 @@ def extract_palette(image_path):
     bits = ''.join(str(pixel & 1) for pixel in img_array.flatten())
     return extract_message_from_bits(bits)
 
-def extract_dct(image_path, clean_path=None):
+def extract_sdm(image_path, clean_path=None):
     """
-    Extract data from PNG DCT embedding.
+    Extract data from PNG SDM embedding.
     """
     stego_img = Image.open(image_path).convert('RGB')
     stego_array = np.array(stego_img, dtype=np.float32)
@@ -357,7 +357,7 @@ def extract_dct(image_path, clean_path=None):
     
     # MODE 1: With clean image (most accurate)
     if clean_path and os.path.exists(clean_path):
-        print(f"  [DEBUG] DCT extraction using clean image comparison")
+        print(f"  [DEBUG] SDM extraction using clean image comparison")
         orig_img = Image.open(clean_path).convert('RGB')
         orig_array = np.array(orig_img, dtype=np.float32)
         
@@ -388,7 +388,7 @@ def extract_dct(image_path, clean_path=None):
     
     # MODE 2: Without clean image (pattern detection)
     else:
-        print(f"  [DEBUG] DCT extraction without clean image - using pattern detection")
+        print(f"  [DEBUG] SDM extraction without clean image - using pattern detection")
         
         block_centers = []
         for y in range(0, height - block_size, block_size):
@@ -401,7 +401,7 @@ def extract_dct(image_path, clean_path=None):
                         block_centers.append((y, x, center_val))
         
         if len(block_centers) < 100:
-            print(f"  [DEBUG] DCT extraction failed: too few blocks ({len(block_centers)})")
+            print(f"  [DEBUG] SDM extraction failed: too few blocks ({len(block_centers)})")
             return None, None
         
         bits = []
@@ -432,7 +432,7 @@ def extract_dct(image_path, clean_path=None):
                     bits.append('0')
     
     if len(bits) < 32:
-        print(f"  [DEBUG] DCT extraction failed: only {len(bits)} bits extracted (need at least 32)")
+        print(f"  [DEBUG] SDM extraction failed: only {len(bits)} bits extracted (need at least 32)")
         return None, None
     
     bits_str = ''.join(bits)
@@ -441,13 +441,13 @@ def extract_dct(image_path, clean_path=None):
         length = int(bits_str[:32], 2)
         
         if length > 100000 or length <= 0:
-            print(f"  [DEBUG] DCT extraction failed: invalid length {length}")
+            print(f"  [DEBUG] SDM extraction failed: invalid length {length}")
             return None, None
         
         total_bits_needed = 32 + length * 8
         
         if len(bits_str) < total_bits_needed:
-            print(f"  [DEBUG] DCT extraction failed: need {total_bits_needed} bits, have {len(bits_str)}")
+            print(f"  [DEBUG] SDM extraction failed: need {total_bits_needed} bits, have {len(bits_str)}")
             return None, None
         
         payload_bits = bits_str[32:total_bits_needed]
@@ -456,13 +456,13 @@ def extract_dct(image_path, clean_path=None):
         
         try:
             message = payload_bytes.decode('utf-8')
-            print(f"  [DEBUG] DCT extraction successful. Message length: {len(message)} chars")
+            print(f"  [DEBUG] SDM extraction successful. Message length: {len(message)} chars")
             return message, None
         except UnicodeDecodeError:
             return payload_bytes.hex(), None
             
     except Exception as e:
-        print(f"  [DEBUG] DCT extraction error: {e}")
+        print(f"  [DEBUG] SDM extraction error: {e}")
         return None, None
 
 def extract_exif(image_path):
@@ -599,139 +599,9 @@ def extract_eoi(image_path):
 extraction_functions = {
     'alpha': extract_alpha,
     'palette': extract_palette,
-    'dct': extract_dct,
+    'sdm': extract_sdm,
     'lsb': extract_lsb,
     'exif': extract_exif,
     'eoi': extract_eoi
 }
 
-def predict(model, device, image_path, class_map):
-    """
-    Predicts the steganography type using the StarlightTwoStage model.
-    Now uses 24 enhanced features instead of 15.
-    """
-    model.eval()
-    
-    # Open image in original format first for proper feature extraction
-    img_original = Image.open(image_path)
-    
-    # Extract the 24 enhanced features from ORIGINAL image
-    features = extract_features(image_path, img_original)
-    
-    # Now convert to RGBA for model input
-    img = img_original.convert('RGBA')
-    
-    # Apply the RGBA transform
-    img_tensor = transform_rgba_val(img).unsqueeze(0).to(device)
-    features_tensor = torch.tensor(features).unsqueeze(0).to(device)
-    
-    with torch.no_grad():
-        all_logits, normality_score, stego_type_logits = model(img_tensor, features_tensor)
-        
-        outputs = all_logits 
-        
-        probs = F.softmax(outputs, dim=1).cpu().numpy()[0]
-        pred_class = np.argmax(probs)
-        pred_label = class_map.get(pred_class, 'unknown')
-        confidence = probs[pred_class]
-        
-    return pred_label, confidence, probs
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Steganography Extractor using Starlight Model")
-    parser.add_argument('image_paths', nargs='+', help="Paths to the image files to analyze")
-    parser.add_argument('--model_path', default='best_model.pth', help="Path to the trained model file")
-    parser.add_argument('--channel', default='all', choices=['all', 'red', 'green', 'blue'], help="Channel for LSB extraction")
-    parser.add_argument('--clean_path', default=None, help="Path to the corresponding clean image for DCT extraction")
-    parser.add_argument('--extract_algo', default=None, choices=list(extraction_functions.keys()), help="Explicitly specify the stego algorithm to attempt extraction for, overriding the model's prediction.")
-    args = parser.parse_args()
-
-    class_map = {0: 'clean', 1: 'alpha', 2: 'palette', 3: 'dct', 4: 'lsb', 5: 'eoi', 6: 'exif'}
-
-    if torch.backends.mps.is_available():
-        device = torch.device('mps')
-    elif torch.cuda.is_available():
-        device = torch.device('cuda')
-    else:
-        device = torch.device('cpu')
-    print(f"Using device: {device}")
-
-    # Instantiate the StarlightTwoStage model with 24 features
-    model = StarlightTwoStage(num_stego_classes=6, feature_dim=24)
-    try:
-        # Load checkpoint - handle both old format (direct state_dict) and new format (checkpoint dict)
-        checkpoint = torch.load(args.model_path, map_location=device)
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            # New format with extra metadata
-            model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Loaded model from epoch {checkpoint.get('epoch', 'unknown')}")
-        else:
-            # Old format - direct state_dict
-            model.load_state_dict(checkpoint)
-    except Exception as e:
-        print(f"Error: Failed to load model from {args.model_path}: {str(e)}")
-        exit(1)
-    model.to(device)
-
-    for image_path in args.image_paths:
-        if not os.path.exists(image_path):
-            print(f"Error: File not found - {image_path}")
-            continue
-        
-        clean_path = args.clean_path
-        if clean_path is None:
-            # Attempt to find a corresponding clean image automatically
-            clean_path = image_path.replace('/stego/', '/clean/')
-            if not os.path.exists(clean_path):
-                clean_path = None
-        
-        pred_label, confidence, probs = predict(model, device, image_path, class_map)
-        
-        # Determine the extraction algorithm to use: explicitly specified or predicted
-        algo_to_try = args.extract_algo if args.extract_algo else pred_label
-
-        print(f"\nAnalysis for {image_path}:")
-        
-        # Print prediction results
-        if pred_label == 'clean':
-            print("  Predicted: Clean (no steganography detected)")
-            print(f"  Confidence: {confidence:.4f}")
-        else:
-            print(f"  Predicted Stego Algorithm: {pred_label}")
-            print(f"  Confidence: {confidence:.4f}")
-        
-        print("  All Probabilities:")
-        for idx, label in class_map.items():
-            print(f"    {label}: {probs[idx]:.4f}")
-
-        # Only attempt extraction if the determined algorithm is a stego algorithm
-        if algo_to_try != 'clean' and algo_to_try in extraction_functions:
-            extractor = extraction_functions.get(algo_to_try)
-            
-            # Print which algorithm is being used
-            if args.extract_algo:
-                print(f"  Attempting extraction with explicitly specified algorithm: {algo_to_try}")
-            else:
-                print(f"  Attempting extraction with predicted algorithm: {algo_to_try}")
-                
-            if extractor:
-                # Call the specific extractor function
-                if algo_to_try == 'lsb':
-                    message, bits = extractor(image_path, channel=args.channel)
-                elif algo_to_try == 'dct':
-                    message, bits = extractor(image_path, clean_path=clean_path)
-                else:
-                    message, bits = extractor(image_path)
-                
-                if message:
-                    print("  Extracted Message:")
-                    print(f"    {message}")
-                else:
-                    print("  No message extracted or extraction failed.")
-            else:
-                print(f"  Extraction not implemented for algorithm: {algo_to_try}.")
-        elif algo_to_try != 'clean' and algo_to_try not in extraction_functions:
-             print(f"  Error: Explicitly specified algorithm '{algo_to_try}' is not a valid extraction type.")
-        else:
-            # Skip extraction for 'clean' prediction
-            pass

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import glob
 import re
@@ -17,7 +18,7 @@ SAMPLE_SIZE = 30
 IMAGE_FILE_PATTERN = '*{ext}'
 IMAGE_EXTENSIONS = ['png', 'gif', 'jpeg', 'jpg', 'webp', 'bmp']
 # The name of your primary execution script
-EXTRACTOR_SCRIPT = 'starlight_extractor.py'
+EXTRACTOR_SCRIPT = 'scanner.py'
 
 def parse_filename(filename):
     """
@@ -57,25 +58,24 @@ def normalize_text(text):
 
 def run_extraction_test(image_path, algorithm, clean_path=None, payload_path=None):
     """
-    Runs the starlight_extractor.py script for a specific image and algorithm.
+    Runs the scanner.py script for a specific image and algorithm.
     Returns a tuple: (result_status, failure_details)
+    
+    UPDATED: Now parses the 'MESSAGE EXTRACTED' block from scanner.py's output.
     """
     
-    # Base command arguments
-    # FIX: Uses positional argument for image_path and '--extract_algo' with underscore.
+    # Base command arguments for single file analysis and extraction
     command = [
         'python3', 
         EXTRACTOR_SCRIPT, 
         image_path,
-        '--extract_algo', algorithm
+        '--extract' # Important: Add the --extract flag
     ]
-
-    # Special handling for DCT (requires clean reference)
-    if algorithm == 'dct':
-        if clean_path and os.path.exists(clean_path):
-            command.extend(['--clean_path', clean_path])
-        else:
-            return "SKIPPED", "DCT skipped: Clean reference file not found."
+    
+    # Add clean path for SDM extraction, if needed (though the current scanner.py only uses it for SDM)
+    # We will assume that the existing logic in scanner.py handles which arguments it needs.
+    if algorithm == 'sdm' and clean_path:
+        command.extend(['--clean_path', clean_path])
 
     # Read expected payload for comparison
     expected_content = read_expected_payload(payload_path)
@@ -93,24 +93,41 @@ def run_extraction_test(image_path, algorithm, clean_path=None, payload_path=Non
         )
         
         stdout_lines = result.stdout.split('\n')
-        message_start_index = -1
         
-        # 1. Find the line index where "Extracted Message:" appears
-        for i, line in enumerate(stdout_lines):
-            if line.strip().startswith('Extracted Message:'):
-                message_start_index = i
-                break
+        # --- NEW Logic to find the extracted message block from scanner.py ---
+        start_tag = "✓ MESSAGE EXTRACTED:"
+        end_delimiter = "=" * 80
         
         extracted_text = ""
-        if message_start_index != -1:
-            # 2. Capture the message body starting from the next line
-            # This captures the multiline message and handles the expected '    ' indent.
-            for line in stdout_lines[message_start_index + 1:]:
-                if not line.strip():
-                    break
-                # Only remove the common leading indentation ('    ') used in the printing script
-                extracted_text += line[4:] if line.startswith('    ') else line 
+        start_capturing = False
+        
+        for i, line in enumerate(stdout_lines):
+            line_stripped = line.strip()
             
+            if line_stripped == start_tag:
+                # The message content starts on the next line, which should be the first delimiter
+                start_capturing = True
+                continue
+            
+            if start_capturing:
+                if line_stripped == end_delimiter:
+                    # Found the start delimiter
+                    # The message is between the two delimiters
+                    message_start = i + 1 # Start capturing from the line after the first '====='
+                    
+                    # Look for the second '=====' to find the end of the message
+                    try:
+                        message_end = stdout_lines[message_start:].index(end_delimiter) + message_start
+                    except ValueError:
+                        # Failed to find the closing delimiter
+                        return "FAILURE", "Extraction start tag found, but missing closing '=====' delimiter."
+                    
+                    # Join the lines for the extracted message
+                    extracted_text = '\n'.join(stdout_lines[message_start:message_end]).strip()
+                    break # Stop processing lines after finding the full message block
+
+        
+        if extracted_text:
             # --- Payload Similarity Check for PASS/FAIL (Relaxed) ---
             if expected_content:
                 # Normalize both texts to compare character count, ignoring all formatting
@@ -132,13 +149,13 @@ def run_extraction_test(image_path, algorithm, clean_path=None, payload_path=Non
                                f"Actual: {extracted_len} chars. Expected: {expected_len} chars.")
                     return "FAILURE", details
             else:
-                # If no ground truth payload is found, assume success if the message was captured.
-                return "SUCCESS", "Extraction tag found, no ground truth payload for comparison."
+                # If no ground truth payload is found, assume success if a message was captured.
+                return "SUCCESS", "Extraction block found, no ground truth payload for comparison."
         
         else:
-            # No 'Extracted Message:' tag found
-            error_details = (f"Extraction Tag Missing in stdout.", 
-                             '\n'.join(result.stdout.strip().split('\n')[-5:]),
+            # No 'MESSAGE EXTRACTED' block found
+            error_details = (f"Extraction Block Missing in stdout. Scanner output follows:", 
+                             '\n'.join(result.stdout.strip().split('\n')[-10:]),
                              result.stderr.strip() if result.stderr else "No stderr.")
             return "FAILURE", error_details
 
@@ -174,7 +191,6 @@ def main():
         
         # --- Random Sampling Logic ---
         initial_file_count = len(stego_files)
-        # NOTE: Updated SAMPLE_SIZE based on your reported test (to 10)
         global SAMPLE_SIZE 
         if SAMPLE_SIZE is not None and initial_file_count > SAMPLE_SIZE:
             print(f"\nSampling {SAMPLE_SIZE} files from {initial_file_count} in {os.path.basename(root_dir)}...")
@@ -196,8 +212,18 @@ def main():
                 continue
             
             # 3. Determine the clean path and payload path
-            clean_dir = os.path.join(root_dir, 'clean') 
-            clean_path = os.path.join(clean_dir, stego_filename)
+            clean_dir = os.path.join(root_dir, 'clean')
+
+            # --- ENHANCEMENT: Correctly derive the clean image filename ---
+            # 1. Get the original file extension (e.g., .png)
+            file_ext = os.path.splitext(stego_filename)[1]
+            
+            # 2. The clean image name is everything before the algorithm/index parts.
+            # (payload_base_name is already computed as everything before _{algorithm}_{index})
+            clean_filename = f"{payload_base_name}{file_ext}"
+            
+            # 3. Construct the full path
+            clean_path = os.path.join(clean_dir, clean_filename)
             payload_path = os.path.join(root_dir, f'{payload_base_name}.md')
 
             # 4. Run the test and record the result
@@ -229,4 +255,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
