@@ -4,15 +4,15 @@ Project Starlight Data Generator - Claude's Contribution v6 (FINAL)
 Steganography Methods:
 1. PNG - Alpha channel LSB (transparency-based hiding)
 2. BMP - Palette manipulation for indexed color
-3. PNG - DCT coefficient embedding (frequency domain)
+3. PNG - SDM (Spatial Domain Modulation) embedding
 
 Author: Claude (Anthropic)
 Date: 2025
 License: MIT
 
 ALL FIXES APPLIED (v6):
-✓ DCT threshold: ±15 embed / ±10 extract (for uniform images)
-✓ DCT payload auto-truncation with 24-byte marker space
+✓ SDM threshold: ±15 embed / ±10 extract (for uniform images)
+✓ SDM payload auto-truncation with 24-byte marker space
 ✓ Geometric image coordinate sorting (min/max)
 ✓ BMP palette validation
 ✓ Payload size validation for all methods
@@ -20,6 +20,7 @@ ALL FIXES APPLIED (v6):
 ✓ Audio generation disabled (pending Maya compatibility)
 ✓ Clean code structure (no duplicates)
 ✓ Sequential filename numbering per method
+✓ Simplified filename format: [payload]_[algo]_[000].[ext]
 """
 
 import sys
@@ -308,10 +309,10 @@ class ClaudeStegGenerator:
         except Exception:
             return b""
     
-    # ============= PNG DCT EMBEDDING =============
+    # ============= PNG SDM EMBEDDING =============
     
-    def png_dct_embed(self, img, payload):
-        """PNG DCT Coefficient Embedding with ±15 strength"""
+    def png_sdm_embed(self, img, payload):
+        """PNG Spatial Domain Modulation with ±15 strength"""
         if img.mode != 'RGB':
             img = img.convert('RGB')
         
@@ -339,7 +340,7 @@ class ClaudeStegGenerator:
         max_bytes = max_bits // 8
         
         # Validate capacity against actual usable blocks
-        self.validate_capacity(payload, max_bytes, "PNG DCT")
+        self.validate_capacity(payload, max_bytes, "PNG SDM")
         
         payload_bits = ''.join(format(byte, '08b') for byte in payload)
         length_header = format(len(payload), '032b')
@@ -363,8 +364,8 @@ class ClaudeStegGenerator:
         result_array = np.clip(img_array, 0, 255).astype(np.uint8)
         return Image.fromarray(result_array)
     
-    def png_dct_extract(self, img_path, original_img_path):
-        """Extract data from PNG DCT embedding
+    def png_sdm_extract(self, img_path, original_img_path):
+        """Extract data from PNG SDM embedding
         
         Args:
             img_path: Path to stego PNG file
@@ -497,21 +498,21 @@ class ClaudeStegGenerator:
             print(f"   ✗ ERROR: {e}\n")
             results['failed'].append('BMP Palette')
         
-        # Test 3: PNG DCT
+        # Test 3: PNG SDM
         try:
-            print("3. Testing PNG DCT...")
+            print("3. Testing PNG SDM...")
             img = self.generate_diverse_clean_image(2, 'geometric')
             
             # Save clean image first
-            clean_test_path = self.clean_dir / "_test_dct_clean.png"
+            clean_test_path = self.clean_dir / "_test_sdm_clean.png"
             img.save(clean_test_path, 'PNG')
             
-            stego = self.png_dct_embed(img, test_payload)
-            temp_path = self.stego_dir / "_test_dct.png"
+            stego = self.png_sdm_embed(img, test_payload)
+            temp_path = self.stego_dir / "_test_sdm.png"
             stego.save(temp_path, 'PNG')
             
             # Extract using paths to both files
-            extracted = self.png_dct_extract(temp_path, clean_test_path)
+            extracted = self.png_sdm_extract(temp_path, clean_test_path)
             
             # Cleanup
             temp_path.unlink()
@@ -519,13 +520,13 @@ class ClaudeStegGenerator:
             
             if extracted == test_payload:
                 print("   ✓ PASSED\n")
-                results['passed'].append('PNG DCT')
+                results['passed'].append('PNG SDM')
             else:
                 print(f"   ✗ FAILED: extracted {len(extracted)} bytes\n")
-                results['failed'].append('PNG DCT')
+                results['failed'].append('PNG SDM')
         except Exception as e:
             print(f"   ✗ ERROR: {e}\n")
-            results['failed'].append('PNG DCT')
+            results['failed'].append('PNG SDM')
         
         # Summary
         print("="*60)
@@ -558,9 +559,9 @@ class ClaudeStegGenerator:
         print(f"Generating {num_images} pairs per payload with verification...\n")
         
         methods = [
-            ('png_alpha', 'png', self.png_alpha_lsb_embed, self.png_alpha_lsb_extract),
-            ('bmp_palette', 'bmp', self.bmp_palette_embed, self.bmp_palette_extract),
-            ('png_dct', 'png', self.png_dct_embed, self.png_dct_extract),
+            ('alpha_lsb', 'png', self.png_alpha_lsb_embed, self.png_alpha_lsb_extract),
+            ('palette', 'bmp', self.bmp_palette_embed, self.bmp_palette_extract),
+            ('sdm', 'png', self.png_sdm_embed, self.png_sdm_extract),
         ]
         
         image_types = ['gradient', 'geometric', 'noise', 'blocks']
@@ -604,10 +605,10 @@ class ClaudeStegGenerator:
                     else:
                         clean_img.save(clean_path, 'PNG')
                     
-                    # Handle payload truncation for DCT
+                    # Handle payload truncation for SDM
                     method_payload = payload_data
                     
-                    if method_name == 'png_dct':
+                    if method_name == 'sdm':
                         # CRITICAL: Calculate ACTUAL usable blocks, not theoretical capacity
                         img_array = np.array(clean_img, dtype=np.float32)
                         block_size = 8
@@ -624,14 +625,14 @@ class ClaudeStegGenerator:
                                         usable_count += 1
                         
                         # Calculate actual capacity from usable blocks
-                        max_dct_bytes = (usable_count - 32) // 8
+                        max_sdm_bytes = (usable_count - 32) // 8
                         
-                        if len(payload_data) > max_dct_bytes:
+                        if len(payload_data) > max_sdm_bytes:
                             # FIXED: Reserve 24 bytes for marker
-                            method_payload = payload_data[:max_dct_bytes - 24]
+                            method_payload = payload_data[:max_sdm_bytes - 24]
                             truncation_marker = f" [TRUNCATED: {len(payload_data)} bytes]".encode('utf-8')
                             method_payload = method_payload + truncation_marker
-                            print(f"  ⌙ DCT payload truncated: {len(payload_data)} → {len(method_payload)} bytes (usable blocks: {usable_count})")
+                            print(f"  ⌙ SDM payload truncated: {len(payload_data)} → {len(method_payload)} bytes (usable blocks: {usable_count})")
 
                     
                     # Generate stego
@@ -643,10 +644,10 @@ class ClaudeStegGenerator:
                     else:
                         stego_img.save(stego_path, 'PNG')
                     
-                    # CRITICAL FIX: For DCT, load clean image from disk for comparison
+                    # CRITICAL FIX: For SDM, load clean image from disk for comparison
                     # PNG compression may slightly alter pixel values, so we need
                     # to compare stego (from disk) with clean (from disk)
-                    if method_name == 'png_dct':
+                    if method_name == 'sdm':
                         extracted = extract_func(stego_path, clean_path)
                     else:
                         extracted = extract_func(stego_path)
@@ -699,8 +700,8 @@ if __name__ == "__main__":
     print("• sample_seed.md (7.2 KB) - Full foundational wisdom")
     print("• essence_seed.md (1.0 KB) - Core principles for inscription")
     print("\nAll Fixes Applied (v6):")
-    print("✓ DCT threshold: ±15 embed / ±10 extract")
-    print("✓ DCT payload auto-truncation (24 byte marker)")
+    print("✓ SDM threshold: ±15 embed / ±10 extract")
+    print("✓ SDM payload auto-truncation (24 byte marker)")
     print("✓ Geometric image coordinate sorting")
     print("✓ BMP palette validation")
     print("✓ Payload size validation")
@@ -708,16 +709,17 @@ if __name__ == "__main__":
     print("✓ Audio generation disabled")
     print("✓ Clean code (no duplicates)")
     print("✓ Sequential filename numbering per method")
+    print("✓ Simplified filename: [payload]_[algo]_[000].[ext]")
     print("\nSteganography Techniques:")
     print("• Alpha Channel LSB (PNG) - Transparency-based")
     print("• Palette Index Manipulation (BMP) - Indexed color")
-    print("• DCT Coefficient Embedding (PNG) - Frequency domain")
+    print("• SDM - Spatial Domain Modulation (PNG) - Block-structure")
     print("\nBlockchain Ready:")
     print("→ essence_seed.md: ~1 KB, optimized for Bitcoin inscription")
     print("→ sample_seed.md: ~7 KB, complete training dataset")
     print("="*60 + "\n")
     
-    # Parse command line arguments
+    # Parse command line arguments 
     parser = argparse.ArgumentParser(description='Generate steganography dataset')
     parser.add_argument('--limit', type=int, default=12,
                        help='Number of image pairs to generate per payload (default: 12)')
@@ -725,13 +727,13 @@ if __name__ == "__main__":
                        help='Skip unit tests and proceed directly to generation')
     
     args = parser.parse_args()
-    
+
     generator = ClaudeStegGenerator()
     
     if not args.skip_tests:
         print("Running unit tests...\n")
         all_passed = generator.test_methods()
-        
+
         if all_passed:
             print("All tests passed! Proceeding with dataset generation...\n")
             generator.generate_dataset(num_images=args.limit)
