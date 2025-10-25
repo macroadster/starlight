@@ -559,7 +559,7 @@ class ClaudeStegGenerator:
         print(f"Generating {num_images} pairs per payload with verification...\n")
         
         methods = [
-            ('alpha_lsb', 'png', self.png_alpha_lsb_embed, self.png_alpha_lsb_extract),
+            ('lsb', 'png', self.png_alpha_lsb_embed, self.png_alpha_lsb_extract),
             ('palette', 'bmp', self.bmp_palette_embed, self.bmp_palette_extract),
             ('sdm', 'png', self.png_sdm_embed, self.png_sdm_extract),
         ]
