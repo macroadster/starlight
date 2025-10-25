@@ -40,7 +40,7 @@ This step initiates the core process of training the steganalysis model using th
     ```bash
     python3 train.py
     ```
-* **Output:** A trained model file (e.g., `best_stego_detector.pth`) will be saved to a designated output directory (usually `/models`) upon completion.
+* **Output:** A trained model file (e.g., `starlight_cnn.pth`) will be saved to a designated output directory (usually `/models`) upon completion.
 
 ---
 
@@ -51,5 +51,5 @@ To use a trained model to scan a file for concealed data, run the scanner script
 * **Action:** Run the steganography scanner, providing the path to your best model and the file you wish to analyze.
 * **Command:**
     ```bash
-    python3 stego_scanner.py --model models/best_stego_detector.pth --input /path/to/images_to_scan
+    python3 scanner.py /path/to/images_to_scan
     ```
