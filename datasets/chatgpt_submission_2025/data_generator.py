@@ -147,22 +147,32 @@ def embed_lsb(cover: Image.Image, payload: bytes) -> Image.Image:
     out.putdata(new_data)
     return out
 
-
 def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
     img = cover.convert("RGBA")
+    prefix = b"AI42"
+    payload = prefix + payload + b"\x00"  # null terminator
     pixels = list(img.getdata())
-    bits = "".join(f"{b:08b}" for b in payload) + "00000000"
-    if len(bits) > len(pixels):
+    
+    if len(payload) * 8 > len(pixels):
         raise ValueError("Payload too large for alpha embedding.")
-    new_data, i = [], 0
-    for r, g, b, a in pixels:
-        if i < len(bits):
-            a = (a & 0xFE) | int(bits[i]); i += 1
-        new_data.append((r, g, b, a))
+
+    new_data = []
+    pixel_index = 0
+
+    for byte_val in payload:
+        for bit_index in range(8):  # LSB-first
+            r, g, b, a = pixels[pixel_index]
+            bit_to_embed = (byte_val >> bit_index) & 0x01
+            a = (a & 0xFE) | bit_to_embed
+            new_data.append((r, g, b, a))
+            pixel_index += 1
+
+    # Append remaining pixels unmodified
+    new_data.extend(pixels[pixel_index:])
+    
     out = Image.new("RGBA", img.size)
     out.putdata(new_data)
     return out
-
 
 def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
     """Minimal-change palette embedding for GIF."""
