@@ -127,8 +127,8 @@ class ClaudeStegGenerator:
             )
     
     # ============= PNG ALPHA CHANNEL LSB =============
-    
-    def png_alpha_lsb_embed(self, img, payload):
+
+    def png_alpha_embed(self, img, payload):
         """PNG Alpha Channel LSB Embedding"""
         if img.mode != 'RGBA':
             img = img.convert('RGBA')
@@ -159,7 +159,7 @@ class ClaudeStegGenerator:
         
         return Image.fromarray(img_array)
     
-    def png_alpha_lsb_extract(self, img_path):
+    def png_alpha_extract(self, img_path):
         """Extract data from PNG Alpha Channel LSB"""
         img = Image.open(img_path).convert('RGBA')
         img_array = np.array(img)
@@ -462,10 +462,10 @@ class ClaudeStegGenerator:
         try:
             print("1. Testing PNG Alpha LSB...")
             img = self.generate_diverse_clean_image(0, 'gradient')
-            stego = self.png_alpha_lsb_embed(img, test_payload)
+            stego = self.png_alpha_embed(img, test_payload)
             temp_path = self.stego_dir / "_test_alpha.png"
             stego.save(temp_path, 'PNG')
-            extracted = self.png_alpha_lsb_extract(temp_path)
+            extracted = self.png_alpha_extract(temp_path)
             temp_path.unlink()
             
             if extracted == test_payload:
@@ -559,7 +559,7 @@ class ClaudeStegGenerator:
         print(f"Generating {num_images} pairs per payload with verification...\n")
         
         methods = [
-            ('lsb', 'png', self.png_alpha_lsb_embed, self.png_alpha_lsb_extract),
+            ('alpha', 'png', self.png_alpha_embed, self.png_alpha_extract),
             ('palette', 'bmp', self.bmp_palette_embed, self.bmp_palette_extract),
             ('sdm', 'png', self.png_sdm_embed, self.png_sdm_extract),
         ]
