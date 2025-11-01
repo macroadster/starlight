@@ -262,8 +262,6 @@ def reconstruct_lsb_first_message_from_bits(bits, max_length=24576):
         hint_bits += lsb_first_bits
     
     if not bits.startswith(hint_bits):
-        print(f"  [DEBUG] Expected Hint Bits (LSB-first): {hint_bits[:32]}")
-        print(f"  [DEBUG] Found Bits: {bits[:32]}")
         return None, bits
     
     bits_after_hint = bits[len(hint_bits):]
@@ -305,7 +303,6 @@ def extract_lsb(image_path, channel='all', max_bits=1000000):
         message, remaining = reconstruct_lsb_first_message_from_bits(bits)
         
         if message and len(message) > 10:
-            print(f"  [DEBUG] LSB extraction found LSB-first format. Message length: {len(message)}")
             return message, remaining
 
     # Priority 2: Use the robust LSB strategy extraction
@@ -322,19 +319,14 @@ def extract_alpha(image_path):
     message, remaining = reconstruct_lsb_first_message_from_bits(bits)
     
     if message:
-        print(f"  [DEBUG] Alpha extraction successful (LSB-First/AI42). Message length: {len(message)}")
         return message, remaining
-    
-    print(f"  [DEBUG] LSB-First/AI42 extraction failed. Attempting general decoders...")
     
     # Strategy B: Try General MSB-First Decoders
     message, remaining = extract_message_from_bits(bits)
     
     if message:
-        print(f"  [DEBUG] Alpha extraction successful (General MSB-First). Message length: {len(message)}")
         return message, remaining
 
-    print(f"  [DEBUG] Alpha extraction failed. Bits extracted: {len(bits)}. No message found.")
     return None, None
 
 def extract_palette(image_path):
@@ -466,45 +458,120 @@ def extract_sdm(image_path, clean_path=None):
         return None, None
 
 def extract_exif(image_path):
+    """
+    Extract data hidden in EXIF metadata.
+    Prioritizes piexif for better UserComment handling.
+    """
     img = Image.open(image_path)
     message = None
     raw_bytes = None
+    
+    # Method 1: Try piexif first (most reliable for UserComment)
     if piexif:
         try:
             exif_dict = piexif.load(image_path)
             user_comment = exif_dict.get("Exif", {}).get(piexif.ExifIFD.UserComment)
+            
             if user_comment:
                 if isinstance(user_comment, bytes):
                     raw_bytes = user_comment
+                    # Handle ASCII encoding header
                     if user_comment.startswith(b'ASCII\x00\x00\x00'):
                         message = user_comment[8:].decode('ascii', errors='ignore').strip()
+                    # Handle UNICODE encoding header
+                    elif user_comment.startswith(b'UNICODE\x00'):
+                        message = user_comment[8:].decode('utf-16', errors='ignore').strip()
+                    # Handle JIS encoding header
+                    elif user_comment.startswith(b'JIS\x00\x00\x00\x00\x00'):
+                        message = user_comment[8:].decode('shift_jis', errors='ignore').strip()
+                    # Try UTF-8 without header
                     else:
-                        message = user_comment.decode('utf-8', errors='ignore').strip()
+                        try:
+                            message = user_comment.decode('utf-8', errors='ignore').strip()
+                        except:
+                            message = user_comment.hex()
+                
                 if message:
                     return message, None
-        except Exception:
+                    
+            # Check other common EXIF tags
+            common_tags = [
+                ("0th", piexif.ImageIFD.ImageDescription, 270),  # ImageDescription
+                ("0th", piexif.ImageIFD.Make, 271),              # Make
+                ("0th", piexif.ImageIFD.Software, 305),          # Software
+                ("0th", piexif.ImageIFD.Artist, 315),            # Artist
+                ("0th", piexif.ImageIFD.Copyright, 33432),       # Copyright
+            ]
+            
+            for ifd_name, tag_id, fallback_id in common_tags:
+                try:
+                    value = exif_dict.get(ifd_name, {}).get(tag_id or fallback_id)
+                    if value:
+                        if isinstance(value, bytes):
+                            try:
+                                message = value.decode('utf-8', errors='ignore').strip()
+                            except:
+                                message = value.decode('ascii', errors='ignore').strip()
+                        elif isinstance(value, str):
+                            message = value.strip()
+                        
+                        if message and len(message) > 0:
+                            return message, None
+                except:
+                    continue
+                    
+        except Exception as e:
+            print(f"  [DEBUG] piexif extraction error: {e}")
             pass
-    exif = img.getexif()
-    if exif:
-        tags = [270, 306, 315, 36867, 37510]
-        for tag in tags:
-            value = exif.get(tag)
-            if value:
-                if tag == 37510 and isinstance(value, bytes):
-                    raw_bytes = value
-                    try:
+    
+    # Method 2: Try PIL's getexif() as fallback
+    try:
+        exif = img.getexif()
+        if exif:
+            # Tags to check in order of priority
+            tags_to_check = [
+                37510,  # UserComment
+                270,    # ImageDescription
+                306,    # DateTime
+                315,    # Artist
+                36867,  # DateTimeOriginal
+                33432,  # Copyright
+                305,    # Software
+            ]
+            
+            for tag in tags_to_check:
+                value = exif.get(tag)
+                if value:
+                    if tag == 37510 and isinstance(value, bytes):
+                        raw_bytes = value
+                        # Handle encoding headers
                         if value.startswith(b'ASCII\x00\x00\x00'):
                             message = value[8:].decode('ascii', errors='ignore').strip()
+                        elif value.startswith(b'UNICODE\x00'):
+                            message = value[8:].decode('utf-16', errors='ignore').strip()
                         else:
+                            try:
+                                message = value.decode('utf-8', errors='ignore').strip()
+                            except:
+                                message = value.hex()
+                    elif isinstance(value, str) and value.strip():
+                        message = value.strip()
+                    elif isinstance(value, bytes):
+                        try:
                             message = value.decode('utf-8', errors='ignore').strip()
-                    except UnicodeDecodeError:
-                        message = value.hex()
-                elif isinstance(value, str) and value.strip():
-                    message = value
-                if message:
-                    break
+                        except:
+                            message = value.hex()
+                    
+                    if message and len(message) > 0:
+                        return message, None
+    except Exception as e:
+        print(f"  [DEBUG] PIL EXIF extraction error: {e}")
+        pass
+    
+    # Method 3: Check raw EXIF bytes as last resort
     if not message and raw_bytes:
         message = raw_bytes.hex()
+    
     return message, None
 
 def extract_eoi(image_path):

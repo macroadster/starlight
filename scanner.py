@@ -1,374 +1,379 @@
 #!/usr/bin/env python3
 """
-Starlight CNN Inference with Directory Scanning
-Uses single CNN model trained with RF teacher starlight
-Handles: clean + 4 pixel-based stego types
-NEW: Can scan entire directories and provide summary statistics
+Steganography Scanner and Extractor
+
+Uses the Universal 6-class Stego Detector model to identify steganography,
+then extracts hidden messages using starlight_extractor utilities.
 """
+
 import os
+import sys
+import argparse
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+from pathlib import Path
 from PIL import Image
 import numpy as np
-import argparse
-import pickle
-from pathlib import Path
-from collections import Counter, defaultdict
+from tqdm import tqdm
+import json
+from datetime import datetime
 
-from starlight_model import extract_features, transform_val, StarlightCNN
-from starlight_extractor import extract_alpha, extract_palette, extract_sdm, extract_lsb, extract_eoi, extract_exif
+# Import extraction functions
+from starlight_extractor import (
+    extract_alpha, extract_palette, 
+    extract_lsb, extract_exif, extract_eoi
+)
 
-def predict_starlight(model, rf_model, device, image_path):
-    """
-    Prediction with starlight-trained CNN:
-    1. Check if EXIF/EOI using RF features (fast)
-    2. Use CNN for clean/pixel-based stego classification
-    3. Extract message if stego detected
-    """
-    # Extract features
-    img = Image.open(image_path)
-    features = extract_features(image_path, img)
-    
-    # Quick RF check for file-level stego (EXIF/EOI)
-    rf_pred = rf_model.predict([features])[0]
-    rf_probs = rf_model.predict_proba([features])[0]
-    
-    class_names_7 = ['clean', 'alpha', 'palette', 'sdm', 'lsb', 'eoi', 'exif']
-    rf_prediction = class_names_7[rf_pred]
-    
-    # If EXIF or EOI, return immediately (RF is authoritative for these)
-    if rf_prediction in ['eoi', 'exif']:
-        return {
-            'type': rf_prediction,
-            'confidence': rf_probs[rf_pred],
-            'method': 'RF (file-level)',
-            'is_clean': False
-        }
-    
-    # Use CNN for clean/pixel-based classification
-    original_mode = img.mode
-    if original_mode in ('RGBA', 'LA', 'PA'):
-        img_processed = img.convert('RGBA')
-    else:
-        img_rgb = img.convert('RGB')
-        img_processed = Image.new('RGBA', img_rgb.size, (0, 0, 0, 255))
-        img_processed.paste(img_rgb, (0, 0))
-    
-    img_tensor = transform_val(img_processed).unsqueeze(0).to(device)
-    features_tensor = torch.tensor(features).unsqueeze(0).to(device)
-    
-    with torch.no_grad():
-        outputs = model(img_tensor, features_tensor)
-        probs = F.softmax(outputs, dim=1).cpu().numpy()[0]
-    
-    class_names_5 = ['clean', 'alpha', 'palette', 'sdm', 'lsb']
-    pred_class = np.argmax(probs)
-    pred_type = class_names_5[pred_class]
-    pred_conf = probs[pred_class]
-    
-    return {
-        'type': pred_type,
-        'confidence': pred_conf,
-        'method': 'CNN (starlight-trained)',
-        'is_clean': pred_class == 0,
-        'all_probs': {class_names_5[i]: probs[i] for i in range(5)}
-    }
+try:
+    import piexif
+except ImportError:
+    piexif = None
 
-def scan_directory(model, rf_model, device, directory, recursive=False, min_confidence=0.5):
-    """
-    Scan a directory for images and classify them
-    
-    Args:
-        model: Starlight CNN model
-        rf_model: Random Forest model
-        device: Torch device
-        directory: Directory path to scan
-        recursive: If True, scan subdirectories
-        min_confidence: Minimum confidence to count as detection
-    
-    Returns:
-        dict with scan results and statistics
-    """
-    supported_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp'}
-    
-    # Collect image files
-    image_files = []
-    if recursive:
-        for root, dirs, files in os.walk(directory):
-            for file in files:
-                if Path(file).suffix.lower() in supported_extensions:
-                    image_files.append(os.path.join(root, file))
-    else:
-        for file in os.listdir(directory):
-            fpath = os.path.join(directory, file)
-            if os.path.isfile(fpath) and Path(file).suffix.lower() in supported_extensions:
-                image_files.append(fpath)
-    
-    if not image_files:
-        return {
-            'total_images': 0,
-            'error': 'No image files found in directory'
-        }
-    
-    # Scan all images
-    results = []
-    errors = []
-    type_counts = Counter()
-    confidence_by_type = defaultdict(list)
-    
-    print(f"\nScanning {len(image_files)} images...")
-    for i, image_path in enumerate(image_files, 1):
+# --- CONFIGURATION ---
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+
+ALGO_TO_ID = {
+    "alpha": 0, "palette": 1, "lsb": 2,
+    "exif": 3, "eoi": 4, "clean": 5,
+}
+ID_TO_ALGO = {v: k for k, v in ALGO_TO_ID.items()}
+NUM_CLASSES = 6
+
+# --- FEATURE EXTRACTION ---
+def get_eoi_payload_size(filepath):
+    filepath_str = str(filepath)
+    if not filepath_str.lower().endswith(('.jpg', '.jpeg')):
+        return 0
+    try:
+        with open(filepath_str, 'rb') as f:
+            data = f.read()
+        eoi_pos = data.rfind(b'\xff\xd9')
+        if eoi_pos > 0:
+            return len(data) - (eoi_pos + 2)
+    except Exception:
+        return 0
+    return 0
+
+def get_exif_features(img, filepath):
+    exif_present = 0.0
+    exif_len = 0.0
+    filepath_str = str(filepath)
+    exif_bytes = img.info.get('exif')
+    if exif_bytes:
+        exif_present = 1.0
+        exif_len = len(exif_bytes)
+    elif piexif and filepath_str.lower().endswith(('.jpg', '.jpeg')):
         try:
-            result = predict_starlight(model, rf_model, device, image_path)
-            result['path'] = image_path
-            result['filename'] = os.path.basename(image_path)
+            exif_dict = piexif.load(filepath_str)
+            if exif_dict and any(val for val in exif_dict.values() if val):
+                exif_present = 1.0
+                exif_len = len(piexif.dump(exif_dict))
+        except Exception:
+            pass
+    return torch.tensor([exif_present, exif_len / 1000.0], dtype=torch.float)
+
+# --- MODEL ARCHITECTURE ---
+class LSBDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.lsb_conv = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
+    def forward(self, rgb):
+        lsb = (rgb * 255).long() & 1
+        return F.adaptive_avg_pool2d(self.lsb_conv(lsb.float()), 1).flatten(1)
+
+class AlphaLSBDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.alpha_conv = nn.Sequential(nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
+    def forward(self, alpha):
+        alpha_lsb = (alpha * 255).long() & 1
+        return F.adaptive_avg_pool2d(self.alpha_conv(alpha_lsb.float()), 1).flatten(1)
+
+class ExifEoiDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.fc = nn.Sequential(nn.Linear(3, dim), nn.ReLU())
+    def forward(self, exif, eoi):
+        return self.fc(torch.cat([exif, eoi], dim=1))
+
+class UniversalStegoDetector(nn.Module):
+    def __init__(self, num_classes=NUM_CLASSES, dim=64):
+        super().__init__()
+        self.lsb = LSBDetector(dim)
+        self.alpha = AlphaLSBDetector(dim)
+        self.meta = ExifEoiDetector(dim)
+        self.rgb_base = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), 
+                                     nn.ReLU(), nn.AdaptiveAvgPool2d(1))
+
+        fusion_dim = dim + dim + dim + dim
+        self.classifier = nn.Sequential(
+            nn.BatchNorm1d(fusion_dim),
+            nn.Linear(fusion_dim, 256),
+            nn.ReLU(), nn.Dropout(0.5),
+            nn.Linear(256, num_classes)
+        )
+
+    def forward(self, rgb, alpha, exif, eoi):
+        f_lsb = self.lsb(rgb)
+        f_alpha = self.alpha(alpha)
+        f_meta = self.meta(exif, eoi)
+        f_rgb = self.rgb_base(rgb).flatten(1)
+        
+        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb], dim=1)
+        return self.classifier(features)
+
+# --- IMAGE PROCESSING ---
+def preprocess_image(img_path):
+    """Preprocess image for model inference."""
+    try:
+        img = Image.open(img_path)
+        exif_features = get_exif_features(img, img_path)
+        eoi_features = torch.tensor([get_eoi_payload_size(img_path) / 1000.0], dtype=torch.float)
+
+        if img.mode == 'RGBA':
+            rgb, alpha_channel = img.convert('RGB'), np.array(img)[:, :, 3] / 255.0
+            alpha = torch.from_numpy(alpha_channel).float().unsqueeze(0)
+        else:
+            rgb, alpha = img.convert('RGB'), torch.zeros(1, img.size[1], img.size[0])
+
+        # Resize to 224x224
+        from torchvision import transforms
+        resize = transforms.Resize((224, 224), antialias=True)
+        rgb_tensor = transforms.ToTensor()(resize(rgb))
+        alpha_tensor = F.interpolate(alpha.unsqueeze(0), size=(224, 224), 
+                                     mode='bilinear', align_corners=False).squeeze(0)
+
+        return rgb_tensor, alpha_tensor, exif_features, eoi_features
+    except Exception as e:
+        print(f"Error preprocessing {img_path}: {e}")
+        return None
+
+# --- SCANNER ---
+class StegoScanner:
+    def __init__(self, model_path, confidence_threshold=0.5):
+        self.model = UniversalStegoDetector().to(device)
+        self.model.load_state_dict(torch.load(model_path, map_location=device))
+        self.model.eval()
+        self.confidence_threshold = confidence_threshold
+        
+    def detect(self, img_path):
+        """Detect steganography in an image."""
+        preprocessed = preprocess_image(img_path)
+        if preprocessed is None:
+            return None
+        
+        rgb, alpha, exif, eoi = preprocessed
+        
+        with torch.no_grad():
+            rgb = rgb.unsqueeze(0).to(device)
+            alpha = alpha.unsqueeze(0).to(device)
+            exif = exif.unsqueeze(0).to(device)
+            eoi = eoi.unsqueeze(0).to(device)
+            
+            outputs = self.model(rgb, alpha, exif, eoi)
+            probs = F.softmax(outputs, dim=1)
+            confidence, predicted = torch.max(probs, 1)
+            
+            predicted_class = ID_TO_ALGO[predicted.item()]
+            confidence_score = confidence.item()
+            
+            # Get top 3 predictions
+            top3_probs, top3_indices = torch.topk(probs, 3, dim=1)
+            top3_predictions = [
+                (ID_TO_ALGO[idx.item()], prob.item()) 
+                for idx, prob in zip(top3_indices[0], top3_probs[0])
+            ]
+            
+            return {
+                'predicted_class': predicted_class,
+                'confidence': confidence_score,
+                'top3_predictions': top3_predictions,
+                'is_stego': predicted_class != 'clean' and confidence_score > self.confidence_threshold
+            }
+    
+    def extract(self, img_path, predicted_class):
+        """Extract hidden message based on predicted class."""
+        if predicted_class == 'clean':
+            return None
+        
+        # Convert Path to string for extraction functions
+        img_path_str = str(img_path)
+        
+        extraction_map = {
+            'alpha': lambda: extract_alpha(img_path_str),
+            'palette': lambda: extract_palette(img_path_str),
+            'lsb': lambda: extract_lsb(img_path_str),
+            'exif': lambda: extract_exif(img_path_str),
+            'eoi': lambda: extract_eoi(img_path_str)
+        }
+        
+        extractor = extraction_map.get(predicted_class)
+        if extractor:
+            try:
+                message, _ = extractor()
+                return message
+            except Exception as e:
+                print(f"\n  [ERROR] Extraction failed for {Path(img_path_str).name}: {e}")
+                return None
+        return None
+    
+    def scan_file(self, img_path, extract_messages=True):
+        """Scan a single file."""
+        result = {
+            'file': str(img_path),
+            'timestamp': datetime.now().isoformat(),
+            'status': 'success'
+        }
+        
+        detection = self.detect(img_path)
+        if detection is None:
+            result['status'] = 'error'
+            result['error'] = 'Failed to process image'
+            return result
+        
+        result.update(detection)
+        
+        if extract_messages and detection['is_stego']:
+            message = self.extract(img_path, detection['predicted_class'])
+            result['extracted_message'] = message if message else "No message extracted"
+        
+        return result
+    
+    def scan_directory(self, directory, extract_messages=True, recursive=True, 
+                      output_file=None):
+        """Scan all images in a directory."""
+        directory = Path(directory)
+        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tiff', '.tif'}
+        
+        # Find all image files
+        if recursive:
+            image_files = [f for f in directory.rglob('*') if f.suffix.lower() in image_extensions]
+        else:
+            image_files = [f for f in directory.glob('*') if f.suffix.lower() in image_extensions]
+        
+        print(f"\n[SCANNER] Found {len(image_files)} images to scan")
+        
+        results = []
+        stego_detections = []  # Store detections for later display
+        
+        # Scan all images with progress bar
+        for img_path in tqdm(image_files, desc="Scanning images"):
+            result = self.scan_file(img_path, extract_messages)
             results.append(result)
             
-            # Count types (only if confidence meets threshold)
-            if result['confidence'] >= min_confidence:
-                type_counts[result['type']] += 1
-                confidence_by_type[result['type']].append(result['confidence'])
-            
-            # Progress indicator
-            if i % 50 == 0 or i == len(image_files):
-                print(f"  Progress: {i}/{len(image_files)} ({100*i/len(image_files):.1f}%)", end='\r')
+            if result.get('is_stego', False):
+                stego_detections.append((img_path, result))
         
-        except Exception as e:
-            errors.append({'path': image_path, 'error': str(e)})
-    
-    print()  # New line after progress
-    
-    # Calculate statistics
-    total_images = len(image_files)
-    clean_count = type_counts.get('clean', 0)
-    stego_count = total_images - clean_count - len(errors)
-    
-    # Average confidences per type
-    avg_confidence = {}
-    for stype, confs in confidence_by_type.items():
-        avg_confidence[stype] = sum(confs) / len(confs) if confs else 0.0
-    
-    # Group by stego type
-    stego_by_type = {k: v for k, v in type_counts.items() if k != 'clean'}
-    
-    return {
-        'total_images': total_images,
-        'clean_count': clean_count,
-        'stego_count': stego_count,
-        'errors': len(errors),
-        'type_counts': dict(type_counts),
-        'stego_by_type': stego_by_type,
-        'avg_confidence': avg_confidence,
-        'results': results,
-        'error_details': errors,
-        'clean_percentage': 100.0 * clean_count / total_images if total_images > 0 else 0,
-        'stego_percentage': 100.0 * stego_count / total_images if total_images > 0 else 0
-    }
+        # Display all detections after progress bar completes
+        if stego_detections:
+            print(f"\n{'='*60}")
+            print(f"DETECTIONS FOUND")
+            print(f"{'='*60}")
+            for img_path, result in stego_detections:
+                print(f"\n[FOUND] {img_path.name}")
+                print(f"  Path: {img_path}")
+                print(f"  Type: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
+                if extract_messages and result.get('extracted_message'):
+                    msg = result['extracted_message']
+                    preview = msg[:100] + '...' if len(msg) > 100 else msg
+                    print(f"  Message: {preview}")
+        
+        # Summary
+        print(f"\n{'='*60}")
+        print(f"SCAN COMPLETE")
+        print(f"{'='*60}")
+        print(f"Total images scanned: {len(image_files)}")
+        print(f"Steganography detected: {len(stego_detections)}")
+        print(f"Clean images: {len(image_files) - len(stego_detections)}")
+        
+        # Type breakdown
+        type_counts = {}
+        for result in results:
+            if result.get('is_stego', False):
+                stego_type = result['predicted_class']
+                type_counts[stego_type] = type_counts.get(stego_type, 0) + 1
+        
+        if type_counts:
+            print(f"\nSteganography types found:")
+            for stego_type, count in sorted(type_counts.items(), key=lambda x: x[1], reverse=True):
+                print(f"  {stego_type}: {count}")
+        
+        # Save results
+        if output_file:
+            with open(output_file, 'w') as f:
+                json.dump(results, f, indent=2)
+            print(f"\nResults saved to: {output_file}")
+        
+        return results
 
-def print_scan_summary(scan_results):
-    """Print a formatted summary of scan results"""
-    print("\n" + "="*80)
-    print("DIRECTORY SCAN SUMMARY")
-    print("="*80)
+def main():
+    parser = argparse.ArgumentParser(description="Steganography Scanner and Extractor")
+    parser.add_argument('target', help='Image file or directory to scan')
+    parser.add_argument('--model', default="models/starlight.pth", help='Path to trained model (.pth file)')
+    parser.add_argument('--threshold', type=float, default=0.5, 
+                       help='Confidence threshold for detection (default: 0.5)')
+    parser.add_argument('--no-extract', action='store_true', 
+                       help='Only detect, do not extract messages')
+    parser.add_argument('--recursive', action='store_true', default=True,
+                       help='Recursively scan subdirectories')
+    parser.add_argument('--output', help='Output JSON file for results')
     
-    print(f"\nTotal Images Scanned: {scan_results['total_images']}")
-    if scan_results['errors'] > 0:
-        print(f"Errors: {scan_results['errors']} (see details below)")
-    
-    print(f"\nOverall Classification:")
-    print(f"  Clean Images:      {scan_results['clean_count']:4d} ({scan_results['clean_percentage']:.1f}%)")
-    print(f"  Stego Images:      {scan_results['stego_count']:4d} ({scan_results['stego_percentage']:.1f}%)")
-    
-    if scan_results['stego_by_type']:
-        print(f"\nSteganography Types Detected:")
-        for stype in ['alpha', 'palette', 'sdm', 'lsb', 'eoi', 'exif']:
-            count = scan_results['stego_by_type'].get(stype, 0)
-            if count > 0:
-                avg_conf = scan_results['avg_confidence'].get(stype, 0)
-                pct = 100.0 * count / scan_results['stego_count'] if scan_results['stego_count'] > 0 else 0
-                print(f"  {stype.upper():8s}: {count:4d} ({pct:5.1f}% of stego) - Avg Conf: {avg_conf:.2%}")
-    
-    if scan_results['avg_confidence']:
-        print(f"\nAverage Confidence by Type:")
-        for stype, conf in sorted(scan_results['avg_confidence'].items(), key=lambda x: -x[1]):
-            print(f"  {stype:8s}: {conf:.2%}")
-    
-    if scan_results['error_details']:
-        print(f"\nErrors ({len(scan_results['error_details'])}):")
-        for err in scan_results['error_details'][:10]:  # Show first 10
-            print(f"  {os.path.basename(err['path'])}: {err['error']}")
-        if len(scan_results['error_details']) > 10:
-            print(f"  ... and {len(scan_results['error_details']) - 10} more")
-    
-    print("="*80)
-
-def print_detailed_results(scan_results, show_clean=False, min_confidence=0.0):
-    """Print detailed results for each image"""
-    print("\n" + "="*80)
-    print("DETAILED RESULTS")
-    print("="*80)
-    
-    # Sort by type, then confidence
-    sorted_results = sorted(
-        scan_results['results'],
-        key=lambda x: (x['type'], -x['confidence'])
-    )
-    
-    current_type = None
-    for result in sorted_results:
-        # Skip clean images if not requested
-        if not show_clean and result['is_clean']:
-            continue
-        
-        # Skip low confidence results
-        if result['confidence'] < min_confidence:
-            continue
-        
-        # Print type header
-        if result['type'] != current_type:
-            current_type = result['type']
-            print(f"\n{current_type.upper()} Images:")
-            print("-" * 80)
-        
-        # Print result
-        print(f"  {result['filename']:50s} {result['confidence']:6.2%} ({result['method']})")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Starlight CNN Inference with Directory Scanning")
-    parser.add_argument('image_paths', nargs='+', help="Images or directories to analyze")
-    parser.add_argument('--cnn_model', default='starlight_cnn.pth', help="Starlight CNN model")
-    parser.add_argument('--rf_model', default='starlight_rf.pkl', help="RF model (for EXIF/EOI)")
-    parser.add_argument('--extract', action='store_true', help="Extract messages")
-    parser.add_argument('--clean_path', default=None, help="Clean image for SDM")
-    parser.add_argument('--recursive', '-r', action='store_true', help="Scan directories recursively")
-    parser.add_argument('--detailed', '-d', action='store_true', help="Show detailed results for directory scans")
-    parser.add_argument('--show_clean', action='store_true', help="Show clean images in detailed results")
-    parser.add_argument('--min_confidence', type=float, default=0.5, help="Minimum confidence threshold (default: 0.5)")
     args = parser.parse_args()
     
-    print("=" * 80)
-    print("STARLIGHT CNN INFERENCE")
-    print("Single model handles: clean + alpha/palette/sdm/lsb")
-    print("RF used only for EXIF/EOI (file-level)")
-    print("=" * 80)
+    # Check if model exists
+    if not os.path.exists(args.model):
+        print(f"Error: Model file not found: {args.model}")
+        sys.exit(1)
     
-    # Load models
-    if torch.backends.mps.is_available():
-        device = torch.device('mps')
-    elif torch.cuda.is_available():
-        device = torch.device('cuda')
+    # Check if target exists
+    if not os.path.exists(args.target):
+        print(f"Error: Target not found: {args.target}")
+        sys.exit(1)
+    
+    print(f"[INIT] Loading model from {args.model}")
+    print(f"[INIT] Device: {device}")
+    print(f"[INIT] Confidence threshold: {args.threshold}")
+    
+    scanner = StegoScanner(args.model, args.threshold)
+    
+    target_path = Path(args.target)
+    
+    if target_path.is_file():
+        print(f"\n[SCANNING] Single file: {args.target}")
+        result = scanner.scan_file(target_path, extract_messages=not args.no_extract)
+        
+        print(f"\n{'='*60}")
+        print(f"RESULTS")
+        print(f"{'='*60}")
+        print(f"File: {result['file']}")
+        print(f"Predicted: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
+        print(f"Is Stego: {result['is_stego']}")
+        print(f"\nTop 3 Predictions:")
+        for pred_class, prob in result['top3_predictions']:
+            print(f"  {pred_class}: {prob:.2%}")
+        
+        if not args.no_extract and result.get('extracted_message'):
+            print(f"\nExtracted Message:")
+            print(f"{result['extracted_message']}")
+        
+        if args.output:
+            with open(args.output, 'w') as f:
+                json.dump(result, f, indent=2)
+            print(f"\nResults saved to: {args.output}")
+    
+    elif target_path.is_dir():
+        print(f"\n[SCANNING] Directory: {args.target}")
+        results = scanner.scan_directory(
+            args.target,
+            extract_messages=not args.no_extract,
+            recursive=args.recursive,
+            output_file=args.output
+        )
+    
     else:
-        device = torch.device('cpu')
-    
-    print(f"\nLoading models...")
-    
-    # Load starlight CNN
-    model = StarlightCNN(num_classes=5, feature_dim=24)
-    checkpoint = torch.load(args.cnn_model, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(device)
-    model.eval()
-    print(f"✓ Starlight CNN loaded (Balanced Acc: {checkpoint.get('balanced_acc', 'N/A'):.4f})")
-    print(f"  Clean Recall: {checkpoint.get('clean_recall', 'N/A'):.4f}")
-    
-    # Load RF for EXIF/EOI
-    with open(args.rf_model, 'rb') as f:
-        rf_model = pickle.load(f)
-    rf_model.verbose = 0
-    print(f"✓ RF loaded (for EXIF/EOI detection)")
-    
-    print(f"\nUsing device: {device}")
-    print(f"Minimum confidence threshold: {args.min_confidence:.2%}\n")
-    
-    extraction_functions = {
-        'alpha': extract_alpha,
-        'palette': extract_palette,
-        'sdm': extract_sdm,
-        'lsb': extract_lsb,
-        'eoi': extract_eoi,
-        'exif': extract_exif
-    }
-    
-    # Separate directories from files
-    directories = []
-    files = []
-    
-    for path in args.image_paths:
-        if os.path.isdir(path):
-            directories.append(path)
-        elif os.path.isfile(path):
-            files.append(path)
-        else:
-            print(f"Warning: Path not found - {path}")
-    
-    # Process directories first
-    if directories:
-        for directory in directories:
-            print(f"\n{'='*80}")
-            print(f"SCANNING DIRECTORY: {directory}")
-            if args.recursive:
-                print("(Recursive mode enabled)")
-            print(f"{'='*80}")
-            
-            scan_results = scan_directory(
-                model, rf_model, device, directory, 
-                recursive=args.recursive,
-                min_confidence=args.min_confidence
-            )
-            
-            if 'error' in scan_results:
-                print(f"\nError: {scan_results['error']}")
-                continue
-            
-            print_scan_summary(scan_results)
-            
-            if args.detailed:
-                print_detailed_results(
-                    scan_results, 
-                    show_clean=args.show_clean,
-                    min_confidence=args.min_confidence
-                )
-    
-    # Process individual files
-    if files:
-        for image_path in files:
-            print(f"\n{'='*80}")
-            print(f"Analysis: {os.path.basename(image_path)}")
-            print(f"{'='*80}")
-            
-            result = predict_starlight(model, rf_model, device, image_path)
-            
-            print(f"\nDetection Result:")
-            print(f"  Type: {result['type'].upper()}")
-            print(f"  Confidence: {result['confidence']:.2%}")
-            print(f"  Method: {result['method']}")
-            
-            if result.get('all_probs'):
-                print(f"\n  All Probabilities:")
-                for name, prob in result['all_probs'].items():
-                    print(f"    {name}: {prob:.2%}")
-            
-            # Extract message if requested and not clean
-            if args.extract and not result['is_clean']:
-                stego_type = result['type']
-                
-                if stego_type in extraction_functions:
-                    print(f"\nExtracting message ({stego_type})...")
-                    extractor = extraction_functions[stego_type]
-                    
-                    if stego_type == 'lsb':
-                        message, _ = extractor(image_path, channel='all')
-                    elif stego_type == 'sdm':
-                        message, _ = extractor(image_path, clean_path=args.clean_path)
-                    else:
-                        message, _ = extractor(image_path)
-                    
-                    if message:
-                        print(f"\n✓ MESSAGE EXTRACTED:")
-                        print(f"{'='*80}")
-                        print(message)
-                        print(f"{'='*80}")
-                    else:
-                        print(f"✗ No message extracted")
-            
-            print()
+        print(f"Error: Invalid target (not a file or directory)")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

@@ -1,586 +1,265 @@
 #!/usr/bin/env python3
 """
-Integrated Starlight Loop Training: RF Teacher → CNN Student
+Universal 6-class Stego Detector
 
-This script integrates:
-1. RF Baseline Training (if model doesn't exist)
-2. Starlight Loop Training with RF as teacher
-3. Progress bars for all phases
-
-Phase 1: Train RF on all 7 classes (if needed)
-Phase 2: RF labels clean images with high confidence
-Phase 3: CNN learns from RF's pseudo-labels + ground truth stego labels
-Result: CNN that can detect both clean AND stego types (5 classes total)
+- Hybrid model with parallel expert branches for different stego types.
+- Separate branches for pixel analysis (LSB, Alpha, Palette) and metadata (EXIF/EOI).
+- Batch normalization on all feature branches before fusion to prevent feature scaling issues.
+- Robust data loading and conservative training hyperparameters to prevent overfitting.
 """
+
 import os
-import re
+import argparse
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
+import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
-from collections import Counter
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import balanced_accuracy_score, accuracy_score, confusion_matrix, classification_report
-from sklearn.ensemble import RandomForestClassifier
 import numpy as np
+from pathlib import Path
 from tqdm import tqdm
-import pickle
-import argparse
+from torchvision import transforms
 
-from starlight_model import extract_features, transform_train, transform_val, StarlightCNN
+try:
+    import piexif
+except ImportError:
+    piexif = None
 
+# --- CONFIGURATION ---
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
-class PseudoLabelDataset(Dataset):
-    """Dataset with RF pseudo-labels for clean + ground truth for stego"""
-    def __init__(self, paths, labels, confidences, transform=None):
-        self.paths = paths
-        self.labels = labels  # 0=clean, 1=alpha, 2=palette, 3=sdm, 4=lsb
-        self.confidences = confidences  # RF confidence for weighting
-        self.transform = transform
-    
-    def __len__(self):
-        return len(self.paths)
-    
+ALGO_TO_ID = {
+    "alpha": 0, "palette": 1, "lsb": 2,
+    "exif": 3, "eoi": 4, "clean": 5,
+}
+NUM_CLASSES = 6
+
+# --- METADATA FEATURE EXTRACTORS ---
+def get_eoi_payload_size(filepath):
+    filepath_str = str(filepath)
+    if not filepath_str.lower().endswith(('.jpg', '.jpeg')):
+        return 0
+    try:
+        with open(filepath_str, 'rb') as f:
+            data = f.read()
+        eoi_pos = data.rfind(b'\xff\xd9')
+        if eoi_pos > 0:
+            return len(data) - (eoi_pos + 2)
+    except Exception:
+        return 0
+    return 0
+
+def get_exif_features(img, filepath):
+    exif_present = 0.0
+    exif_len = 0.0
+    filepath_str = str(filepath)
+    exif_bytes = img.info.get('exif')
+    if exif_bytes:
+        exif_present = 1.0
+        exif_len = len(exif_bytes)
+    elif piexif and filepath_str.lower().endswith(('.jpg', '.jpeg')):
+        try:
+            exif_dict = piexif.load(filepath_str)
+            if exif_dict and any(val for val in exif_dict.values() if val):
+                exif_present = 1.0
+                exif_len = len(piexif.dump(exif_dict))
+        except Exception:
+            pass
+    return torch.tensor([exif_present, exif_len / 1000.0], dtype=torch.float)
+
+# --- DATASET ---
+class StegoImageDataset(Dataset):
+    def __init__(self, base_dir, subdirs=None):
+        self.base_dir = Path(base_dir)
+        self.image_files = []
+        if subdirs is None: subdirs = ["*"]
+        for subdir_pattern in subdirs:
+            for matched_dir in self.base_dir.glob(subdir_pattern):
+                for folder_type in ["clean", "stego"]:
+                    folder = matched_dir / folder_type
+                    if folder.exists():
+                        for ext in ['*.png', '*.bmp', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.tiff', '*.tif']:
+                            self.image_files.extend([(f, folder_type) for f in folder.glob(ext)])
+        print(f"[DATASET] Found {len(self.image_files)} images from {subdirs}")
+
+    def __len__(self): return len(self.image_files)
+
+    def parse_label(self, filepath, folder_type):
+        if folder_type == "clean": return ALGO_TO_ID["clean"]
+        stem = filepath.stem.lower()
+        for algo, idx in ALGO_TO_ID.items():
+            if algo != "clean" and algo in stem: return idx
+        return ALGO_TO_ID["clean"]
+
     def __getitem__(self, idx):
-        path = self.paths[idx]
-        label = self.labels[idx]
-        confidence = self.confidences[idx]
+        img_path, folder_type = self.image_files[idx]
+        try:
+            img = Image.open(img_path)
+            exif_features = get_exif_features(img, img_path)
+            eoi_features = torch.tensor([get_eoi_payload_size(img_path) / 1000.0], dtype=torch.float)
+
+            if img.mode == 'RGBA':
+                rgb, alpha_channel = img.convert('RGB'), np.array(img)[:, :, 3] / 255.0
+                alpha = torch.from_numpy(alpha_channel).float().unsqueeze(0)
+            else:
+                rgb, alpha = img.convert('RGB'), torch.zeros(1, img.size[1], img.size[0])
+
+            resize = transforms.Resize((224, 224), antialias=True)
+            rgb_tensor = transforms.ToTensor()(resize(rgb))
+            alpha_tensor = F.interpolate(alpha.unsqueeze(0), size=(224, 224), mode='bilinear', align_corners=False).squeeze(0)
+
+            label = self.parse_label(img_path, folder_type)
+            return rgb_tensor, alpha_tensor, exif_features, eoi_features, label
+        except Exception as e:
+            print(f"ERROR loading {img_path}: {e}")
+            return None
+
+# --- DETECTOR MODULES ---
+class LSBDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.lsb_conv = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
+    def forward(self, rgb):
+        lsb = (rgb * 255).long() & 1
+        return F.adaptive_avg_pool2d(self.lsb_conv(lsb.float()), 1).flatten(1)
+
+class AlphaLSBDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.alpha_conv = nn.Sequential(nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
+    def forward(self, alpha):
+        alpha_lsb = (alpha * 255).long() & 1
+        return F.adaptive_avg_pool2d(self.alpha_conv(alpha_lsb.float()), 1).flatten(1)
+
+class ExifEoiDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.fc = nn.Sequential(nn.Linear(3, dim), nn.ReLU())
+    def forward(self, exif, eoi):
+        return self.fc(torch.cat([exif, eoi], dim=1))
+
+# --- MAIN MODEL ---
+class UniversalStegoDetector(nn.Module):
+    def __init__(self, num_classes=NUM_CLASSES, dim=64):
+        super().__init__()
+        self.lsb = LSBDetector(dim)
+        self.alpha = AlphaLSBDetector(dim)
+        self.meta = ExifEoiDetector(dim)
+        self.rgb_base = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(), nn.AdaptiveAvgPool2d(1))
+
+        fusion_dim = dim + dim + dim + dim
+        self.classifier = nn.Sequential(
+            nn.BatchNorm1d(fusion_dim),
+            nn.Linear(fusion_dim, 256),
+            nn.ReLU(), nn.Dropout(0.5),
+            nn.Linear(256, num_classes)
+        )
+
+    def forward(self, rgb, alpha, exif, eoi):
+        f_lsb = self.lsb(rgb)
+        f_alpha = self.alpha(alpha)
+        f_meta = self.meta(exif, eoi)
+        f_rgb = self.rgb_base(rgb).flatten(1)
         
-        img = Image.open(path)
-        original_mode = img.mode
-        
-        features = extract_features(path, img)
-        
-        # Convert to RGBA
-        if original_mode in ('RGBA', 'LA', 'PA'):
-            img_processed = img.convert('RGBA')
+        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb], dim=1)
+        return self.classifier(features)
+
+# --- TRAINING & UTILS ---
+def collate_fn(batch):
+    batch = list(filter(None, batch))
+    return torch.utils.data.dataloader.default_collate(batch) if batch else (None,)*5
+
+class EarlyStopping:
+    def __init__(self, patience=7, min_delta=0.001, verbose=True):
+        self.patience, self.min_delta, self.verbose = patience, min_delta, verbose
+        self.counter, self.best_loss, self.early_stop = 0, np.inf, False
+        self.best_model_state = None
+    
+    def __call__(self, loss, model=None):
+        if self.best_loss - loss > self.min_delta:
+            self.best_loss = loss
+            self.counter = 0
+            if model is not None:
+                self.best_model_state = model.state_dict().copy()
+            return True  # Improvement detected
         else:
-            img_rgb = img.convert('RGB')
-            img_processed = Image.new('RGBA', img_rgb.size, (0, 0, 0, 255))
-            img_processed.paste(img_rgb, (0, 0))
-        
-        if self.transform:
-            img_processed = self.transform(img_processed)
-        
-        return (img_processed, 
-                torch.tensor(features, dtype=torch.float32), 
-                torch.tensor(label, dtype=torch.long),
-                torch.tensor(confidence, dtype=torch.float32))
+            self.counter += 1
+            if self.verbose: print(f"EarlyStopping: {self.counter}/{self.patience}")
+            if self.counter >= self.patience: self.early_stop = True
+            return False  # No improvement
 
-def collect_rf_data(root_dir='datasets'):
-    """Collect image paths and labels for RF training (all 7 classes)"""
-    image_paths = []
-    labels = []
-    class_map = {'clean': 0, 'alpha': 1, 'palette': 2, 'sdm': 3, 'lsb': 4, 'eoi': 5, 'exif': 6}
-    pattern = re.compile(r'_({})_(\d{{3}})\.\w+$'.format('|'.join(class_map.keys())))
-    
-    for subdir in os.listdir(root_dir):
-        if '_submission_' not in subdir:
-            continue
-            
-        base = os.path.join(root_dir, subdir)
-        clean_dir = os.path.join(base, 'clean')
-        stego_dir = os.path.join(base, 'stego')
-        
-        if os.path.exists(clean_dir):
-            for fname in os.listdir(clean_dir):
-                fpath = os.path.join(clean_dir, fname)
-                if os.path.isfile(fpath):
-                    image_paths.append(fpath)
-                    labels.append(0)
-        
-        if os.path.exists(stego_dir):
-            for fname in os.listdir(stego_dir):
-                fpath = os.path.join(stego_dir, fname)
-                if os.path.isfile(fpath):
-                    match = pattern.search(fname)
-                    if match:
-                        algo = match.group(1)
-                        image_paths.append(fpath)
-                        labels.append(class_map[algo])
-    
-    return image_paths, labels
+def train_model(args):
+    train_ds = StegoImageDataset(args.datasets_dir, subdirs=["sample"])
+    val_ds = StegoImageDataset(args.datasets_dir, subdirs=["val"])
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, collate_fn=collate_fn, pin_memory=False)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn, pin_memory=False)
 
-def extract_features_batch(paths, desc="Extracting features"):
-    """Extract features from a batch of images with progress bar"""
-    features_list = []
-    valid_paths = []
-    
-    with tqdm(total=len(paths), desc=desc) as pbar:
-        for path in paths:
-            try:
-                img = Image.open(path)
-                features = extract_features(path, img)
-                features_list.append(features)
-                valid_paths.append(path)
-            except Exception as e:
-                # Silently skip errors during feature extraction
-                pass
-            pbar.update(1)
-    
-    return np.array(features_list), valid_paths
-
-def train_starlight_rf(root_dir='datasets', output_path='starlight_rf.pkl'):
-    """Train Random Forest baseline model"""
-    print("\n" + "=" * 80)
-    print("TRAINING RANDOM FOREST BASELINE")
-    print("=" * 80)
-    
-    # Collect data
-    print("\nCollecting data...")
-    image_paths, labels = collect_rf_data(root_dir)
-    
-    class_map = {'clean': 0, 'alpha': 1, 'palette': 2, 'sdm': 3, 'lsb': 4, 'eoi': 5, 'exif': 6}
-    label_counts = Counter(labels)
-    print("\nDataset Statistics:")
-    for algo, idx in class_map.items():
-        count = label_counts.get(idx, 0)
-        print(f"  {algo}: {count} samples ({100. * count / len(labels):.2f}%)")
-    print(f"Total samples: {len(labels)}")
-    
-    # Split data
-    train_paths, val_paths, train_labels, val_labels = train_test_split(
-        image_paths, labels, test_size=0.2, stratify=labels, random_state=42
-    )
-    
-    # Extract features with progress bars
-    print("\nExtracting features from training set...")
-    X_train, train_paths_valid = extract_features_batch(train_paths, desc="Training features")
-    train_labels_valid = [train_labels[i] for i in range(len(train_paths)) if train_paths[i] in train_paths_valid]
-    
-    print("Extracting features from validation set...")
-    X_val, val_paths_valid = extract_features_batch(val_paths, desc="Validation features")
-    val_labels_valid = [val_labels[i] for i in range(len(val_paths)) if val_paths[i] in val_paths_valid]
-    
-    print(f"\nTraining samples: {len(X_train)}")
-    print(f"Validation samples: {len(X_val)}")
-    
-    # Train Random Forest
-    print("\nTraining Random Forest Classifier...")
-    print("Parameters:")
-    print("  - n_estimators: 200")
-    print("  - max_depth: 20")
-    print("  - min_samples_split: 10")
-    print("  - class_weight: balanced")
-    
-    rf = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=20,
-        min_samples_split=10,
-        min_samples_leaf=5,
-        class_weight='balanced',
-        random_state=42,
-        n_jobs=-1,
-        verbose=1
-    )
-    
-    rf.fit(X_train, train_labels_valid)
-    
-    # Evaluate
-    print("\n" + "=" * 80)
-    print("VALIDATION RESULTS")
-    print("=" * 80)
-    
-    y_pred = rf.predict(X_val)
-    y_prob = rf.predict_proba(X_val)
-    
-    # Overall metrics
-    bal_acc = balanced_accuracy_score(val_labels_valid, y_pred)
-    print(f"\nBalanced Accuracy: {bal_acc:.4f}")
-    
-    # Per-class metrics
-    print("\nClassification Report:")
-    class_names = [name for name, idx in sorted(class_map.items(), key=lambda x: x[1])]
-    print(classification_report(val_labels_valid, y_pred, target_names=class_names, zero_division=0))
-    
-    # Confusion matrix
-    print("\nConfusion Matrix:")
-    cm = confusion_matrix(val_labels_valid, y_pred)
-    print("              " + "  ".join(f"{name:>6}" for name in class_names))
-    for i, row in enumerate(cm):
-        print(f"{class_names[i]:>6}: {' '.join(f'{val:>6}' for val in row)}")
-    
-    # Clean vs Stego binary metrics
-    binary_true = np.array([0 if l == 0 else 1 for l in val_labels_valid])
-    binary_pred = np.array([0 if p == 0 else 1 for p in y_pred])
-    
-    clean_recall = np.sum((binary_true == 0) & (binary_pred == 0)) / np.sum(binary_true == 0)
-    clean_precision = np.sum((binary_true == 0) & (binary_pred == 0)) / max(np.sum(binary_pred == 0), 1)
-    stego_recall = np.sum((binary_true == 1) & (binary_pred == 1)) / np.sum(binary_true == 1)
-    stego_precision = np.sum((binary_true == 1) & (binary_pred == 1)) / max(np.sum(binary_pred == 1), 1)
-    
-    print("\n" + "=" * 80)
-    print("CLEAN VS STEGO METRICS")
-    print("=" * 80)
-    print(f"Clean Recall (True Negative Rate):    {clean_recall:.4f}")
-    print(f"Clean Precision:                       {clean_precision:.4f}")
-    print(f"Stego Recall (True Positive Rate):    {stego_recall:.4f}")
-    print(f"Stego Precision:                       {stego_precision:.4f}")
-    
-    # Feature importance
-    print("\n" + "=" * 80)
-    print("TOP 10 MOST IMPORTANT FEATURES")
-    print("=" * 80)
-    
-    feature_names = [
-        'file_size_norm', 'exif_present', 'exif_length_norm', 'comment_length', 'exif_entropy',
-        'palette_present', 'palette_length', 'palette_entropy', 'palette_lsb_bias',
-        'palette_color_variance', 'palette_usage_entropy', 'palette_sequential_bias', 'palette_lsb_chi2',
-        'eof_length_norm',
-        'has_alpha', 'alpha_variance', 'alpha_mean', 'alpha_unique_ratio', 'alpha_lsb_bias',
-        'rgb_lsb_bias', 'rgb_lsb_chi2', 'rgb_correlation',
-        'is_jpeg', 'is_png'
-    ]
-    
-    importances = rf.feature_importances_
-    indices = np.argsort(importances)[::-1]
-    
-    for i in range(min(10, len(feature_names))):
-        idx = indices[i]
-        print(f"{i+1:2d}. {feature_names[idx]:30s} {importances[idx]:.4f}")
-    
-    # Save model
-    print(f"\nSaving model to '{output_path}'...")
-    with open(output_path, 'wb') as f:
-        pickle.dump(rf, f)
-    
-    print("\n✓ RF Training complete!")
-    print(f"Balanced Accuracy: {bal_acc:.4f}")
-    print(f"Clean Recall: {clean_recall:.4f}")
-    
-    return rf, bal_acc, clean_recall
-
-def collect_data_with_pseudolabels(rf_model, root_dir='datasets', rf_threshold=0.9):
-    """
-    Collect data with RF pseudo-labels for clean images
-    Only use high-confidence RF predictions (>threshold)
-    """
-    image_paths = []
-    labels = []
-    confidences = []
-    
-    # Stego types (pixel-based only)
-    stego_map = {'alpha': 1, 'palette': 2, 'sdm': 3, 'lsb': 4}
-    pattern = re.compile(r'_({})_(\d{{3}})\.\w+$'.format('|'.join(stego_map.keys())))
-    
-    # Collect clean images with RF pseudo-labels
-    print("\nPhase 1: RF Teacher labels clean images...")
-    clean_count = 0
-    clean_rejected = 0
-    
-    # First collect all clean paths
-    clean_paths = []
-    for subdir in os.listdir(root_dir):
-        if '_submission_' not in subdir:
-            continue
-        
-        base = os.path.join(root_dir, subdir)
-        clean_dir = os.path.join(base, 'clean')
-        
-        if os.path.exists(clean_dir):
-            for fname in os.listdir(clean_dir):
-                fpath = os.path.join(clean_dir, fname)
-                if os.path.isfile(fpath):
-                    clean_paths.append(fpath)
-    
-    # Process with progress bar
-    with tqdm(total=len(clean_paths), desc="Labeling clean images") as pbar:
-        for fpath in clean_paths:
-            try:
-                # Use RF to predict
-                img = Image.open(fpath)
-                features = extract_features(fpath, img)
-                rf_pred = rf_model.predict([features])[0]
-                rf_probs = rf_model.predict_proba([features])[0]
-                
-                # Only use if RF is confident it's clean
-                if rf_pred == 0 and rf_probs[0] >= rf_threshold:
-                    image_paths.append(fpath)
-                    labels.append(0)  # Clean
-                    confidences.append(rf_probs[0])
-                    clean_count += 1
-                else:
-                    clean_rejected += 1
-                    
-            except Exception as e:
-                clean_rejected += 1
-            
-            pbar.update(1)
-    
-    print(f"  Clean images accepted: {clean_count} (RF conf >= {rf_threshold})")
-    print(f"  Clean images rejected: {clean_rejected} (RF conf < {rf_threshold})")
-    
-    # Collect pixel-based stego with ground truth labels
-    print("\nPhase 2: Ground truth labels for stego...")
-    stego_paths = []
-    stego_labels = []
-    
-    for subdir in os.listdir(root_dir):
-        if '_submission_' not in subdir:
-            continue
-        
-        base = os.path.join(root_dir, subdir)
-        stego_dir = os.path.join(base, 'stego')
-        
-        if os.path.exists(stego_dir):
-            for fname in os.listdir(stego_dir):
-                fpath = os.path.join(stego_dir, fname)
-                if not os.path.isfile(fpath):
-                    continue
-                
-                match = pattern.search(fname)
-                if match:
-                    algo = match.group(1)
-                    stego_paths.append(fpath)
-                    stego_labels.append(stego_map[algo])
-    
-    # Add stego samples
-    image_paths.extend(stego_paths)
-    labels.extend(stego_labels)
-    confidences.extend([1.0] * len(stego_paths))  # Ground truth = full confidence
-    
-    print(f"  Stego images: {len(stego_paths)}")
-    
-    return image_paths, labels, confidences
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Integrated Starlight Loop Training: RF → CNN")
-    parser.add_argument('--rf_model', default='starlight_rf.pkl', help="RF teacher model (will train if not exists)")
-    parser.add_argument('--rf_threshold', type=float, default=0.9, 
-                       help="RF confidence threshold for pseudo-labels (default: 0.9)")
-    parser.add_argument('--batch_size', type=int, default=32, help="Batch size")
-    parser.add_argument('--epochs', type=int, default=30, help="Epochs")
-    parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
-    parser.add_argument('--patience', type=int, default=8, help="Early stopping patience")
-    parser.add_argument('--force_rf_train', action='store_true', help="Force RF retraining even if model exists")
-    parser.add_argument('--data_dir', default='datasets', help="Root directory for datasets")
-    parser.add_argument('--resume_cnn', default=None, help="Resume CNN training from checkpoint (e.g., starlight_cnn.pth)")
-    parser.add_argument('--cnn_output', default='starlight_cnn.pth', help="Output path for trained CNN model")
-    args = parser.parse_args()
-    
-    print("=" * 80)
-    print("INTEGRATED FEEDBACK LOOP TRAINING: RF Teacher → CNN Student")
-    print("=" * 80)
-    print(f"RF acts as teacher for clean detection")
-    print(f"CNN learns 5 classes: clean (pseudo-labeled) + 4 stego (ground truth)")
-    print("=" * 80)
-    
-    # Check if RF model exists, train if not
-    if not os.path.exists(args.rf_model) or args.force_rf_train:
-        if args.force_rf_train:
-            print(f"\n--force_rf_train specified: Retraining RF model...")
-        else:
-            print(f"\nRF model not found at '{args.rf_model}', training from scratch...")
-        rf_model, _, _ = train_starlight_rf(root_dir=args.data_dir, output_path=args.rf_model)
-    else:
-        print(f"\nLoading existing RF Teacher from {args.rf_model}...")
-        with open(args.rf_model, 'rb') as f:
-            rf_model = pickle.load(f)
-        print("✓ RF Teacher loaded")
-    
-    rf_model.verbose = 0
-    
-    # Collect data with pseudo-labels
-    print("\n" + "=" * 80)
-    print("COLLECTING DATA WITH PSEUDO-LABELS")
-    print("=" * 80)
-    
-    image_paths, labels, confidences = collect_data_with_pseudolabels(
-        rf_model, root_dir=args.data_dir, rf_threshold=args.rf_threshold
-    )
-    
-    class_names = ['clean', 'alpha', 'palette', 'sdm', 'lsb']
-    label_counts = Counter(labels)
-    print(f"\nDataset with Pseudo-Labels:")
-    for i, name in enumerate(class_names):
-        count = label_counts.get(i, 0)
-        print(f"  {name}: {count} samples ({100. * count / len(labels):.2f}%)")
-    print(f"Total samples: {len(labels)}")
-    
-    # Split data
-    train_paths, val_paths, train_labels, val_labels, train_conf, val_conf = train_test_split(
-        image_paths, labels, confidences, test_size=0.2, stratify=labels, random_state=42
-    )
-    
-    train_dataset = PseudoLabelDataset(train_paths, train_labels, train_conf, transform=transform_train)
-    val_dataset = PseudoLabelDataset(val_paths, val_labels, val_conf, transform=transform_val)
-    
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
-                              num_workers=4, pin_memory=False)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, 
-                           num_workers=4, pin_memory=False)
-    
-    # Device
-    if torch.backends.mps.is_available():
-        device = torch.device('mps')
-    elif torch.cuda.is_available():
-        device = torch.device('cuda')
-    else:
-        device = torch.device('cpu')
-    print(f"\nUsing device: {device}")
-    
-    # Model (5 classes: clean + 4 pixel stego)
-    print("\n" + "=" * 80)
-    print("TRAINING STARLIGHT CNN")
-    print("=" * 80)
-    
-    model = StarlightCNN(num_classes=5, feature_dim=24).to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    model = UniversalStegoDetector().to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    criterion = nn.CrossEntropyLoss()
+    early_stopper = EarlyStopping()
     
-    start_epoch = 0
-    best_acc = 0.0
-    best_clean_recall = 0.0
-    
-    # Resume from checkpoint if specified
-    if args.resume_cnn and os.path.exists(args.resume_cnn):
-        print(f"\nResuming CNN training from checkpoint: {args.resume_cnn}")
-        checkpoint = torch.load(args.resume_cnn, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint.get('epoch', 0) + 1
-        best_acc = checkpoint.get('balanced_acc', 0.0)
-        best_clean_recall = checkpoint.get('clean_recall', 0.0)
-        print(f"✓ Resumed from epoch {start_epoch}")
-        print(f"  Previous Best Balanced Acc: {best_acc:.4f}")
-        print(f"  Previous Best Clean Recall: {best_clean_recall:.4f}")
-    elif args.resume_cnn:
-        print(f"\nWarning: Resume checkpoint '{args.resume_cnn}' not found, training from scratch")
-    else:
-        print("\nTraining CNN from scratch")
-    
-    # Class weights
-    class_weights = torch.tensor([
-        1.0 / label_counts[i] for i in range(5)
-    ], dtype=torch.float32).to(device)
-    class_weights = class_weights / class_weights.sum() * 5
-    
-    print(f"\nClass weights: {class_weights}")
-    print(f"Training config: batch_size={args.batch_size}, epochs={args.epochs}, lr={args.lr}")
-    print(f"RF threshold for pseudo-labels: {args.rf_threshold}")
-    print(f"Output model: {args.cnn_output}")
-    
-    patience = args.patience
-    counter = 0
-    
-    for epoch in range(start_epoch, start_epoch + args.epochs):
-        # Training
+    # Ensure the directory exists
+    output_path = Path(args.output_model)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for epoch in range(args.epochs):
         model.train()
-        train_loss = 0.0
-        train_correct = 0
-        train_total = 0
-        
-        with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/{start_epoch + args.epochs} [Train]") as pbar:
-            for images, features, labels_batch, conf_batch in train_loader:
-                images = images.to(device)
-                features = features.to(device)
-                labels_batch = labels_batch.to(device)
-                conf_batch = conf_batch.to(device)
-                
-                optimizer.zero_grad()
-                outputs = model(images, features)
-                
-                # Confidence-weighted loss (pseudo-labels weighted by RF confidence)
-                loss = F.cross_entropy(outputs, labels_batch, weight=class_weights, reduction='none')
-                loss = (loss * conf_batch).mean()
-                
-                loss.backward()
-                optimizer.step()
-                
-                train_loss += loss.item()
-                _, predicted = outputs.max(1)
-                train_total += labels_batch.size(0)
-                train_correct += predicted.eq(labels_batch).sum().item()
-                
-                pbar.update(1)
-                pbar.set_postfix({'Loss': f'{loss.item():.4f}', 
-                                 'Acc': f'{100.*train_correct/train_total:.2f}%'})
-        
-        train_loss /= len(train_loader)
-        train_acc = 100. * train_correct / train_total
-        
-        # Validation with progress bar
+        train_loss = 0
+        for rgb, alpha, exif, eoi, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}"):
+            if rgb is None: continue
+            rgb, alpha, exif, eoi, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), labels.to(device)
+            optimizer.zero_grad()
+            loss = criterion(model(rgb, alpha, exif, eoi), labels)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+
         model.eval()
-        val_loss = 0.0
-        all_preds = []
-        all_trues = []
-        
+        val_loss, correct, total = 0, 0, 0
         with torch.no_grad():
-            with tqdm(total=len(val_loader), desc=f"Epoch {epoch+1}/{start_epoch + args.epochs} [Val]  ") as pbar:
-                for images, features, labels_batch, conf_batch in val_loader:
-                    images = images.to(device)
-                    features = features.to(device)
-                    labels_batch = labels_batch.to(device)
-                    conf_batch = conf_batch.to(device)
-                    
-                    outputs = model(images, features)
-                    loss = F.cross_entropy(outputs, labels_batch, weight=class_weights, reduction='none')
-                    loss = (loss * conf_batch).mean()
-                    val_loss += loss.item()
-                    
-                    preds = outputs.argmax(1).cpu().tolist()
-                    all_preds.extend(preds)
-                    all_trues.extend(labels_batch.cpu().tolist())
-                    
-                    pbar.update(1)
-                    pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
+            for rgb, alpha, exif, eoi, labels in val_loader:
+                if rgb is None: continue
+                rgb, alpha, exif, eoi, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), labels.to(device)
+                outputs = model(rgb, alpha, exif, eoi)
+                val_loss += criterion(outputs, labels).item()
+                correct += (outputs.argmax(1) == labels).sum().item()
+                total += labels.size(0)
         
         val_loss /= len(val_loader)
-        trues_np = np.array(all_trues)
-        preds_np = np.array(all_preds)
+        val_acc = correct / total if total > 0 else 0
+        print(f"Epoch {epoch+1} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
         
-        acc = accuracy_score(trues_np, preds_np)
-        bal_acc = balanced_accuracy_score(trues_np, preds_np)
-        
-        # Clean recall (most important metric!)
-        clean_recall = np.sum((trues_np == 0) & (preds_np == 0)) / max(np.sum(trues_np == 0), 1)
-        clean_precision = np.sum((trues_np == 0) & (preds_np == 0)) / max(np.sum(preds_np == 0), 1)
-        
-        print(f"\nEpoch {epoch+1}/{start_epoch + args.epochs}")
-        print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
-        print(f"  Val Loss: {val_loss:.4f}, Val Acc: {acc:.4f}, Balanced Acc: {bal_acc:.4f}")
-        print(f"  Clean Recall: {clean_recall:.4f}, Clean Precision: {clean_precision:.4f}")
-        
-        # Per-class accuracy
-        cm = confusion_matrix(trues_np, preds_np)
-        per_class_acc = cm.diagonal() / cm.sum(axis=1).clip(min=1)
-        print(f"  Per-class Acc: {', '.join([f'{class_names[i]}: {v:.2f}' for i, v in enumerate(per_class_acc)])}")
+        # Check for improvement and save if better
+        improved = early_stopper(val_loss, model)
+        if improved:
+            torch.save(model.state_dict(), str(output_path))
+            print(f"  [SAVED] Model improved! Saved to {output_path}")
         
         scheduler.step()
         
-        # Save if improved (prioritize clean recall + balanced accuracy)
-        save_score = bal_acc * 0.5 + clean_recall * 0.5
-        best_score = best_acc * 0.5 + best_clean_recall * 0.5
-        
-        if save_score > best_score:
-            best_acc = bal_acc
-            best_clean_recall = clean_recall
-            counter = 0
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'balanced_acc': bal_acc,
-                'clean_recall': clean_recall,
-                'accuracy': acc,
-            }, args.cnn_output)
-            print(f"  ✓ SAVED to {args.cnn_output} (Balanced Acc: {bal_acc:.4f}, Clean Recall: {clean_recall:.4f})")
-        else:
-            counter += 1
-            print(f"  Not improved. Early stopping: {counter}/{patience}")
-            if counter >= patience:
-                print("\nEarly stopping triggered.")
-                break
-    
-    print(f"\n{'='*80}")
-    print(f"Training complete!")
-    print(f"Best Balanced Accuracy: {best_acc:.4f}")
-    print(f"Best Clean Recall: {best_clean_recall:.4f}")
-    print(f"\nStarlight CNN Summary:")
-    print(f"  - Learned clean detection from RF teacher")
-    print(f"  - Can classify 5 types: clean + 4 pixel-based stego")
-    print(f"  - Self-contained: no RF needed at inference time")
-    print(f"  - EXIF/EOI: still use RF features at runtime")
-    print(f"{'='*80}")
+        if early_stopper.early_stop:
+            print("Early stopping triggered.")
+            break
+
+    # Final save verification
+    if output_path.exists():
+        print(f"\n[FINAL] Best model saved to {output_path} ({output_path.stat().st_size} bytes)")
+        print(f"[FINAL] Best validation loss: {early_stopper.best_loss:.4f}")
+    else:
+        print(f"[ERROR] Model file was not saved!")
+
+
+if __name__ == "__main__":
+    print(f"[DEVICE] Using: {device}")
+    parser = argparse.ArgumentParser(description="Starlight v3")
+    parser.add_argument("--datasets_dir", type=str, default="datasets")
+    parser.add_argument("--output_model", default="models/starlight.pth")
+    parser.add_argument("--epochs", type=int, default=40)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=0.001)
+    args = parser.parse_args()
+    os.makedirs("models", exist_ok=True)
+    train_model(args)
