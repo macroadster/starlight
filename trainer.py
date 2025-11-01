@@ -4,6 +4,9 @@ Universal 6-class Stego Detector
 
 - Hybrid model with parallel expert branches for different stego types.
 - Separate branches for pixel analysis (LSB, Alpha, Palette) and metadata (EXIF/EOI).
+- Palette features extracted from image palettes for palette-based steganography.
+- AlphaDetector checks for AI24 marker in alpha LSB to classify as alpha steganography.
+- LSBDetector handles RGB LSB and alpha LSB without AI24 marker.
 - Batch normalization on all feature branches before fusion to prevent feature scaling issues.
 - Robust data loading and conservative training hyperparameters to prevent overfitting.
 """
@@ -14,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, default_collate
 from PIL import Image
 import numpy as np
 from pathlib import Path
@@ -99,6 +102,13 @@ class StegoImageDataset(Dataset):
             exif_features = get_exif_features(img, img_path)
             eoi_features = torch.tensor([get_eoi_payload_size(img_path) / 1000.0], dtype=torch.float)
 
+            palette_tensor = torch.zeros(256, 3)
+            if img.mode == 'P':
+                palette = img.getpalette()
+                if palette:
+                    palette_array = np.array(palette[:768]).reshape(256, 3) / 255.0
+                    palette_tensor = torch.from_numpy(palette_array).float()
+
             if img.mode == 'RGBA':
                 rgb, alpha_channel = img.convert('RGB'), np.array(img)[:, :, 3] / 255.0
                 alpha = torch.from_numpy(alpha_channel).float().unsqueeze(0)
@@ -110,7 +120,26 @@ class StegoImageDataset(Dataset):
             alpha_tensor = F.interpolate(alpha.unsqueeze(0), size=(224, 224), mode='bilinear', align_corners=False).squeeze(0)
 
             label = self.parse_label(img_path, folder_type)
-            return rgb_tensor, alpha_tensor, exif_features, eoi_features, label
+            # Detect AI24 marker in alpha LSB
+            alpha_lsb_bits = (alpha_tensor * 255).long() & 1
+            marker_present = False
+            bits = alpha_lsb_bits.flatten()
+            if bits.numel() >= 32:
+                bytes_ = []
+                for b in range(4):
+                    byte = 0
+                    for i in range(8):
+                        bit_idx = b * 8 + i
+                        if bit_idx < bits.numel():
+                            byte |= (bits[bit_idx].item() << (7 - i))
+                    bytes_.append(byte)
+                if bytes_ == [ord(c) for c in "AI24"]:
+                    marker_present = True
+            # Reclassify: if LSB in alpha with AI24 marker, classify as alpha; else if LSB in alpha without marker, keep as lsb
+            if label == ALGO_TO_ID["lsb"] and alpha_lsb_bits.sum() > 0:
+                if marker_present:
+                    label = ALGO_TO_ID["alpha"]
+            return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor, label
         except Exception as e:
             print(f"ERROR loading {img_path}: {e}")
             return None
@@ -124,13 +153,40 @@ class LSBDetector(nn.Module):
         lsb = (rgb * 255).long() & 1
         return F.adaptive_avg_pool2d(self.lsb_conv(lsb.float()), 1).flatten(1)
 
-class AlphaLSBDetector(nn.Module):
+class AlphaDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
         self.alpha_conv = nn.Sequential(nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
     def forward(self, alpha):
         alpha_lsb = (alpha * 255).long() & 1
-        return F.adaptive_avg_pool2d(self.alpha_conv(alpha_lsb.float()), 1).flatten(1)
+        # Detect AI24 marker in first 32 LSB bits
+        bits = alpha_lsb.flatten()
+        marker_present = 0.0
+        if bits.numel() >= 32:
+            bytes_ = []
+            for b in range(4):
+                byte = 0
+                for i in range(8):
+                    bit_idx = b * 8 + i
+                    if bit_idx < bits.numel():
+                        byte |= (bits[bit_idx].item() << (7 - i))
+                bytes_.append(byte)
+            if bytes_ == [ord(c) for c in "AI24"]:
+                marker_present = 1.0
+        marker_tensor = torch.full((alpha.size(0), 1), marker_present, device=alpha.device)
+        features = F.adaptive_avg_pool2d(self.alpha_conv(alpha_lsb.float()), 1).flatten(1)
+        return torch.cat([features, marker_tensor], dim=1)
+
+class PaletteDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.conv = nn.Conv1d(3, dim, 3, 1, 1)
+        self.bn = nn.BatchNorm1d(dim)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+    def forward(self, palette):
+        x = palette.permute(0, 2, 1)  # (batch, 3, 256)
+        x = F.relu(self.bn(self.conv(x)))
+        return self.pool(x).flatten(1)
 
 class ExifEoiDetector(nn.Module):
     def __init__(self, dim=32):
@@ -144,11 +200,12 @@ class UniversalStegoDetector(nn.Module):
     def __init__(self, num_classes=NUM_CLASSES, dim=64):
         super().__init__()
         self.lsb = LSBDetector(dim)
-        self.alpha = AlphaLSBDetector(dim)
+        self.alpha = AlphaDetector(dim)
         self.meta = ExifEoiDetector(dim)
+        self.palette = PaletteDetector(dim)
         self.rgb_base = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(), nn.AdaptiveAvgPool2d(1))
 
-        fusion_dim = dim + dim + dim + dim
+        fusion_dim = dim + (dim + 1) + dim + dim + dim
         self.classifier = nn.Sequential(
             nn.BatchNorm1d(fusion_dim),
             nn.Linear(fusion_dim, 256),
@@ -156,19 +213,20 @@ class UniversalStegoDetector(nn.Module):
             nn.Linear(256, num_classes)
         )
 
-    def forward(self, rgb, alpha, exif, eoi):
+    def forward(self, rgb, alpha, exif, eoi, palette):
         f_lsb = self.lsb(rgb)
         f_alpha = self.alpha(alpha)
         f_meta = self.meta(exif, eoi)
+        f_palette = self.palette(palette)
         f_rgb = self.rgb_base(rgb).flatten(1)
         
-        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb], dim=1)
+        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette], dim=1)
         return self.classifier(features)
 
 # --- TRAINING & UTILS ---
 def collate_fn(batch):
     batch = list(filter(None, batch))
-    return torch.utils.data.dataloader.default_collate(batch) if batch else (None,)*5
+    return default_collate(batch) if batch else (None,)*6
 
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.001, verbose=True):
@@ -208,11 +266,11 @@ def train_model(args):
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0
-        for rgb, alpha, exif, eoi, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}"):
+        for rgb, alpha, exif, eoi, palette, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}"):
             if rgb is None: continue
-            rgb, alpha, exif, eoi, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), labels.to(device)
+            rgb, alpha, exif, eoi, palette, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), labels.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(rgb, alpha, exif, eoi), labels)
+            loss = criterion(model(rgb, alpha, exif, eoi, palette), labels)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -220,10 +278,10 @@ def train_model(args):
         model.eval()
         val_loss, correct, total = 0, 0, 0
         with torch.no_grad():
-            for rgb, alpha, exif, eoi, labels in val_loader:
+            for rgb, alpha, exif, eoi, palette, labels in val_loader:
                 if rgb is None: continue
-                rgb, alpha, exif, eoi, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), labels.to(device)
-                outputs = model(rgb, alpha, exif, eoi)
+                rgb, alpha, exif, eoi, palette, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), labels.to(device)
+                outputs = model(rgb, alpha, exif, eoi, palette)
                 val_loss += criterion(outputs, labels).item()
                 correct += (outputs.argmax(1) == labels).sum().item()
                 total += labels.size(0)

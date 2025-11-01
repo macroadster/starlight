@@ -82,13 +82,40 @@ class LSBDetector(nn.Module):
         lsb = (rgb * 255).long() & 1
         return F.adaptive_avg_pool2d(self.lsb_conv(lsb.float()), 1).flatten(1)
 
-class AlphaLSBDetector(nn.Module):
+class AlphaDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
         self.alpha_conv = nn.Sequential(nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
     def forward(self, alpha):
         alpha_lsb = (alpha * 255).long() & 1
-        return F.adaptive_avg_pool2d(self.alpha_conv(alpha_lsb.float()), 1).flatten(1)
+        # Detect AI24 marker in first 32 LSB bits
+        bits = alpha_lsb.flatten()
+        marker_present = 0.0
+        if bits.numel() >= 32:
+            bytes_ = []
+            for b in range(4):
+                byte = 0
+                for i in range(8):
+                    bit_idx = b * 8 + i
+                    if bit_idx < bits.numel():
+                        byte |= (bits[bit_idx].item() << (7 - i))
+                bytes_.append(byte)
+            if bytes_ == [ord(c) for c in "AI24"]:
+                marker_present = 1.0
+        marker_tensor = torch.full((alpha.size(0), 1), marker_present, device=alpha.device)
+        features = F.adaptive_avg_pool2d(self.alpha_conv(alpha_lsb.float()), 1).flatten(1)
+        return torch.cat([features, marker_tensor], dim=1)
+
+class PaletteDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.conv = nn.Conv1d(3, dim, 3, 1, 1)
+        self.bn = nn.BatchNorm1d(dim)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+    def forward(self, palette):
+        x = palette.permute(0, 2, 1)  # (batch, 3, 256)
+        x = F.relu(self.bn(self.conv(x)))
+        return self.pool(x).flatten(1)
 
 class ExifEoiDetector(nn.Module):
     def __init__(self, dim=32):
@@ -101,12 +128,13 @@ class UniversalStegoDetector(nn.Module):
     def __init__(self, num_classes=NUM_CLASSES, dim=64):
         super().__init__()
         self.lsb = LSBDetector(dim)
-        self.alpha = AlphaLSBDetector(dim)
+        self.alpha = AlphaDetector(dim)
         self.meta = ExifEoiDetector(dim)
-        self.rgb_base = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), 
+        self.palette = PaletteDetector(dim)
+        self.rgb_base = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim),
                                      nn.ReLU(), nn.AdaptiveAvgPool2d(1))
 
-        fusion_dim = dim + dim + dim + dim
+        fusion_dim = dim + (dim + 1) + dim + dim + dim
         self.classifier = nn.Sequential(
             nn.BatchNorm1d(fusion_dim),
             nn.Linear(fusion_dim, 256),
@@ -114,13 +142,14 @@ class UniversalStegoDetector(nn.Module):
             nn.Linear(256, num_classes)
         )
 
-    def forward(self, rgb, alpha, exif, eoi):
+    def forward(self, rgb, alpha, exif, eoi, palette):
         f_lsb = self.lsb(rgb)
         f_alpha = self.alpha(alpha)
         f_meta = self.meta(exif, eoi)
+        f_palette = self.palette(palette)
         f_rgb = self.rgb_base(rgb).flatten(1)
-        
-        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb], dim=1)
+
+        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette], dim=1)
         return self.classifier(features)
 
 # --- IMAGE PROCESSING ---
@@ -130,6 +159,13 @@ def preprocess_image(img_path):
         img = Image.open(img_path)
         exif_features = get_exif_features(img, img_path)
         eoi_features = torch.tensor([get_eoi_payload_size(img_path) / 1000.0], dtype=torch.float)
+
+        palette_tensor = torch.zeros(256, 3)
+        if img.mode == 'P':
+            palette = img.getpalette()
+            if palette:
+                palette_array = np.array(palette[:768]).reshape(256, 3) / 255.0
+                palette_tensor = torch.from_numpy(palette_array).float()
 
         if img.mode == 'RGBA':
             rgb, alpha_channel = img.convert('RGB'), np.array(img)[:, :, 3] / 255.0
@@ -141,10 +177,10 @@ def preprocess_image(img_path):
         from torchvision import transforms
         resize = transforms.Resize((224, 224), antialias=True)
         rgb_tensor = transforms.ToTensor()(resize(rgb))
-        alpha_tensor = F.interpolate(alpha.unsqueeze(0), size=(224, 224), 
+        alpha_tensor = F.interpolate(alpha.unsqueeze(0), size=(224, 224),
                                      mode='bilinear', align_corners=False).squeeze(0)
 
-        return rgb_tensor, alpha_tensor, exif_features, eoi_features
+        return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor
     except Exception as e:
         print(f"Error preprocessing {img_path}: {e}")
         return None
@@ -162,29 +198,30 @@ class StegoScanner:
         preprocessed = preprocess_image(img_path)
         if preprocessed is None:
             return None
-        
-        rgb, alpha, exif, eoi = preprocessed
-        
+
+        rgb, alpha, exif, eoi, palette = preprocessed
+
         with torch.no_grad():
             rgb = rgb.unsqueeze(0).to(device)
             alpha = alpha.unsqueeze(0).to(device)
             exif = exif.unsqueeze(0).to(device)
             eoi = eoi.unsqueeze(0).to(device)
-            
-            outputs = self.model(rgb, alpha, exif, eoi)
+            palette = palette.unsqueeze(0).to(device)
+
+            outputs = self.model(rgb, alpha, exif, eoi, palette)
             probs = F.softmax(outputs, dim=1)
             confidence, predicted = torch.max(probs, 1)
-            
+
             predicted_class = ID_TO_ALGO[predicted.item()]
             confidence_score = confidence.item()
-            
+
             # Get top 3 predictions
             top3_probs, top3_indices = torch.topk(probs, 3, dim=1)
             top3_predictions = [
-                (ID_TO_ALGO[idx.item()], prob.item()) 
+                (ID_TO_ALGO[idx.item()], prob.item())
                 for idx, prob in zip(top3_indices[0], top3_probs[0])
             ]
-            
+
             return {
                 'predicted_class': predicted_class,
                 'confidence': confidence_score,
@@ -240,8 +277,8 @@ class StegoScanner:
         
         return result
     
-    def scan_directory(self, directory, extract_messages=True, recursive=True, 
-                      output_file=None):
+    def scan_directory(self, directory, extract_messages=True, recursive=True,
+                      output_file=None, detail=False):
         """Scan all images in a directory."""
         directory = Path(directory)
         image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tiff', '.tif'}
@@ -265,8 +302,8 @@ class StegoScanner:
             if result.get('is_stego', False):
                 stego_detections.append((img_path, result))
         
-        # Display all detections after progress bar completes
-        if stego_detections:
+        # Display all detections after progress bar completes if detail
+        if detail and stego_detections:
             print(f"\n{'='*60}")
             print(f"DETECTIONS FOUND")
             print(f"{'='*60}")
@@ -313,11 +350,13 @@ def main():
     parser.add_argument('--model', default="models/starlight.pth", help='Path to trained model (.pth file)')
     parser.add_argument('--threshold', type=float, default=0.5, 
                        help='Confidence threshold for detection (default: 0.5)')
-    parser.add_argument('--no-extract', action='store_true', 
+    parser.add_argument('--no-extract', action='store_true',
                        help='Only detect, do not extract messages')
     parser.add_argument('--recursive', action='store_true', default=True,
                        help='Recursively scan subdirectories')
     parser.add_argument('--output', help='Output JSON file for results')
+    parser.add_argument('--detail', action='store_true',
+                       help='Display detailed detection results during directory scan')
     
     args = parser.parse_args()
     
@@ -368,7 +407,8 @@ def main():
             args.target,
             extract_messages=not args.no_extract,
             recursive=args.recursive,
-            output_file=args.output
+            output_file=args.output,
+            detail=args.detail
         )
     
     else:
