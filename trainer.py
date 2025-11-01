@@ -257,7 +257,7 @@ def train_model(args):
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
-    early_stopper = EarlyStopping()
+    early_stopper = EarlyStopping(patience=args.patience)
     
     # Ensure the directory exists
     output_path = Path(args.output_model)
@@ -277,18 +277,37 @@ def train_model(args):
 
         model.eval()
         val_loss, correct, total = 0, 0, 0
+        class_correct = {i: 0 for i in range(NUM_CLASSES)}
+        class_total = {i: 0 for i in range(NUM_CLASSES)}
         with torch.no_grad():
             for rgb, alpha, exif, eoi, palette, labels in val_loader:
                 if rgb is None: continue
                 rgb, alpha, exif, eoi, palette, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), labels.to(device)
                 outputs = model(rgb, alpha, exif, eoi, palette)
                 val_loss += criterion(outputs, labels).item()
-                correct += (outputs.argmax(1) == labels).sum().item()
+                
+                preds = outputs.argmax(1)
+                correct += (preds == labels).sum().item()
                 total += labels.size(0)
+
+                for i in range(len(labels)):
+                    label = labels[i].item()
+                    pred = preds[i].item()
+                    if label == pred:
+                        class_correct[label] += 1
+                    class_total[label] += 1
         
         val_loss /= len(val_loader)
         val_acc = correct / total if total > 0 else 0
         print(f"Epoch {epoch+1} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+
+        # Per-class accuracy
+        print("  Per-algorithm accuracy:")
+        id_to_algo = {v: k for k, v in ALGO_TO_ID.items()}
+        for class_id, count in class_total.items():
+            if count > 0:
+                accuracy = 100 * class_correct[class_id] / count
+                print(f"    - {id_to_algo[class_id]}: {accuracy:.2f}% ({class_correct[class_id]}/{count})")
         
         # Check for improvement and save if better
         improved = early_stopper(val_loss, model)
@@ -318,6 +337,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--patience", type=int, default=7, help="Early stopping patience")
     args = parser.parse_args()
     os.makedirs("models", exist_ok=True)
     train_model(args)
