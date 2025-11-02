@@ -106,7 +106,12 @@ class StegoImageDataset(Dataset):
             if img.mode == 'P':
                 palette = img.getpalette()
                 if palette:
-                    palette_array = np.array(palette[:768]).reshape(256, 3) / 255.0
+                    # Group into RGB triples and sort by luminance for consistency
+                    colors = [(palette[i], palette[i+1], palette[i+2]) for i in range(0, len(palette), 3)]
+                    colors.sort(key=lambda c: 0.299*c[0] + 0.587*c[1] + 0.114*c[2])  # Sort by luminance
+                    sorted_palette = [val for color in colors for val in color]
+                    palette_padded = (sorted_palette + [0] * (768 - len(sorted_palette)))[:768]
+                    palette_array = np.array(palette_padded).reshape(256, 3) / 255.0
                     palette_tensor = torch.from_numpy(palette_array).float()
 
             if img.mode == 'RGBA':
@@ -229,14 +234,23 @@ def collate_fn(batch):
     return default_collate(batch) if batch else (None,)*6
 
 class EarlyStopping:
-    def __init__(self, patience=7, min_delta=0.001, verbose=True):
-        self.patience, self.min_delta, self.verbose = patience, min_delta, verbose
-        self.counter, self.best_loss, self.early_stop = 0, np.inf, False
+    def __init__(self, patience=7, min_delta=0.001, verbose=True, monitor='loss'):
+        self.patience, self.min_delta, self.verbose, self.monitor = patience, min_delta, verbose, monitor
+        self.counter, self.best_value, self.early_stop = 0, -np.inf if monitor == 'acc' else np.inf, False
         self.best_model_state = None
-    
-    def __call__(self, loss, model=None):
-        if self.best_loss - loss > self.min_delta:
-            self.best_loss = loss
+
+    def __call__(self, value, model=None):
+        improved = False
+        if self.monitor == 'acc':
+            if value - self.best_value > self.min_delta:
+                self.best_value = value
+                improved = True
+        else:  # loss
+            if self.best_value - value > self.min_delta:
+                self.best_value = value
+                improved = True
+
+        if improved:
             self.counter = 0
             if model is not None:
                 self.best_model_state = model.state_dict().copy()
@@ -248,20 +262,25 @@ class EarlyStopping:
             return False  # No improvement
 
 def train_model(args):
-    train_ds = StegoImageDataset(args.datasets_dir, subdirs=["sample"])
-    val_ds = StegoImageDataset(args.datasets_dir, subdirs=["val"])
+    train_subdirs = args.train_subdirs.split(',') if args.train_subdirs else ["sample"]
+    val_subdirs = args.val_subdirs.split(',') if args.val_subdirs else ["val"]
+    train_ds = StegoImageDataset(args.datasets_dir, subdirs=train_subdirs)
+    val_ds = StegoImageDataset(args.datasets_dir, subdirs=val_subdirs)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, collate_fn=collate_fn, pin_memory=False)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn, pin_memory=False)
 
     model = UniversalStegoDetector().to(device)
+    if args.resume:
+        model.load_state_dict(torch.load(args.model))
+        print(f"[RESUME] Loaded model from {args.model}")
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
-    early_stopper = EarlyStopping(patience=args.patience)
+    early_stopper = EarlyStopping(patience=args.patience, monitor='acc')
     
     # Ensure the directory exists
-    output_path = Path(args.output_model)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path = Path(args.model)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(args.epochs):
         model.train()
@@ -280,7 +299,7 @@ def train_model(args):
         class_correct = {i: 0 for i in range(NUM_CLASSES)}
         class_total = {i: 0 for i in range(NUM_CLASSES)}
         with torch.no_grad():
-            for rgb, alpha, exif, eoi, palette, labels in val_loader:
+            for rgb, alpha, exif, eoi, palette, labels in tqdm(val_loader, desc="Validating"):
                 if rgb is None: continue
                 rgb, alpha, exif, eoi, palette, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), labels.to(device)
                 outputs = model(rgb, alpha, exif, eoi, palette)
@@ -310,21 +329,22 @@ def train_model(args):
                 print(f"    - {id_to_algo[class_id]}: {accuracy:.2f}% ({class_correct[class_id]}/{count})")
         
         # Check for improvement and save if better
-        improved = early_stopper(val_loss, model)
+        improved = early_stopper(val_acc, model)
         if improved:
-            torch.save(model.state_dict(), str(output_path))
-            print(f"  [SAVED] Model improved! Saved to {output_path}")
-        
+            torch.save(model.state_dict(), str(model_path))
+            print(f"  [SAVED] Model improved! Saved to {model_path}")
+
         scheduler.step()
-        
+
         if early_stopper.early_stop:
             print("Early stopping triggered.")
             break
 
     # Final save verification
-    if output_path.exists():
-        print(f"\n[FINAL] Best model saved to {output_path} ({output_path.stat().st_size} bytes)")
-        print(f"[FINAL] Best validation loss: {early_stopper.best_loss:.4f}")
+    if model_path.exists():
+        print(f"\n[FINAL] Best model saved to {model_path} ({model_path.stat().st_size} bytes)")
+        metric_name = "accuracy" if early_stopper.monitor == 'acc' else "loss"
+        print(f"[FINAL] Best validation {metric_name}: {early_stopper.best_value:.4f}")
     else:
         print(f"[ERROR] Model file was not saved!")
 
@@ -333,11 +353,14 @@ if __name__ == "__main__":
     print(f"[DEVICE] Using: {device}")
     parser = argparse.ArgumentParser(description="Starlight v3")
     parser.add_argument("--datasets_dir", type=str, default="datasets")
-    parser.add_argument("--output_model", default="models/starlight.pth")
+    parser.add_argument("--model", default="models/starlight.pth", help="Path to save/load the model")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--patience", type=int, default=7, help="Early stopping patience")
+    parser.add_argument("--resume", action="store_true", help="Resume training from the model path")
+    parser.add_argument("--train_subdirs", type=str, default="sample", help="Comma-separated list of training subdir patterns (e.g., 'sample' or '*_submission_*')")
+    parser.add_argument("--val_subdirs", type=str, default="val", help="Comma-separated list of validation subdir patterns")
     args = parser.parse_args()
     os.makedirs("models", exist_ok=True)
     train_model(args)
