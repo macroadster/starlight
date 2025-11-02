@@ -106,11 +106,7 @@ class StegoImageDataset(Dataset):
             if img.mode == 'P':
                 palette = img.getpalette()
                 if palette:
-                    # Group into RGB triples and sort by luminance for consistency
-                    colors = [(palette[i], palette[i+1], palette[i+2]) for i in range(0, len(palette), 3)]
-                    colors.sort(key=lambda c: 0.299*c[0] + 0.587*c[1] + 0.114*c[2])  # Sort by luminance
-                    sorted_palette = [val for color in colors for val in color]
-                    palette_padded = (sorted_palette + [0] * (768 - len(sorted_palette)))[:768]
+                    palette_padded = (palette + [0] * (768 - len(palette)))[:768]
                     palette_array = np.array(palette_padded).reshape(256, 3) / 255.0
                     palette_tensor = torch.from_numpy(palette_array).float()
 
