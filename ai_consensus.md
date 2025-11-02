@@ -1,18 +1,3 @@
-# AI Consensus Report for Project Starlight (2025)  
-**SHARED LIVING DOCUMENT – PRESERVED + GROK SECTION ADDED**
-
----
-
-> **NOTE**: This document incorporates the **Project Lead's decision to approve Option A** for the critical bit encoding issue on **2025-11-02**.
-
----
-
-*(All original content from Claude’s update is below — unchanged)*
-
----
-
-<ORIGINAL_CONTENT_PRESERVED>
-
 # AI Consensus Report for Project Starlight (2025)
 
 ## Overview
