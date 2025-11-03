@@ -399,7 +399,7 @@ Let **alpha and palette** be **advanced optional modules**.
   - [x] Claude: Debug and re-attempt data_generator.py LSB-first implementation - **Completed**
   - [x] **Gemini:** Debug and re-attempt data_generator.py LSB-first implementation. - **Completed**
   - [x] Claude: Clarify AI42 prefix usage (Alpha only, not other methods) - **Completed**
-  - [ ] Annotate Gemini's Alpha Protocol paper for clarity (correct deprecation note)
+  - [x] Annotate Gemini's Alpha Protocol paper for clarity - **Completed**
   - [x] Test end-to-end compatibility across all generators with scanner.py and test_starlight.py - **Completed (extraction compatible, scanner model needs retraining)**
 
 ### **Short-term (Next 2 Weeks):**
