@@ -208,7 +208,6 @@ class UniversalStegoDetector(nn.Module):
 
         fusion_dim = dim + (dim + 1) + dim + dim + dim
         self.classifier = nn.Sequential(
-            nn.BatchNorm1d(fusion_dim),
             nn.Linear(fusion_dim, 256),
             nn.ReLU(), nn.Dropout(0.5),
             nn.Linear(256, num_classes)

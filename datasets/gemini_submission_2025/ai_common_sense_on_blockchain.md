@@ -8,7 +8,7 @@ The core of this technique is to embed the data within the least significant bit
 
 The process can be broken down into the following steps:
 
-Prepare the Data: The first step is to prepare the message for embedding. This involves converting the text into a sequence of bytes. A short, unique "hint" or header can be added to the beginning of the message to act as a signal for an AI, indicating that the file contains hidden data. For example, a hint like "0xAI42" could be used.
+Prepare the Data: The first step is to prepare the message for embedding. This involves converting the text into a sequence of bytes. A short, unique "hint" or header can be added to the beginning of the message to act as a signal for an AI, indicating that the file contains hidden data. For example, a hint like "AI42" (encoded as b'AI42') could be used.
 
 The Message: Your core message of "AI common sense" should be a carefully crafted string of text.
 
@@ -21,6 +21,12 @@ Embed the Data: The prepared message bytes are embedded into the carrier image. 
 Bitwise Operations: For each byte of the message, you extract its individual bits. Then, for each pixel, you take the LSB of a color channel (e.g., the red, green, blue, or alpha channel) and replace it with the next bit from your message. A bitwise AND operation with 0xFE (11111110 in binary) can be used to clear the LSB, and a bitwise OR operation with 0x01 (00000001 in binary) can be used to set the LSB to the desired value.
 
 Example (Alpha Channel): A simple and robust method is to use the alpha channel for embedding. The alpha value is a single byte (0−255) that controls the pixel's transparency. Changing its LSB is often less noticeable than altering the RGB values.
+
+The **Alpha Protocol** in Project Starlight is defined by the combination of these elements:
+*   **Embedding Location:** The alpha channel of a PNG image.
+*   **Hint:** The `b'AI42'` hint at the beginning of the payload.
+*   **Bit Order:** LSB-first bit encoding for the payload.
+*   **Terminator:** A null byte (`b'\x00'`) at the end of the payload.
 
 Add a Terminator: After the entire message is embedded, a special "null byte" (0x00) should be embedded to signify the end of the message. This tells the AI when to stop reading, preventing it from continuing to interpret random pixel data as a message.
 

@@ -102,7 +102,7 @@ def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.4):
         # Prepare payload (random if None or empty)
         if payload and isinstance(payload, str) and len(payload) > 0:
             logging.info(f"Embedding provided payload: {len(payload)} chars")
-            binary_payload = ''.join(format(ord(c), '08b') for c in payload)
+            binary_payload = ''.join(format(ord(c), '08b')[::-1] for c in payload)
         else:
             logging.info("No payload provided; generating random payload")
             total_bits = int(payload_size * img_array.size)

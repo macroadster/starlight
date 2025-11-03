@@ -337,125 +337,8 @@ def extract_palette(image_path):
     bits = ''.join(str(pixel & 1) for pixel in img_array.flatten())
     return extract_message_from_bits(bits)
 
-def extract_sdm(image_path, clean_path=None):
-    """
-    Extract data from PNG SDM embedding.
-    """
-    stego_img = Image.open(image_path).convert('RGB')
-    stego_array = np.array(stego_img, dtype=np.float32)
-    
-    block_size = 8
-    height, width = stego_array.shape[:2]
-    
-    # MODE 1: With clean image (most accurate)
-    if clean_path and os.path.exists(clean_path):
-        print(f"  [DEBUG] SDM extraction using clean image comparison")
-        orig_img = Image.open(clean_path).convert('RGB')
-        orig_array = np.array(orig_img, dtype=np.float32)
-        
-        usable_blocks = []
-        
-        for y in range(0, height - block_size, block_size):
-            for x in range(0, width - block_size, block_size):
-                if y + block_size <= height and x + block_size <= width:
-                    mid_y, mid_x = block_size // 2, block_size // 2
-                    orig_val = orig_array[y + mid_y, x + mid_x, 0]
-                    
-                    if 15 <= orig_val <= 240:
-                        usable_blocks.append((y, x))
-        
-        bits = []
-        for y, x in usable_blocks:
-            mid_y, mid_x = block_size // 2, block_size // 2
-            stego_val = stego_array[y + mid_y, x + mid_x, 0]
-            orig_val = orig_array[y + mid_y, x + mid_x, 0]
-            diff = stego_val - orig_val
-            
-            if diff > 7.5:
-                bits.append('1')
-            elif diff < -7.5:
-                bits.append('0')
-            else:
-                bits.append('0')
-    
-    # MODE 2: Without clean image (pattern detection)
-    else:
-        print(f"  [DEBUG] SDM extraction without clean image - using pattern detection")
-        
-        block_centers = []
-        for y in range(0, height - block_size, block_size):
-            for x in range(0, width - block_size, block_size):
-                if y + block_size <= height and x + block_size <= width:
-                    mid_y, mid_x = block_size // 2, block_size // 2
-                    center_val = stego_array[y + mid_y, x + mid_x, 0]
-                    
-                    if 0 <= center_val <= 255:
-                        block_centers.append((y, x, center_val))
-        
-        if len(block_centers) < 100:
-            print(f"  [DEBUG] SDM extraction failed: too few blocks ({len(block_centers)})")
-            return None, None
-        
-        bits = []
-        for y, x, center_val in block_centers:
-            mid_y, mid_x = block_size // 2, block_size // 2
-            
-            block = stego_array[y:y+block_size, x:x+block_size, 0]
-            
-            surrounding_pixels = []
-            for dy in range(block_size):
-                for dx in range(block_size):
-                    if dy != mid_y or dx != mid_x:
-                        surrounding_pixels.append(block[dy, dx])
-            
-            local_avg = np.mean(surrounding_pixels)
-            diff_from_local = center_val - local_avg
-            
-            if diff_from_local > 10:
-                bits.append('1')
-            elif diff_from_local < -10:
-                bits.append('0')
-            else:
-                if center_val < 30:
-                    bits.append('0')
-                elif center_val > 225:
-                    bits.append('1')
-                else:
-                    bits.append('0')
-    
-    if len(bits) < 32:
-        print(f"  [DEBUG] SDM extraction failed: only {len(bits)} bits extracted (need at least 32)")
-        return None, None
-    
-    bits_str = ''.join(bits)
-    
-    try:
-        length = int(bits_str[:32], 2)
-        
-        if length > 100000 or length <= 0:
-            print(f"  [DEBUG] SDM extraction failed: invalid length {length}")
-            return None, None
-        
-        total_bits_needed = 32 + length * 8
-        
-        if len(bits_str) < total_bits_needed:
-            print(f"  [DEBUG] SDM extraction failed: need {total_bits_needed} bits, have {len(bits_str)}")
-            return None, None
-        
-        payload_bits = bits_str[32:total_bits_needed]
-        payload_bytes = bytes([int(payload_bits[i:i+8], 2) 
-                               for i in range(0, len(payload_bits), 8)])
-        
-        try:
-            message = payload_bytes.decode('utf-8')
-            print(f"  [DEBUG] SDM extraction successful. Message length: {len(message)} chars")
-            return message, None
-        except UnicodeDecodeError:
-            return payload_bytes.hex(), None
-            
-    except Exception as e:
-        print(f"  [DEBUG] SDM extraction error: {e}")
-        return None, None
+
+
 
 def extract_exif(image_path):
     """
@@ -666,7 +549,6 @@ def extract_eoi(image_path):
 extraction_functions = {
     'alpha': extract_alpha,
     'palette': extract_palette,
-    'sdm': extract_sdm,
     'lsb': extract_lsb,
     'exif': extract_exif,
     'eoi': extract_eoi

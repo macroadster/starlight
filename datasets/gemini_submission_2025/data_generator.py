@@ -7,13 +7,13 @@ from PIL import Image
 # Note: This is now the DEFAULT, but it will be overridden if --limit is used.
 NUM_IMAGES_PER_PAYLOAD = 5      # Default number of image pairs to generate for each .md file
 RESOLUTION = 512
-HINT_BYTES = b'0xAI42'           # Sequence to signal hidden data
+HINT_BYTES = b'AI42'           # Sequence to signal hidden data
 TERMINATOR_BYTES = b'\x00'       # Byte to signal the end of the message
 
-# --- PNG (LSB) CONFIGURATION ---
+# --- PNG (Alpha LSB) CONFIGURATION ---
 PNG_FORMAT = 'PNG'
-PNG_ALGORITHM = 'lsb'
-# Steganography Method: Least Significant Bit (LSB) on RGBA channels.
+PNG_ALGORITHM = 'alpha'
+# Steganography Method: Least Significant Bit (LSB) on Alpha channel.
 # Image Format: PNG (Lossless).
 
 # --- JPEG (EOI APPEND) CONFIGURATION ---
@@ -67,53 +67,54 @@ def get_payload_bits(full_byte_payload):
     """Converts a byte payload into a flat list of bits."""
     payload_bits = []
     for byte in full_byte_payload:
-        for i in range(7, -1, -1):
+        for i in range(8):
             payload_bits.append((byte >> i) & 1)
     return payload_bits
 
 def embed_stego_lsb(clean_img_path, stego_path_target, full_byte_payload):
-    """LSB steganography for PNG (RGBA)."""
-    
+    """LSB steganography for PNG (Alpha channel only)."""
+
     payload_bits = get_payload_bits(full_byte_payload)
-    
+
     # Image must be converted to RGBA before NumPy conversion to ensure 4 channels
-    clean_img = Image.open(clean_img_path).convert('RGBA') 
+    clean_img = Image.open(clean_img_path).convert('RGBA')
     img_array = np.array(clean_img)
-    color_channels = img_array.flatten()
-    
-    if len(payload_bits) > len(color_channels):
-        print("ERROR: LSB Payload size exceeds image capacity (RGBA). Skipping.")
+    height, width = img_array.shape[:2]
+    alpha_channel = img_array[:, :, 3].flatten()  # Only alpha channel
+
+    if len(payload_bits) > len(alpha_channel):
+        print("ERROR: LSB Payload size exceeds image capacity (Alpha). Skipping.")
         return False
 
-    # LSB Embedding
-    embedded_channels = color_channels.copy()
-    
+    # LSB Embedding in alpha channel only
+    embedded_alpha = alpha_channel.copy()
+
     for i in range(len(payload_bits)):
         bit_to_embed = payload_bits[i]
-        channel_val = embedded_channels[i]
-        
+        alpha_val = embedded_alpha[i]
+
         # Clear the LSB (Bitwise AND with 0xFE) and set the new bit (Bitwise OR)
-        new_channel_val = (channel_val & 0xFE) | bit_to_embed
-        embedded_channels[i] = new_channel_val
+        new_alpha_val = (alpha_val & 0xFE) | bit_to_embed
+        embedded_alpha[i] = new_alpha_val
 
     # Reconstruct and Save the Image
-    tainted_array = embedded_channels.reshape(img_array.shape).astype(np.uint8)
-    stego_img = Image.fromarray(tainted_array) 
+    img_array[:, :, 3] = embedded_alpha.reshape((height, width))
+    stego_img = Image.fromarray(img_array)
     stego_img.save(stego_path_target, PNG_FORMAT)
-    
+
     return True
 
 def extract_lsb(stego_img_path, num_bits):
-    """Extract the first N LSB bits from a PNG (RGBA) image."""
+    """Extract the first N LSB bits from a PNG (Alpha channel only)."""
     stego_img = Image.open(stego_img_path).convert('RGBA')
     img_array = np.array(stego_img)
-    color_channels = img_array.flatten()
-    
-    if num_bits > len(color_channels):
-        raise ValueError(f"Not enough channels ({len(color_channels)}) to extract {num_bits} bits.")
-    
+    alpha_channel = img_array[:, :, 3].flatten()  # Only alpha channel
+
+    if num_bits > len(alpha_channel):
+        raise ValueError(f"Not enough alpha pixels ({len(alpha_channel)}) to extract {num_bits} bits.")
+
     # Extract LSB (Bitwise AND with 0x01)
-    extracted_bits = [(channel_val & 0x01) for channel_val in color_channels[:num_bits]]
+    extracted_bits = [(alpha_val & 0x01) for alpha_val in alpha_channel[:num_bits]]
     return extracted_bits
 
 def test_lsb_steganography_on_image(stego_path_target, expected_byte_payload):
