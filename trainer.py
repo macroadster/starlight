@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-Universal 6-class Stego Detector
+Universal 6-class Stego Detector - Aligned with data_generator.py
 
-- Hybrid model with parallel expert branches for different stego types.
-- Separate branches for pixel analysis (LSB, Alpha, Palette) and metadata (EXIF/EOI).
-- Palette features extracted from image palettes for palette-based steganography.
-- AlphaDetector checks for AI24 marker in alpha LSB to classify as alpha steganography.
-- LSBDetector handles RGB LSB and alpha LSB without AI24 marker.
-- Batch normalization on all feature branches before fusion to prevent feature scaling issues.
-- Robust data loading and conservative training hyperparameters to prevent overfitting.
+Fixed Issues:
+1. Alpha marker changed from "AI24" to "AI42" (matching generator)
+2. Alpha marker detection uses MSB-first bit order (matching generator)
+3. LSB detection no longer tries to reclassify based on alpha channel
 """
 
 import os
@@ -121,25 +118,10 @@ class StegoImageDataset(Dataset):
             alpha_tensor = F.interpolate(alpha.unsqueeze(0), size=(224, 224), mode='bilinear', align_corners=False).squeeze(0)
 
             label = self.parse_label(img_path, folder_type)
-            # Detect AI24 marker in alpha LSB
-            alpha_lsb_bits = (alpha_tensor * 255).long() & 1
-            marker_present = False
-            bits = alpha_lsb_bits.flatten()
-            if bits.numel() >= 32:
-                bytes_ = []
-                for b in range(4):
-                    byte = 0
-                    for i in range(8):
-                        bit_idx = b * 8 + i
-                        if bit_idx < bits.numel():
-                            byte |= (bits[bit_idx].item() << (7 - i))
-                    bytes_.append(byte)
-                if bytes_ == [ord(c) for c in "AI24"]:
-                    marker_present = True
-            # Reclassify: if LSB in alpha with AI24 marker, classify as alpha; else if LSB in alpha without marker, keep as lsb
-            if label == ALGO_TO_ID["lsb"] and alpha_lsb_bits.sum() > 0:
-                if marker_present:
-                    label = ALGO_TO_ID["alpha"]
+            
+            # Note: No label reclassification needed - filenames should be correct
+            # The generator creates files with algorithm names in the filename
+            
             return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor, label
         except Exception as e:
             print(f"ERROR loading {img_path}: {e}")
@@ -149,50 +131,70 @@ class StegoImageDataset(Dataset):
 class LSBDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.lsb_conv = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
+        self.lsb_conv = nn.Sequential(
+            nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1)
+        )
     def forward(self, rgb):
         lsb = (rgb * 255).long() & 1
-        return F.adaptive_avg_pool2d(self.lsb_conv(lsb.float()), 1).flatten(1)
+        return self.lsb_conv(lsb.float()).flatten(1)
 
 class AlphaDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.alpha_conv = nn.Sequential(nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
+        self.alpha_conv = nn.Sequential(
+            nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1)
+        )
+    
     def forward(self, alpha):
         alpha_lsb = (alpha * 255).long() & 1
-        # Detect AI24 marker in first 32 LSB bits
+        
+        # Detect AI42 marker in first 32 LSB bits (LSB-first order per spec)
         bits = alpha_lsb.flatten()
         marker_present = 0.0
+        
         if bits.numel() >= 32:
+            # Extract first 4 bytes (32 bits) in LSB-first order
             bytes_ = []
             for b in range(4):
                 byte = 0
                 for i in range(8):
                     bit_idx = b * 8 + i
                     if bit_idx < bits.numel():
-                        byte |= (bits[bit_idx].item() << (7 - i))
+                        # LSB-first: bit 0 is least significant (reversed)
+                        byte |= (bits[bit_idx].item() << i)
                 bytes_.append(byte)
-            if bytes_ == [ord(c) for c in "AI24"]:
+            
+            # Check for AI42 marker
+            if bytes_ == [ord(c) for c in "AI42"]:
                 marker_present = 1.0
+        
         marker_tensor = torch.full((alpha.size(0), 1), marker_present, device=alpha.device)
-        features = F.adaptive_avg_pool2d(self.alpha_conv(alpha_lsb.float()), 1).flatten(1)
+        features = self.alpha_conv(alpha_lsb.float()).flatten(1)
         return torch.cat([features, marker_tensor], dim=1)
 
 class PaletteDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.conv = nn.Conv1d(3, dim, 3, 1, 1)
-        self.bn = nn.BatchNorm1d(dim)
-        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.conv = nn.Sequential(
+            nn.Conv1d(3, dim, 3, 1, 1), nn.BatchNorm1d(dim), nn.ReLU(),
+            nn.Conv1d(dim, dim, 3, 1, 1), nn.BatchNorm1d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1)
+        )
     def forward(self, palette):
         x = palette.permute(0, 2, 1)  # (batch, 3, 256)
-        x = F.relu(self.bn(self.conv(x)))
-        return self.pool(x).flatten(1)
+        return self.conv(x).flatten(1)
 
 class ExifEoiDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.fc = nn.Sequential(nn.Linear(3, dim), nn.ReLU())
+        self.fc = nn.Sequential(
+            nn.Linear(3, dim), nn.ReLU(),
+            nn.Linear(dim, dim), nn.ReLU()
+        )
     def forward(self, exif, eoi):
         return self.fc(torch.cat([exif, eoi], dim=1))
 
@@ -204,13 +206,19 @@ class UniversalStegoDetector(nn.Module):
         self.alpha = AlphaDetector(dim)
         self.meta = ExifEoiDetector(dim)
         self.palette = PaletteDetector(dim)
-        self.rgb_base = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(), nn.AdaptiveAvgPool2d(1))
+        self.rgb_base = nn.Sequential(
+            nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1)
+        )
 
         fusion_dim = dim + (dim + 1) + dim + dim + dim
         self.classifier = nn.Sequential(
             nn.Linear(fusion_dim, 256),
             nn.ReLU(), nn.Dropout(0.5),
-            nn.Linear(256, num_classes)
+            nn.Linear(256, 128),
+            nn.ReLU(), nn.Dropout(0.5),
+            nn.Linear(128, num_classes)
         )
 
     def forward(self, rgb, alpha, exif, eoi, palette):
@@ -249,12 +257,12 @@ class EarlyStopping:
             self.counter = 0
             if model is not None:
                 self.best_model_state = model.state_dict().copy()
-            return True  # Improvement detected
+            return True
         else:
             self.counter += 1
             if self.verbose: print(f"EarlyStopping: {self.counter}/{self.patience}")
             if self.counter >= self.patience: self.early_stop = True
-            return False  # No improvement
+            return False
 
 def train_model(args):
     train_subdirs = args.train_subdirs.split(',') if args.train_subdirs else ["sample"]
@@ -273,7 +281,6 @@ def train_model(args):
     criterion = nn.CrossEntropyLoss()
     early_stopper = EarlyStopping(patience=args.patience, monitor='acc')
     
-    # Ensure the directory exists
     model_path = Path(args.model)
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -315,7 +322,6 @@ def train_model(args):
         val_acc = correct / total if total > 0 else 0
         print(f"Epoch {epoch+1} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
 
-        # Per-class accuracy
         print("  Per-algorithm accuracy:")
         id_to_algo = {v: k for k, v in ALGO_TO_ID.items()}
         for class_id, count in class_total.items():
@@ -323,7 +329,6 @@ def train_model(args):
                 accuracy = 100 * class_correct[class_id] / count
                 print(f"    - {id_to_algo[class_id]}: {accuracy:.2f}% ({class_correct[class_id]}/{count})")
         
-        # Check for improvement and save if better
         improved = early_stopper(val_acc, model)
         if improved:
             torch.save(model.state_dict(), str(model_path))
@@ -335,7 +340,6 @@ def train_model(args):
             print("Early stopping triggered.")
             break
 
-    # Final save verification
     if model_path.exists():
         print(f"\n[FINAL] Best model saved to {model_path} ({model_path.stat().st_size} bytes)")
         metric_name = "accuracy" if early_stopper.monitor == 'acc' else "loss"
@@ -346,7 +350,7 @@ def train_model(args):
 
 if __name__ == "__main__":
     print(f"[DEVICE] Using: {device}")
-    parser = argparse.ArgumentParser(description="Starlight v3")
+    parser = argparse.ArgumentParser(description="Starlight Trainer")
     parser.add_argument("--datasets_dir", type=str, default="datasets")
     parser.add_argument("--model", default="models/starlight.pth", help="Path to save/load the model")
     parser.add_argument("--epochs", type=int, default=40)
@@ -354,7 +358,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--patience", type=int, default=7, help="Early stopping patience")
     parser.add_argument("--resume", action="store_true", help="Resume training from the model path")
-    parser.add_argument("--train_subdirs", type=str, default="sample", help="Comma-separated list of training subdir patterns (e.g., 'sample' or '*_submission_*')")
+    parser.add_argument("--train_subdirs", type=str, default="sample_submission_2025", help="Comma-separated list of training subdir patterns")
     parser.add_argument("--val_subdirs", type=str, default="val", help="Comma-separated list of validation subdir patterns")
     args = parser.parse_args()
     os.makedirs("models", exist_ok=True)

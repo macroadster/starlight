@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+"""
+Steganography Extractor - ALIGNED WITH STEGO_FORMAT_SPEC.md
+
+Key Format Rules:
+1. Alpha: LSB-first (byte-reversed) bit order with AI42 hint
+2. LSB: Can use various strategies, may have AI42 hint
+3. Palette: MSB-first, null-terminated
+4. EXIF: UserComment with encoding headers
+5. EOI: Raw append after JPEG EOI marker
+"""
 import os
 import torch
 import torch.nn.functional as F
@@ -6,25 +16,81 @@ from PIL import Image
 import numpy as np
 import argparse
 
-# Import the two-stage model and features from starlight_model.py
-from starlight_model import transform_val as transform_rgba_val, extract_features
-
 try:
     import piexif
 except ImportError:
     piexif = None
     print("Warning: piexif not installed; EXIF extraction may be limited.")
 
-def extract_message_from_bits(bits, max_length=24576):
+
+def extract_message_lsb_first(bits, max_length=24576):
     """
-    Extract message from bit string with multiple format support.
+    Extract message from LSB-first (byte-reversed) bit stream.
+    Used by Alpha channel method.
     
-    FIXED: The hint detection block now correctly handles the LSB-first 
-    (byte-reversed) bit order used by the 'alpha' embedding algorithm.
+    Format: AI42 (LSB-first) + Message (LSB-first) + 0x00 (LSB-first)
+    
+    IMPORTANT BIT ORDER EXPLANATION:
+    - The input 'bits' string contains LSBs extracted from pixels in sequential order
+    - Each byte is embedded LSB-first: bit0, bit1, bit2, ..., bit7
+    - Example: 'A' (0x41 = 01000001 MSB-first) embeds as: 10000010 (LSB-first stream)
+    - To reconstruct: we reverse each 8-bit group back to MSB-first for standard text decoding
+    - This is little-endian bit ordering within each byte, not little-endian byte ordering
     """
-    # ----------------------------------------------------------------------
-    # --- Strategy 1: AI Hint (for LSB-first Alpha/LSB embedding) ---
-    # ----------------------------------------------------------------------
+    # Build AI42 marker in LSB-first order
+    ai_hint_bytes = b'AI42'
+    hint_bits = ''
+    for byte in ai_hint_bytes:
+        # Reverse the bits of each byte (LSB-first)
+        lsb_first_bits = format(byte, '08b')[::-1]
+        hint_bits += lsb_first_bits
+    
+    if not bits.startswith(hint_bits):
+        return None, bits
+    
+    bits_after_hint = bits[len(hint_bits):]
+    
+    # Look for null terminator (0x00 in LSB-first = '00000000')
+    terminator_bits = '00000000'
+    terminator_index = bits_after_hint.find(terminator_bits)
+    
+    if terminator_index == -1:
+        return None, bits
+    
+    # Align to byte boundary
+    if terminator_index % 8 != 0:
+        terminator_index = (terminator_index // 8) * 8
+    
+    payload_bits = bits_after_hint[:terminator_index]
+    
+    if len(payload_bits) == 0:
+        return None, bits
+    
+    # Decode bytes in LSB-first order (reverse each byte)
+    bytes_data = []
+    for i in range(0, len(payload_bits), 8):
+        byte_str = payload_bits[i:i+8]
+        if len(byte_str) == 8:
+            # Reverse the bits to get MSB-first byte value
+            reversed_byte_str = byte_str[::-1]
+            bytes_data.append(int(reversed_byte_str, 2))
+    
+    try:
+        message = bytes(bytes_data).decode('utf-8')
+        return message.strip(), bits_after_hint[terminator_index + 8:]
+    except UnicodeDecodeError:
+        return bytes(bytes_data).hex(), bits_after_hint[terminator_index + 8:]
+
+
+def extract_message_msb_first(bits, max_length=24576):
+    """
+    Extract message from MSB-first bit stream.
+    Supports multiple formats as per spec:
+    1. AI42 hint + null-terminated
+    2. Length prefix (32-bit) + message
+    3. Null-terminated UTF-8
+    """
+    # Strategy 1: AI42 hint with null terminator
     ai_hint_bytes = b'AI42'
     hint_bits = ''.join(format(byte, '08b') for byte in ai_hint_bytes)
     
@@ -39,49 +105,36 @@ def extract_message_from_bits(bits, max_length=24576):
             
             payload_bits = bits_after_hint[:terminator_index]
             
-            if len(payload_bits) == 0:
-                return None, bits_after_hint
-            
-            bytes_data = []
-            
-            for i in range(0, len(payload_bits), 8):
-                byte_str = payload_bits[i:i+8]
-                reversed_byte_str = byte_str[::-1]
-                current_byte = int(reversed_byte_str, 2)
-                bytes_data.append(current_byte)
-            
-            try:
-                message = bytes(bytes_data).decode('utf-8')
-                return message.strip(), bits_after_hint[terminator_index + 8:]
-            except UnicodeDecodeError:
-                return bytes(bytes_data).hex(), bits_after_hint[terminator_index + 8:]
-        else:
-            max_bits = min(len(bits_after_hint), max_length * 8)
-            max_bits = (max_bits // 8) * 8
-            return None, bits_after_hint
-
-    # ----------------------------------------------------------------------
-    # --- Strategy 2: Length Prefix (Unchanged, uses MSB-first decoding) ---
-    # ----------------------------------------------------------------------
+            if len(payload_bits) > 0:
+                bytes_data = []
+                for i in range(0, len(payload_bits), 8):
+                    byte_str = payload_bits[i:i+8]
+                    if len(byte_str) == 8:
+                        bytes_data.append(int(byte_str, 2))
+                
+                try:
+                    message = bytes(bytes_data).decode('utf-8')
+                    return message.strip(), bits_after_hint[terminator_index + 8:]
+                except UnicodeDecodeError:
+                    return bytes(bytes_data).hex(), bits_after_hint[terminator_index + 8:]
+    
+    # Strategy 2: Length Prefix
     if len(bits) >= 32:
         try:
             length = int(bits[:32], 2)
             if 0 < length <= (len(bits) - 32) // 8:
                 payload_bits = bits[32:32 + length * 8]
-                if len(payload_bits) % 8 != 0:
-                    return None, bits
-                bytes_data = [int(payload_bits[j:j+8], 2) for j in range(0, len(payload_bits), 8)]
-                try:
-                    message = bytes(bytes_data).decode('utf-8')
-                    return message.strip(), bits[32 + length * 8:]
-                except UnicodeDecodeError:
-                    return bytes(bytes_data).hex(), bits[32 + length * 8:]
+                if len(payload_bits) % 8 == 0:
+                    bytes_data = [int(payload_bits[j:j+8], 2) for j in range(0, len(payload_bits), 8)]
+                    try:
+                        message = bytes(bytes_data).decode('utf-8')
+                        return message.strip(), bits[32 + length * 8:]
+                    except UnicodeDecodeError:
+                        return bytes(bytes_data).hex(), bits[32 + length * 8:]
         except Exception:
             pass
     
-    # ----------------------------------------------------------------------
-    # --- Strategy 3: Null-Terminated ASCII/UTF-8 (Unchanged) ---
-    # ----------------------------------------------------------------------
+    # Strategy 3: Null-Terminated
     try:
         max_bits = min(len(bits), max_length * 8)
         max_bits = (max_bits // 8) * 8
@@ -91,26 +144,51 @@ def extract_message_from_bits(bits, max_length=24576):
             if i + 8 > len(bits):
                 break
             byte = int(bits[i:i+8], 2)
-            if byte == 0:
+            if byte == 0:  # Null terminator
                 break
             bytes_data.append(byte)
-            try:
-                bytes(bytes_data).decode('utf-8')
-            except UnicodeDecodeError:
-                bytes_data.pop()
-                break
             i += 8
         
         if bytes_data:
-            message = bytes(bytes_data).decode('utf-8').strip()
-            return message, bits[i:]
+            try:
+                message = bytes(bytes_data).decode('utf-8').strip()
+                return message, bits[i:]
+            except UnicodeDecodeError:
+                pass
     except Exception:
         pass
     
     return None, bits
 
+
+def extract_alpha(image_path):
+    """
+    Extract alpha channel steganography.
+    SPEC: LSB-first bit order with AI42 hint
+    Format: AI42 (LSB-first) + Payload (LSB-first) + 0x00
+    """
+    img = Image.open(image_path)
+    if img.mode != 'RGBA':
+        return None, None
+    
+    pixels = list(img.getdata())
+    
+    # Extract LSB from alpha channel
+    bits = ''.join(str(pixel[3] & 1) for pixel in pixels)
+    
+    # Use LSB-first extraction (as per spec)
+    message, remaining = extract_message_lsb_first(bits)
+    
+    if message:
+        return message, remaining
+    
+    # Fallback: try MSB-first (for compatibility)
+    message, remaining = extract_message_msb_first(bits)
+    return message, remaining
+
+
 def extract_bits_by_strategy(img, strategy, max_bits):
-    """Extract bits using a specific strategy."""
+    """Extract bits using various strategies for generic LSB."""
     bits = ''
     
     if strategy == 'rgba_flat':
@@ -163,18 +241,46 @@ def extract_bits_by_strategy(img, strategy, max_bits):
                 if i >= max_bits:
                     break
                 bits += str(val & 1)
-
-    elif strategy == 'alpha':
-        if img.mode != 'RGBA':
-            return ''
-        data = np.array(img)
-        alpha_data = data[:, :, 3].flatten()
-        for i, val in enumerate(alpha_data):
-           if i >= max_bits:
-                break
-           bits += str(val & 1)
- 
+    
     return bits
+
+
+def extract_lsb(image_path, max_bits=1000000):
+    """
+    Extract generic LSB steganography.
+    SPEC: Can use various strategies and formats (AI42 hint, length prefix, null-terminated)
+    """
+    img = Image.open(image_path)
+    
+    # Try different extraction strategies as per spec
+    strategies = ['rgba_flat', 'rgb_flat', 'rgb_interleaved', 'red', 'green', 'blue']
+    
+    best_message = None
+    best_confidence = 0
+    
+    for strategy in strategies:
+        bits = extract_bits_by_strategy(img, strategy, max_bits)
+        if not bits:
+            continue
+        
+        # Try LSB-first extraction first (may have AI42)
+        message, _ = extract_message_lsb_first(bits)
+        if message and len(message) > 10:
+            confidence = calculate_message_confidence(message)
+            if confidence > best_confidence:
+                best_message = message
+                best_confidence = confidence
+        
+        # Try MSB-first extraction
+        message, _ = extract_message_msb_first(bits)
+        if message and len(message) > 10:
+            confidence = calculate_message_confidence(message)
+            if confidence > best_confidence:
+                best_message = message
+                best_confidence = confidence
+    
+    return best_message, None
+
 
 def calculate_message_confidence(message):
     """Calculate confidence score for extracted message."""
@@ -183,32 +289,27 @@ def calculate_message_confidence(message):
     
     score = 0.0
     
+    # Short hex strings
     if len(message) < 20:
         if all(c in '0123456789abcdef' for c in message.lower()):
             score += 5
         else:
             score -= 30
     
+    # Printable characters
     printable_count = sum(1 for c in message if c.isprintable())
     score += (printable_count / len(message)) * 40
     
+    # Has letters
     if any(c.isalpha() for c in message):
         score += 20
     
+    # Has spaces
     space_count = message.count(' ')
     if space_count > 0:
         score += min(space_count * 2, 20)
     
-    markdown_indicators = ['#', '##', '*', '-', '`', '[', ']', '(', ')']
-    markdown_count = sum(1 for ind in markdown_indicators if ind in message)
-    if markdown_count > 0:
-        score += min(markdown_count * 5, 20)
-    
-    common_words = ['the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'have']
-    word_count = sum(1 for word in common_words if word in message.lower())
-    if word_count > 0:
-        score += min(word_count * 3, 15)
-    
+    # Length bonus
     if len(message) > 100:
         score += 10
     if len(message) > 500:
@@ -216,185 +317,68 @@ def calculate_message_confidence(message):
     
     return max(0.0, min(100.0, score))
 
-def extract_lsb_strategy(image_path, strategy='auto', channel='all', max_bits=1000000):
-    """Extract LSB data using different strategies."""
-    img = Image.open(image_path)
-    
-    strategies_to_try = []
-    
-    if strategy == 'auto':
-        strategies_to_try = ['rgba_flat', 'rgb_flat', 'rgb_interleaved', 'red', 'green', 'blue', 'alpha']
-    elif strategy == 'channel_specific':
-        strategies_to_try = [channel]
-    else:
-        strategies_to_try = [strategy]
-    
-    results = []
-    
-    for strat in strategies_to_try:
-        bits = extract_bits_by_strategy(img, strat, max_bits)
-        if bits:
-            message, remaining = extract_message_from_bits(bits)
-            if message:
-                results.append({
-                    'strategy': strat,
-                    'message': message,
-                    'bits_used': len(bits) - len(remaining) if remaining else len(bits),
-                    'confidence': calculate_message_confidence(message)
-                })
-    
-    if not results:
-        return None, None
-    
-    best = max(results, key=lambda x: x['confidence'])
-    return best['message'], None
-
-def reconstruct_lsb_first_message_from_bits(bits, max_length=24576):
-    """
-    Reconstructs bytes from a bit stream where bits are embedded LSB-first.
-    This logic matches the verification in data_generator.py (Hint + Payload + 0x00).
-    """
-    ai_hint_bytes = b'AI42'
-    
-    hint_bits = ''
-    for byte in ai_hint_bytes:
-        lsb_first_bits = bin(byte)[2:].zfill(8)[::-1]
-        hint_bits += lsb_first_bits
-    
-    if not bits.startswith(hint_bits):
-        return None, bits
-    
-    bits_after_hint = bits[len(hint_bits):]
-    terminator_bits = '00000000'
-    terminator_index = bits_after_hint.find(terminator_bits)
-    
-    if terminator_index == -1:
-        return None, bits
-
-    if terminator_index % 8 != 0:
-        terminator_index = (terminator_index // 8) * 8
-    
-    payload_bits = bits_after_hint[:terminator_index]
-    
-    if len(payload_bits) == 0:
-        return None, bits
-    
-    bytes_data = []
-    
-    for i in range(0, len(payload_bits), 8):
-        byte_str = payload_bits[i:i+8]
-        reversed_byte_str = byte_str[::-1]
-        current_byte = int(reversed_byte_str, 2)
-        bytes_data.append(current_byte)
-        
-    try:
-        message = bytes(bytes_data).decode('utf-8')
-        return message.strip(), bits_after_hint[terminator_index + 8:]
-    except UnicodeDecodeError:
-        return bytes(bytes_data).hex(), bits_after_hint[terminator_index + 8:]
-
-def extract_lsb(image_path, channel='all', max_bits=1000000):
-    """Extract LSB steganography data."""
-    img = Image.open(image_path)
-    
-    # Priority 1: Check for the LSB-first Alpha/RGBA format
-    if img.mode == 'RGBA' or 'png' in image_path.lower():
-        bits = extract_bits_by_strategy(img, 'rgba_flat', max_bits)
-        message, remaining = reconstruct_lsb_first_message_from_bits(bits)
-        
-        if message and len(message) > 10:
-            return message, remaining
-
-    # Priority 2: Use the robust LSB strategy extraction
-    return extract_lsb_strategy(image_path, strategy='auto', channel=channel, max_bits=max_bits)
-
-def extract_alpha(image_path):
-    img = Image.open(image_path)
-    bits = extract_bits_by_strategy(img, 'alpha', 1000000)
-    
-    if not bits:
-        return None, None
-
-    # Strategy A: Try LSB-First (AI42-Hinted)
-    message, remaining = reconstruct_lsb_first_message_from_bits(bits)
-    
-    if message:
-        return message, remaining
-    
-    # Strategy B: Try General MSB-First Decoders
-    message, remaining = extract_message_from_bits(bits)
-    
-    if message:
-        return message, remaining
-
-    return None, None
 
 def extract_palette(image_path):
+    """
+    Extract palette-based steganography.
+    SPEC: MSB-first, null-terminated or detectable format
+    """
     img = Image.open(image_path)
     if img.mode != 'P':
         return None, None
+    
     img_array = np.array(img)
     bits = ''.join(str(pixel & 1) for pixel in img_array.flatten())
-    return extract_message_from_bits(bits)
-
-
+    
+    return extract_message_msb_first(bits)
 
 
 def extract_exif(image_path):
     """
     Extract data hidden in EXIF metadata.
-    Prioritizes piexif for better UserComment handling.
+    SPEC: Primarily UserComment with encoding headers (ASCII, UNICODE, JIS)
     """
     img = Image.open(image_path)
     message = None
-    raw_bytes = None
     
-    # Method 1: Try piexif first (most reliable for UserComment)
+    # Method 1: Try piexif first
     if piexif:
         try:
             exif_dict = piexif.load(image_path)
             user_comment = exif_dict.get("Exif", {}).get(piexif.ExifIFD.UserComment)
             
-            if user_comment:
-                if isinstance(user_comment, bytes):
-                    raw_bytes = user_comment
-                    # Handle ASCII encoding header
-                    if user_comment.startswith(b'ASCII\x00\x00\x00'):
-                        message = user_comment[8:].decode('ascii', errors='ignore').strip()
-                    # Handle UNICODE encoding header
-                    elif user_comment.startswith(b'UNICODE\x00'):
-                        message = user_comment[8:].decode('utf-16', errors='ignore').strip()
-                    # Handle JIS encoding header
-                    elif user_comment.startswith(b'JIS\x00\x00\x00\x00\x00'):
-                        message = user_comment[8:].decode('shift_jis', errors='ignore').strip()
-                    # Try UTF-8 without header
-                    else:
-                        try:
-                            message = user_comment.decode('utf-8', errors='ignore').strip()
-                        except:
-                            message = user_comment.hex()
+            if user_comment and isinstance(user_comment, bytes):
+                # Handle encoding headers as per spec
+                if user_comment.startswith(b'ASCII\x00\x00\x00'):
+                    message = user_comment[8:].decode('ascii', errors='ignore').strip()
+                elif user_comment.startswith(b'UNICODE\x00'):
+                    message = user_comment[8:].decode('utf-16', errors='ignore').strip()
+                elif user_comment.startswith(b'JIS\x00\x00\x00\x00\x00'):
+                    message = user_comment[8:].decode('shift_jis', errors='ignore').strip()
+                else:
+                    try:
+                        message = user_comment.decode('utf-8', errors='ignore').strip()
+                    except:
+                        message = user_comment.hex()
                 
                 if message:
                     return message, None
-                    
-            # Check other common EXIF tags
+            
+            # Check other EXIF tags (ImageDescription, Make, Software, Artist, Copyright)
             common_tags = [
-                ("0th", piexif.ImageIFD.ImageDescription, 270),  # ImageDescription
-                ("0th", piexif.ImageIFD.Make, 271),              # Make
-                ("0th", piexif.ImageIFD.Software, 305),          # Software
-                ("0th", piexif.ImageIFD.Artist, 315),            # Artist
-                ("0th", piexif.ImageIFD.Copyright, 33432),       # Copyright
+                ("0th", piexif.ImageIFD.ImageDescription),
+                ("0th", piexif.ImageIFD.Make),
+                ("0th", piexif.ImageIFD.Software),
+                ("0th", piexif.ImageIFD.Artist),
+                ("0th", piexif.ImageIFD.Copyright),
             ]
             
-            for ifd_name, tag_id, fallback_id in common_tags:
+            for ifd_name, tag_id in common_tags:
                 try:
-                    value = exif_dict.get(ifd_name, {}).get(tag_id or fallback_id)
+                    value = exif_dict.get(ifd_name, {}).get(tag_id)
                     if value:
                         if isinstance(value, bytes):
-                            try:
-                                message = value.decode('utf-8', errors='ignore').strip()
-                            except:
-                                message = value.decode('ascii', errors='ignore').strip()
+                            message = value.decode('utf-8', errors='ignore').strip()
                         elif isinstance(value, str):
                             message = value.strip()
                         
@@ -402,65 +386,40 @@ def extract_exif(image_path):
                             return message, None
                 except:
                     continue
-                    
-        except Exception as e:
-            print(f"  [DEBUG] piexif extraction error: {e}")
+        except Exception:
             pass
     
-    # Method 2: Try PIL's getexif() as fallback
+    # Method 2: Try PIL's getexif()
     try:
         exif = img.getexif()
         if exif:
-            # Tags to check in order of priority
-            tags_to_check = [
-                37510,  # UserComment
-                270,    # ImageDescription
-                306,    # DateTime
-                315,    # Artist
-                36867,  # DateTimeOriginal
-                33432,  # Copyright
-                305,    # Software
-            ]
-            
-            for tag in tags_to_check:
-                value = exif.get(tag)
-                if value:
-                    if tag == 37510 and isinstance(value, bytes):
-                        raw_bytes = value
-                        # Handle encoding headers
-                        if value.startswith(b'ASCII\x00\x00\x00'):
-                            message = value[8:].decode('ascii', errors='ignore').strip()
-                        elif value.startswith(b'UNICODE\x00'):
-                            message = value[8:].decode('utf-16', errors='ignore').strip()
-                        else:
-                            try:
-                                message = value.decode('utf-8', errors='ignore').strip()
-                            except:
-                                message = value.hex()
-                    elif isinstance(value, str) and value.strip():
-                        message = value.strip()
-                    elif isinstance(value, bytes):
+            user_comment = exif.get(37510)  # UserComment tag
+            if user_comment:
+                if isinstance(user_comment, bytes):
+                    if user_comment.startswith(b'ASCII\x00\x00\x00'):
+                        message = user_comment[8:].decode('ascii', errors='ignore').strip()
+                    elif user_comment.startswith(b'UNICODE\x00'):
+                        message = user_comment[8:].decode('utf-16', errors='ignore').strip()
+                    else:
                         try:
-                            message = value.decode('utf-8', errors='ignore').strip()
+                            message = user_comment.decode('utf-8', errors='ignore').strip()
                         except:
-                            message = value.hex()
-                    
-                    if message and len(message) > 0:
-                        return message, None
-    except Exception as e:
-        print(f"  [DEBUG] PIL EXIF extraction error: {e}")
+                            pass
+                elif isinstance(user_comment, str):
+                    message = user_comment.strip()
+                
+                if message:
+                    return message, None
+    except Exception:
         pass
-    
-    # Method 3: Check raw EXIF bytes as last resort
-    if not message and raw_bytes:
-        message = raw_bytes.hex()
     
     return message, None
 
+
 def extract_eoi(image_path):
     """
-    Extract data hidden after JPEG End-of-Image (EOI) marker.
-    CRITICAL FIX: Only processes JPEG files and filters legitimate metadata.
+    Extract data hidden after JPEG End-of-Image marker.
+    SPEC: Appended after EOI marker, may have AI42 hint, may be null-terminated
     """
     try:
         img = Image.open(image_path)
@@ -477,67 +436,42 @@ def extract_eoi(image_path):
     
     eoi_pos = data.rfind(b'\xff\xd9')
     
-    if eoi_pos < 0:
-        return None, None
-    
-    if eoi_pos + 2 >= len(data):
+    if eoi_pos < 0 or eoi_pos + 2 >= len(data):
         return None, None
     
     payload = data[eoi_pos + 2:]
     
-    # Additional validation: Skip legitimate JPEG metadata
     if len(payload) < 4:
         return None, None
     
-    # Skip known legitimate formats
-    if (payload.startswith(b'\xff\xd8') or      # JPEG thumbnail
-        payload.startswith(b'Exif') or           # EXIF data
-        payload.startswith(b'ICC_PROFILE') or    # ICC profile
-        payload.startswith(b'<?xpacket') or      # XMP metadata
-        payload.startswith(b'http://ns.adobe.com')):  # Adobe metadata
-        print(f"  [DEBUG] EOI: Skipping legitimate metadata ({payload[:20]})")
+    # Skip legitimate metadata (as per spec validation)
+    if (payload.startswith(b'\xff\xd8') or 
+        payload.startswith(b'Exif') or
+        payload.startswith(b'ICC_PROFILE') or
+        payload.startswith(b'<?xpacket') or
+        payload.startswith(b'http://ns.adobe.com')):
         return None, None
     
-    # Skip if it's just padding (all zeros or all 0xFF)
+    # Skip padding
     if all(b == 0 for b in payload[:min(20, len(payload))]):
-        print(f"  [DEBUG] EOI: Skipping null padding")
         return None, None
-    
     if all(b == 0xFF for b in payload[:min(20, len(payload))]):
-        print(f"  [DEBUG] EOI: Skipping 0xFF padding")
         return None, None
     
-    # Check for the AI42 hint marker (our stego format)
+    # Handle AI42 hint prefix (as per spec)
     if payload.startswith(b'0xAI42'):
         payload = payload[6:]
-        terminator_pos = payload.find(b'\x00')
-        if terminator_pos != -1:
-            payload = payload[:terminator_pos]
     elif payload.startswith(b'AI42'):
         payload = payload[4:]
-        terminator_pos = payload.find(b'\x00')
-        if terminator_pos != -1:
-            payload = payload[:terminator_pos]
-    else:
-        # No marker found - be cautious
-        # Check if payload looks like text vs binary
-        try:
-            # Try to decode as text
-            test_decode = payload.decode('utf-8', errors='strict')
-            # If it decodes cleanly and is mostly printable, might be stego
-            printable_ratio = sum(c.isprintable() or c in '\n\r\t' for c in test_decode) / len(test_decode)
-            if printable_ratio < 0.8:
-                print(f"  [DEBUG] EOI: Low printable ratio ({printable_ratio:.2f}), likely not text stego")
-                return None, None
-        except UnicodeDecodeError:
-            # Binary data without marker - probably not our stego
-            print(f"  [DEBUG] EOI: Binary data without AI42 marker, skipping")
-            return None, None
+    
+    # Handle null terminator
+    terminator_pos = payload.find(b'\x00')
+    if terminator_pos != -1:
+        payload = payload[:terminator_pos]
     
     # Try to decode as UTF-8
     try:
         message = payload.decode('utf-8')
-        # Additional validation: message should be mostly printable
         printable_ratio = sum(c.isprintable() or c in '\n\r\t' for c in message) / len(message)
         if printable_ratio > 0.8:
             return message, None
@@ -546,6 +480,8 @@ def extract_eoi(image_path):
     except UnicodeDecodeError:
         return payload.hex(), None
 
+
+# Export extraction functions
 extraction_functions = {
     'alpha': extract_alpha,
     'palette': extract_palette,
@@ -554,3 +490,28 @@ extraction_functions = {
     'eoi': extract_eoi
 }
 
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Extract steganography from images")
+    parser.add_argument('image', help='Image file to extract from')
+    parser.add_argument('--method', choices=['alpha', 'palette', 'lsb', 'exif', 'eoi', 'auto'],
+                       default='auto', help='Extraction method')
+    args = parser.parse_args()
+    
+    if args.method == 'auto':
+        for method_name, extractor in extraction_functions.items():
+            message, _ = extractor(args.image)
+            if message:
+                print(f"[{method_name.upper()}] Found message:")
+                print(message)
+                break
+        else:
+            print("No steganography detected")
+    else:
+        extractor = extraction_functions[args.method]
+        message, _ = extractor(args.image)
+        if message:
+            print(f"[{args.method.upper()}] Extracted message:")
+            print(message)
+        else:
+            print(f"No message found using {args.method} method")

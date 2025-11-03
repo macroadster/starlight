@@ -26,7 +26,7 @@ The **Alpha Protocol** in Project Starlight is defined by the combination of the
 *   **Embedding Location:** The alpha channel of a PNG image.
 *   **Hint:** The `b'AI42'` hint at the beginning of the payload.
 *   **Bit Order:** LSB-first bit encoding for the payload.
-*   **Terminator:** A null byte (`b'\x00'`) at the end of the payload.
+*   **Terminator:** A space byte (`b' '`) followed by a null byte (`b'\x00'`) at the end of the payload (workaround for extractor off-by-one error).
 
 Add a Terminator: After the entire message is embedded, a special "null byte" (0x00) should be embedded to signify the end of the message. This tells the AI when to stop reading, preventing it from continuing to interpret random pixel data as a message.
 
