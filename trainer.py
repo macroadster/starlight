@@ -6,6 +6,7 @@ Fixed Issues:
 1. Alpha marker changed from "AI24" to "AI42" (matching generator)
 2. Alpha marker detection uses MSB-first bit order (matching generator)
 3. LSB detection no longer tries to reclassify based on alpha channel
+4. Class weights for balanced training
 """
 
 import os
@@ -97,7 +98,7 @@ class StegoImageDataset(Dataset):
         try:
             img = Image.open(img_path)
             exif_features = get_exif_features(img, img_path)
-            eoi_features = torch.tensor([get_eoi_payload_size(img_path) / 1000.0], dtype=torch.float)
+            eoi_features = torch.tensor([1.0 if get_eoi_payload_size(img_path) > 0 else 0.0], dtype=torch.float)
 
             palette_tensor = torch.zeros(256, 3)
             if img.mode == 'P':
@@ -118,9 +119,6 @@ class StegoImageDataset(Dataset):
             alpha_tensor = F.interpolate(alpha.unsqueeze(0), size=(224, 224), mode='bilinear', align_corners=False).squeeze(0)
 
             label = self.parse_label(img_path, folder_type)
-            
-            # Note: No label reclassification needed - filenames should be correct
-            # The generator creates files with algorithm names in the filename
             
             return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor, label
         except Exception as e:
@@ -152,29 +150,28 @@ class AlphaDetector(nn.Module):
     def forward(self, alpha):
         alpha_lsb = (alpha * 255).long() & 1
         
-        # Detect AI42 marker in first 32 LSB bits (LSB-first order per spec)
-        bits = alpha_lsb.flatten()
-        marker_present = 0.0
+        # Detect AI42 marker (MSB-first: 01000001 01001001 00110100 00110010)
+        batch_size, _, h, w = alpha.shape
+        marker_feature = torch.zeros(batch_size, 1).to(alpha.device)
         
-        if bits.numel() >= 32:
-            # Extract first 4 bytes (32 bits) in LSB-first order
-            bytes_ = []
-            for b in range(4):
-                byte = 0
-                for i in range(8):
-                    bit_idx = b * 8 + i
-                    if bit_idx < bits.numel():
-                        # LSB-first: bit 0 is least significant (reversed)
-                        byte |= (bits[bit_idx].item() << i)
-                bytes_.append(byte)
+        if h >= 4 and w >= 8:
+            alpha_int = (alpha[:, 0, :4, :8] * 255).long()
+            bits = alpha_int & 1
+            # Check for AI42: A=65, I=73, 4=52, 2=50 in MSB-first order
+            byte0 = (bits[:, 0, 0] << 7) | (bits[:, 0, 1] << 6) | (bits[:, 0, 2] << 5) | (bits[:, 0, 3] << 4) | \
+                    (bits[:, 0, 4] << 3) | (bits[:, 0, 5] << 2) | (bits[:, 0, 6] << 1) | bits[:, 0, 7]
+            byte1 = (bits[:, 1, 0] << 7) | (bits[:, 1, 1] << 6) | (bits[:, 1, 2] << 5) | (bits[:, 1, 3] << 4) | \
+                    (bits[:, 1, 4] << 3) | (bits[:, 1, 5] << 2) | (bits[:, 1, 6] << 1) | bits[:, 1, 7]
+            byte2 = (bits[:, 2, 0] << 7) | (bits[:, 2, 1] << 6) | (bits[:, 2, 2] << 5) | (bits[:, 2, 3] << 4) | \
+                    (bits[:, 2, 4] << 3) | (bits[:, 2, 5] << 2) | (bits[:, 2, 6] << 1) | bits[:, 2, 7]
+            byte3 = (bits[:, 3, 0] << 7) | (bits[:, 3, 1] << 6) | (bits[:, 3, 2] << 5) | (bits[:, 3, 3] << 4) | \
+                    (bits[:, 3, 4] << 3) | (bits[:, 3, 5] << 2) | (bits[:, 3, 6] << 1) | bits[:, 3, 7]
             
-            # Check for AI42 marker
-            if bytes_ == [ord(c) for c in "AI42"]:
-                marker_present = 1.0
+            marker_match = (byte0 == 65) & (byte1 == 73) & (byte2 == 52) & (byte3 == 50)
+            marker_feature = marker_match.float().unsqueeze(1)
         
-        marker_tensor = torch.full((alpha.size(0), 1), marker_present, device=alpha.device)
-        features = self.alpha_conv(alpha_lsb.float()).flatten(1)
-        return torch.cat([features, marker_tensor], dim=1)
+        conv_features = self.alpha_conv(alpha_lsb.float()).flatten(1)
+        return torch.cat([conv_features, marker_feature], dim=1)
 
 class PaletteDetector(nn.Module):
     def __init__(self, dim=32):
@@ -212,7 +209,7 @@ class UniversalStegoDetector(nn.Module):
             nn.AdaptiveAvgPool2d(1)
         )
 
-        fusion_dim = dim + (dim + 1) + dim + dim + dim
+        fusion_dim = dim + (dim + 1) + dim + dim + dim  # lsb, alpha (with marker), meta, rgb, palette
         self.classifier = nn.Sequential(
             nn.Linear(fusion_dim, 256),
             nn.ReLU(), nn.Dropout(0.5),
@@ -272,13 +269,32 @@ def train_model(args):
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, collate_fn=collate_fn, pin_memory=False)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn, pin_memory=False)
 
+    # Calculate class weights from training data
+    class_counts = {i: 0 for i in range(NUM_CLASSES)}
+    for _, _, _, _, _, label in train_ds:
+        if label is not None:
+            class_counts[label] += 1
+    
+    total_samples = sum(class_counts.values())
+    class_weights = torch.zeros(NUM_CLASSES)
+    for i in range(NUM_CLASSES):
+        if class_counts[i] > 0:
+            class_weights[i] = total_samples / (NUM_CLASSES * class_counts[i])
+        else:
+            class_weights[i] = 1.0
+    #class_weights[ALGO_TO_ID["lsb"]] = class_weights[ALGO_TO_ID["lsb"]] * 2.0  # Triple the weight for LSB class 
+    id_to_algo = {v: k for k, v in ALGO_TO_ID.items()}
+    weights_dict = {id_to_algo[i]: f"{class_weights[i]:.4f}" for i in range(NUM_CLASSES)}
+    print(f"[CLASS WEIGHTS] {weights_dict}")
+    class_weights = class_weights.to(device)
+
     model = UniversalStegoDetector().to(device)
     if args.resume:
         model.load_state_dict(torch.load(args.model))
         print(f"[RESUME] Loaded model from {args.model}")
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     early_stopper = EarlyStopping(patience=args.patience, monitor='acc')
     
     model_path = Path(args.model)
@@ -323,7 +339,6 @@ def train_model(args):
         print(f"Epoch {epoch+1} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
 
         print("  Per-algorithm accuracy:")
-        id_to_algo = {v: k for k, v in ALGO_TO_ID.items()}
         for class_id, count in class_total.items():
             if count > 0:
                 accuracy = 100 * class_correct[class_id] / count

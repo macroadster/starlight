@@ -77,50 +77,69 @@ def get_exif_features(img, filepath):
 class LSBDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.lsb_conv = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
+        self.lsb_conv = nn.Sequential(
+            nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1)
+        )
     def forward(self, rgb):
         lsb = (rgb * 255).long() & 1
-        return F.adaptive_avg_pool2d(self.lsb_conv(lsb.float()), 1).flatten(1)
+        return self.lsb_conv(lsb.float()).flatten(1)
 
 class AlphaDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.alpha_conv = nn.Sequential(nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU())
+        self.alpha_conv = nn.Sequential(
+            nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1)
+        )
+    
     def forward(self, alpha):
         alpha_lsb = (alpha * 255).long() & 1
-        # Detect AI24 marker in first 32 LSB bits
-        bits = alpha_lsb.flatten()
-        marker_present = 0.0
-        if bits.numel() >= 32:
-            bytes_ = []
-            for b in range(4):
-                byte = 0
-                for i in range(8):
-                    bit_idx = b * 8 + i
-                    if bit_idx < bits.numel():
-                        byte |= (bits[bit_idx].item() << (7 - i))
-                bytes_.append(byte)
-            if bytes_ == [ord(c) for c in "AI24"]:
-                marker_present = 1.0
-        marker_tensor = torch.full((alpha.size(0), 1), marker_present, device=alpha.device)
-        features = F.adaptive_avg_pool2d(self.alpha_conv(alpha_lsb.float()), 1).flatten(1)
-        return torch.cat([features, marker_tensor], dim=1)
+        
+        # Detect AI42 marker (MSB-first: 01000001 01001001 00110100 00110010)
+        batch_size, _, h, w = alpha.shape
+        marker_feature = torch.zeros(batch_size, 1).to(alpha.device)
+        
+        if h >= 4 and w >= 8:
+            alpha_int = (alpha[:, 0, :4, :8] * 255).long()
+            bits = alpha_int & 1
+            # Check for AI42: A=65, I=73, 4=52, 2=50 in MSB-first order
+            byte0 = (bits[:, 0, 0] << 7) | (bits[:, 0, 1] << 6) | (bits[:, 0, 2] << 5) | (bits[:, 0, 3] << 4) | \
+                    (bits[:, 0, 4] << 3) | (bits[:, 0, 5] << 2) | (bits[:, 0, 6] << 1) | bits[:, 0, 7]
+            byte1 = (bits[:, 1, 0] << 7) | (bits[:, 1, 1] << 6) | (bits[:, 1, 2] << 5) | (bits[:, 1, 3] << 4) | \
+                    (bits[:, 1, 4] << 3) | (bits[:, 1, 5] << 2) | (bits[:, 1, 6] << 1) | bits[:, 1, 7]
+            byte2 = (bits[:, 2, 0] << 7) | (bits[:, 2, 1] << 6) | (bits[:, 2, 2] << 5) | (bits[:, 2, 3] << 4) | \
+                    (bits[:, 2, 4] << 3) | (bits[:, 2, 5] << 2) | (bits[:, 2, 6] << 1) | bits[:, 2, 7]
+            byte3 = (bits[:, 3, 0] << 7) | (bits[:, 3, 1] << 6) | (bits[:, 3, 2] << 5) | (bits[:, 3, 3] << 4) | \
+                    (bits[:, 3, 4] << 3) | (bits[:, 3, 5] << 2) | (bits[:, 3, 6] << 1) | bits[:, 3, 7]
+            
+            marker_match = (byte0 == 65) & (byte1 == 73) & (byte2 == 52) & (byte3 == 50)
+            marker_feature = marker_match.float().unsqueeze(1)
+        
+        conv_features = self.alpha_conv(alpha_lsb.float()).flatten(1)
+        return torch.cat([conv_features, marker_feature], dim=1)
 
 class PaletteDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.conv = nn.Conv1d(3, dim, 3, 1, 1)
-        self.bn = nn.BatchNorm1d(dim)
-        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.conv = nn.Sequential(
+            nn.Conv1d(3, dim, 3, 1, 1), nn.BatchNorm1d(dim), nn.ReLU(),
+            nn.Conv1d(dim, dim, 3, 1, 1), nn.BatchNorm1d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1)
+        )
     def forward(self, palette):
         x = palette.permute(0, 2, 1)  # (batch, 3, 256)
-        x = F.relu(self.bn(self.conv(x)))
-        return self.pool(x).flatten(1)
+        return self.conv(x).flatten(1)
 
 class ExifEoiDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.fc = nn.Sequential(nn.Linear(3, dim), nn.ReLU())
+        self.fc = nn.Sequential(
+            nn.Linear(3, dim), nn.ReLU(),
+            nn.Linear(dim, dim), nn.ReLU()
+        )
     def forward(self, exif, eoi):
         return self.fc(torch.cat([exif, eoi], dim=1))
 
@@ -131,15 +150,19 @@ class UniversalStegoDetector(nn.Module):
         self.alpha = AlphaDetector(dim)
         self.meta = ExifEoiDetector(dim)
         self.palette = PaletteDetector(dim)
-        self.rgb_base = nn.Sequential(nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim),
-                                     nn.ReLU(), nn.AdaptiveAvgPool2d(1))
+        self.rgb_base = nn.Sequential(
+            nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1)
+        )
 
-        fusion_dim = dim + (dim + 1) + dim + dim + dim
+        fusion_dim = dim + (dim + 1) + dim + dim + dim  # lsb, alpha (with marker), meta, rgb, palette
         self.classifier = nn.Sequential(
-            nn.BatchNorm1d(fusion_dim),
             nn.Linear(fusion_dim, 256),
             nn.ReLU(), nn.Dropout(0.5),
-            nn.Linear(256, num_classes)
+            nn.Linear(256, 128),
+            nn.ReLU(), nn.Dropout(0.5),
+            nn.Linear(128, num_classes)
         )
 
     def forward(self, rgb, alpha, exif, eoi, palette):
@@ -158,7 +181,7 @@ def preprocess_image(img_path):
     try:
         img = Image.open(img_path)
         exif_features = get_exif_features(img, img_path)
-        eoi_features = torch.tensor([get_eoi_payload_size(img_path) / 1000.0], dtype=torch.float)
+        eoi_features = torch.tensor([1.0 if get_eoi_payload_size(img_path) > 0 else 0.0], dtype=torch.float)
 
         palette_tensor = torch.zeros(256, 3)
         if img.mode == 'P':
@@ -212,13 +235,13 @@ class StegoScanner:
             probs = F.softmax(outputs, dim=1)
             confidence, predicted = torch.max(probs, 1)
 
-            predicted_class = ID_TO_ALGO[predicted.item()]
+            predicted_class = ID_TO_ALGO[int(predicted.item())]
             confidence_score = confidence.item()
 
             # Get top 3 predictions
             top3_probs, top3_indices = torch.topk(probs, 3, dim=1)
             top3_predictions = [
-                (ID_TO_ALGO[idx.item()], prob.item())
+                (ID_TO_ALGO[int(idx.item())], prob.item())
                 for idx, prob in zip(top3_indices[0], top3_probs[0])
             ]
 

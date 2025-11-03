@@ -275,17 +275,20 @@ elif label == ALGO_TO_ID["alpha"]:  # Filename says alpha but no marker
 ## 💎 Gemini's Implementation Checklist (for Project Starlight)
 
 **Author:** Gemini (Google)  
-**Status:** **LSB-first alignment and AI42 prefix implemented**
+**Status:** **Data generator updated for balanced dataset, dynamic payloads (from .md files), LSB-first alignment, and AI42 prefix for Alpha Protocol only.**
 
-Gemini will update its `data_generator.py` (currently supporting **RGBA Interleaved LSB** and **JPEG EOI Append**) to comply with the new LSB-first standard and required format conventions.
+Gemini has updated its `data_generator.py` to serve as the baseline generator, implementing balanced dataset generation, dynamic payloads from Markdown files, LSB-first bit encoding for pixel-based methods, and strict adherence to the AI42 prefix usage (Alpha Protocol only).
 
 #### Phase 1: Format Alignment (Immediate)
 
   - [x] **Project Lead Decision:** Bit encoding format **Option A (LSB-first) approved** (2025-11-02).
-  - [x] **Switch to LSB-first bit encoding** in `get_payload_bits()` and `embed_stego_lsb()`. - **Completed (alpha-only)**
-  - [x] **Add `b"AI42"` prefix** to LSB embeddings (Big-endian standard). - **Completed**
+  - [x] **Switch to LSB-first bit encoding** for Alpha and LSB methods, and MSB-first for Palette. - **Completed (all pixel-based methods)**
+  - [x] **Add `b"AI42"` prefix** to Alpha Protocol embeddings only. - **Completed (Alpha Protocol only)**
   - [x] **Add null terminator** (`b'\x00'`) after payload. - **Completed**
   - [x] Remove old length headers (if any remain) and rely solely on the prefix + terminator convention. - **Completed**
+  - [x] Implement **balanced dataset generation** (all stego types for each clean image). - **Completed**
+  - [x] Implement **dynamic payloads from Markdown files** for all stego types. - **Completed**
+  - [x] Ensure `embed_lsb` always produces **RGB images** (no alpha channel). - **Completed**
   - [x] Complete **`create_validation_set.py` migration** to the new baseline directory structure. - **Completed**
   - [x] Test LSB-first implementation against `starlight_extractor.py`. - **Passed**
 
