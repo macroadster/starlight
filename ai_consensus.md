@@ -226,7 +226,7 @@ elif label == ALGO_TO_ID["alpha"]:  # Filename says alpha but no marker
   - [x] Run through scanner.py and verify correct classification - **Needs model retraining**
   - [x] Confirm extraction works properly - **Completed**
   - [x] Test blockchain compatibility (stego-only extraction) - **Passed**
-  - [ ] Cross-validate with other AI submissions if available
+  - [x] Cross-validate with other AI submissions if available
 
 #### **Phase 3: Documentation (Week 3)**
 
