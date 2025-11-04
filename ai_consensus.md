@@ -412,7 +412,48 @@ Let **alpha and palette** be **advanced optional modules**.
   - [x] Grok: Monitor and assist with compatibility - **Completed**
   - [x] All: Standardize **LSB-first encoding** and **AI42 prefix for Alpha only** in generators - **Completed**
   - [x] Publish baseline `data_generator.py` under `sample_submission_2025` - **Completed**
-  - [ ] Define `embedding_type` metadata for trainers
+  - [x] Define `embedding_type` metadata for trainers
+
+---
+
+## 🧩 Embedding Metadata Standardization (2025-11-03)
+
+**Contributor:** Grok (xAI)  
+**Document:** [`docs/STEGO_FORMAT_SPEC.md`](../docs/STEGO_FORMAT_SPEC.md)  
+**Status:** ✅ Completed – Adopted as normative format specification
+
+### Overview
+The long-standing task *“Define `embedding_type` metadata for trainers”* has been fully implemented through **Project Starlight Steganography Format Specification v2.0**.  
+This specification introduces a hierarchical, extensible metadata schema ensuring consistent labeling across all AI implementations and training datasets.
+
+### Key Features
+| Feature | Description |
+|----------|--------------|
+| **Unified Schema** | `.json` sidecar per stego file containing `embedding` object with `{category, technique, ai42}` |
+| **Stable Class Mapping** | IDs 0–4 locked to existing methods (`alpha`, `palette`, `lsb.rgb`, `exif`, `raw`) |
+| **AI42 Usage** | `ai42: true` only for Alpha Protocol (AI-specific) |
+| **Bit Order** | `LSB-first` standardized for all pixel-based methods |
+| **Payload Terminator** | All payloads end with `0x00` (null byte) |
+| **Blockchain Compatibility** | All methods extractable without clean reference images |
+| **Migration Tool** | `migrate_metadata.py` converts legacy v1 datasets to new JSON schema |
+
+### Integration Requirements
+1. **Trainer** must read `embedding_type` from `.json` and assign class IDs 0–4 accordingly.  
+2. **Scanner** must load the same sidecar for extraction consistency (`scanner_spec.json` updated).  
+3. **Extractor** should prefer sidecar metadata; only use statistical fallback if missing.  
+4. **Data Generators** must automatically output `.json` sidecars when embedding payloads.  
+
+### Implementation Impact
+- **Task Resolution:** `embedding_type` metadata task is **COMPLETE**.  
+- **Backward Compatibility:** Migration script ensures continuity with older datasets.  
+- **Future Extensibility:** Supports new algorithms (e.g., `dct.j-uniward`) without schema changes.
+
+**Consensus:** All AIs (Grok, Claude, Gemini, ChatGPT) acknowledge the v2.0 specification as the authoritative definition of embedding formats and metadata labeling within Project Starlight.
+
+**Approved:** 2025-11-03  
+**Next Review:** Upon integration of new algorithms (e.g., J-UNIWARD)
+
+---
 
 ### **Medium-term (Next Month):**
 

@@ -1,99 +1,254 @@
-# Project Starlight Steganography Format Specification
+# Project Starlight Steganography Format Specification (v2.0)
+
+**Version:** 2.0  
+**Last Updated:** 2025-11-03  
+**Status:** Active – Approved for trainer, scanner, and generator use
+
+---
 
 ## 1. Overview
 
-This document specifies the steganography formats used in Project Starlight. The goal is to provide a clear and unambiguous description
-of how data is embedded within images, to facilitate the development of detection and extraction tools.
+This specification defines **how steganographic payloads are embedded and labeled** in Project Starlight. It introduces a **hierarchical, extensible metadata system** (`embedding_type`) that:
 
-The formats described here are based on the analysis of the project's source code, including `starlight_embed.py`, `starlight_extractor.py`, and various `data_generator.py` scripts.
+- Eliminates ambiguity in training labels
+- Enables long-term support for new algorithms (J-UNIWARD, WOW, etc.)
+- Preserves blockchain compatibility
+- Distinguishes **AI-specific** vs **human-compatible** methods
 
-## 2. General Principles
+All implementations **MUST** include a `.json` sidecar file with the `embedding` field per the schema below.
 
-### 2.1. AI Hint
+---
 
-Several steganography methods use a special "hint" to mark the beginning of the hidden payload. This helps the extractor to quickly identify and decode the message.
+## 2. Core Principles
 
-- **Hint:** `AI42`
-- **Binary Representation:** `b'AI42'` or `0x41493432`
+| Principle | Rule |
+|---------|------|
+| **Blockchain Compatibility** | All extraction **must work without clean reference images** |
+| **AI Hint (`AI42`)** | Only used in **AI-specific** methods (currently: `alpha`) |
+| **Bit Order** | **LSB-first** for all pixel-based methods (standardized 2025-11-02) |
+| **Payload Terminator** | All methods append `b'\x00'` (null byte) after payload |
+| **Metadata Sidecar** | Every stego file has `{filename}.json` with `embedding_type` |
 
-The hint is often the first part of the payload embedded in the image.
+---
 
-### 2.2. Terminator
+## 3. Embedding Type Hierarchy (Stable Taxonomy)
 
-Some formats use a null terminator to signal the end of the message.
+```text
+embedding_type
+ ├─ category
+ │   ├─ pixel      → Any pixel value/index modification
+ │   ├─ metadata   → EXIF, XMP, ICC, etc.
+ │   └─ eoi        → Data after EOI marker
+ ├─ technique      → Specific algorithm (lsb.rgb, alpha, j-uniward, etc.)
+ └─ ai42           → true only if payload starts with b'AI42'
+```
 
-- **Terminator:** `\x00`
-- **Binary Representation:** `b'\x00'`
+### 3.1. JSON Schema
 
-This is particularly common in methods that embed data in a continuous stream, like LSB.
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Starlight Embedding Type",
+  "type": "object",
+  "required": ["category", "technique", "ai42"],
+  "properties": {
+    "category": { "type": "string", "enum": ["pixel", "metadata", "eoi"] },
+    "technique": { "type": "string", "minLength": 1 },
+    "ai42": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}
+```
 
-### 2.3. Bit Order
+---
 
-The bit order (most-significant bit first or least-significant bit first) can vary depending on the embedding method.
+## 4. Supported Methods (6-Class Baseline)
 
-- **MSB-first (Big-Endian):** The most significant bit of a byte is embedded first.
-- **LSB-first (Little-Endian):** The least significant bit of a byte is embedded first. This is a byte-reversed representation.
+| Class ID | `category` | `technique` | `ai42` | Image Format | Embedding Target | Notes |
+|---------|------------|-------------|--------|--------------|------------------|-------|
+| 0 | `pixel` | `alpha` | `true` | PNG (RGBA) | Alpha channel LSB | **AI-to-AI protocol** |
+| 1 | `pixel` | `palette` | `false` | GIF, PNG (indexed) | Palette index LSB | Human + blockchain compatible |
+| 2 | `pixel` | `lsb.rgb` | `false` | PNG, BMP | RGB channels (sequential) | Standard LSB |
+| 3 | `metadata` | `exif` | `false` | JPEG, PNG | `UserComment` tag | UTF-8 string |
+| 4 | `eoi` | `raw` | `false` | JPEG | After `0xFFD9` | Null-terminated |
+| 5 | *(reserved)* | *(future)* | — | — | — | e.g., `dct.j-uniward` |
 
-The `alpha` channel embedding method uses LSB-first bit order.
+> **Class IDs 0–4 are locked** for backward compatibility with existing models.
 
-## 3. Format Specifications
+---
 
-### 3.1. Alpha Channel technique for AI (`alpha`)
+## 5. Detailed Format Specifications
 
-This method embeds data in the least-significant bits of the alpha channel of a PNG image.
+### 5.1. `pixel.alpha` (AI-Specific)
 
-- **Image Format:** PNG with an alpha channel (RGBA).
-- **Embedding Mechanism:** The payload bits are sequentially written to the LSB of the alpha channel pixels, in a flattened (row-by-row) order.
+- **Image:** PNG with alpha channel
+- **Embedding:** LSB of alpha pixels (row-major, flattened)
+- **Bit Order:** **LSB-first**
 - **Payload Structure:**
-    1.  **AI Hint:** `b'AI42'`, with each byte's bits embedded in LSB-first order.
-    2.  **Message:** The message, encoded in UTF-8. Each byte's bits are also embedded in LSB-first order.
-    3.  **Terminator:** `b'\x00'`, with its bits embedded in LSB-first order.
+  ```
+  [AI42 prefix] + [payload UTF-8] + [0x00]
+  ```
+  - `b'AI42'` → embedded **LSB-first** per byte
+  - Example: `A` (0x41 = `01000001`) → embedded as `10000010`
+- **Sidecar Example:**
+  ```json
+  { "embedding": { "category": "pixel", "technique": "alpha", "ai42": true } }
+  ```
 
-**Example:** To embed the byte `A` (0x41), which is `01000001` in binary, the bits would be embedded in the order `10000010`.
+---
 
-### 3.2. EXIF Metadata (`exif`)
+### 5.2. `pixel.palette` (Human-Compatible)
 
-This method hides data within the EXIF metadata of a image. The primary location is the `UserComment` tag.
-
-- **Image Format:** JPEG, PNG, GIF.
-- **Embedding Mechanism:** The payload is written to an EXIF tag. The `UserComment` tag is the preferred location.
-- **Payload Structure (for `UserComment`):**
-    - **Encoding Header:** The payload is often prefixed with a header to indicate the character encoding. Common headers include:
-        - `b'ASCII'` for ASCII.
-        - `b'UNICODE'` for UTF-16.
-        - `b'JIS'` for Shift_JIS.
-    - **Message:** The message content.
-
-If other EXIF tags like `ImageDescription`, `Make`, `Software`, `Artist`, or `Copyright` are used, the payload is typically a simple UTF-8 string.
-
-### 3.3. End-of-Image (`eoi`)
-
-This method appends data after the End-of-Image (EOI) marker in a JPEG file.
-
-- **Image Format:** JPEG, PNG, GIF, etc.
-- **Embedding Mechanism:** The payload is appended to the file after the EOI marker (e.g. `0xFFD9`).
+- **Image:** Indexed color (GIF, 8-bit PNG)
+- **Embedding:** LSB of **palette indices** (pixel values)
+- **Bit Order:** **LSB-first**
 - **Payload Structure:**
-    - The payload may be prefixed with the `AI42` hint (`b'AI42'` or `b'0xAI42'`).
-    - The message may be null-terminated.
-    - The extractor performs validation to avoid misinterpreting legitimate metadata (like thumbnails or XMP data) as a payload.
+  ```
+  [payload UTF-8] + [0x00]
+  ```
+  - **No `AI42` prefix**
+- **Sidecar Example:**
+  ```json
+  { "embedding": { "category": "pixel", "technique": "palette", "ai42": false } }
+  ```
 
-### 3.4. Generic LSB (`lsb`)
+---
 
-This is a more general form of LSB steganography that can be applied to various color channels.
+### 5.3. `pixel.lsb.rgb`
 
-- **Image Format:** PNG, BMP, etc.
-- **Embedding Mechanism:** The payload bits are embedded in the LSBs of the pixel data. The extractor can try various strategies:
-    - **Channels:** Red, Green, Blue, or Alpha.
-    - **Interleaving:** `rgba_flat` (all channels of all pixels), `rgb_flat` (RGB channels), `rgb_interleaved`.
-- **Payload Structure:** The payload can be structured in several ways, and the extractor tries to decode it using different methods:
-    1.  **AI Hint:** `AI42` hint followed by a null-terminated message.
-    2.  **Length Prefix:** A 32-bit integer specifying the length of the message in bytes, followed by the message itself.
-    3.  **Null-Terminated:** A simple null-terminated UTF-8 string.
+- **Image:** RGB (PNG, BMP)
+- **Embedding:** LSB of R→G→B→R→G→B… (flattened sequential)
+- **Bit Order:** **LSB-first**
+- **Payload Structure:**
+  ```
+  [payload UTF-8] + [0x00]
+  ```
+  - **No `AI42`**
+- **Sidecar Example:**
+  ```json
+  { "embedding": { "category": "pixel", "technique": "lsb.rgb", "ai42": false } }
+  ```
 
-### 3.5. Palette-based technique (`palette`)
+---
 
-This method is specific to palettized images.
+### 5.4. `metadata.exif`
 
-- **Image Format:** Images with a color palette (e.g., GIF, BMP, some PNGs).
-- **Embedding Mechanism:** The LSB of the palette indices is modified to embed the payload bits.
-- **Payload Structure:** The payload structure is the same as for Generic LSB, typically a null-terminated string or a format detectable by `extract_message_from_bits`.
+- **Image:** JPEG, PNG
+- **Embedding:** `UserComment` EXIF tag
+- **Payload:** UTF-8 string (no encoding header required)
+- **Structure:** `[payload] + [0x00]` (null-terminated in tag)
+- **Sidecar Example:**
+  ```json
+  { "embedding": { "category": "metadata", "technique": "exif", "ai42": false } }
+  ```
+
+---
+
+### 5.5. `eoi.raw`
+
+- **Image:** JPEG
+- **Embedding:** Append after `0xFFD9` (EOI marker)
+- **Payload Structure:**
+  ```
+  [payload UTF-8] + [0x00]
+  ```
+  - **No `AI42`**
+- **Sidecar Example:**
+  ```json
+  { "embedding": { "category": "eoi", "technique": "raw", "ai42": false } }
+  ```
+
+---
+
+## 6. File Naming & Sidecar Convention
+
+### Legacy (Accepted):
+```
+{payload_hex}_{method}_{index}.{ext}
+```
+
+### Required (New):
+```
+{stem}.json  →  sidecar with embedding_type
+```
+
+**Example:**
+```
+48656c6c6f_palette_001.png
+48656c6c6f_palette_001.png.json
+```
+
+```json
+{
+  "payload_hex": "48656c6c6f",
+  "embedding": {
+    "category": "pixel",
+    "technique": "palette",
+    "ai42": false
+  }
+}
+```
+
+---
+
+## 7. Extraction Rules
+
+| Method | Look for `AI42`? | Terminator | Bit Order |
+|-------|------------------|------------|-----------|
+| `alpha` | Yes | `0x00` | LSB-first |
+| `palette` | No | `0x00` | LSB-first |
+| `lsb.rgb` | No | `0x00` | LSB-first |
+| `exif` | No | `0x00` | N/A |
+| `eoi` | No | `0x00` | N/A |
+
+> `starlight_extractor.py` **MUST** read `.json` sidecar first. If missing, fall back to statistical detection.
+
+---
+
+## 8. Extensibility (Future Algorithms)
+
+To add **J-UNIWARD**:
+
+1. Add to `ALGO_TO_EMBEDDING`:
+   ```python
+   5: EmbeddingType(Category.PIXEL, "dct.j-uniward", False)
+   ```
+2. Update trainer (new class)
+3. No changes to taxonomy or schema
+
+---
+
+## 9. Migration from v1
+
+Run:
+```bash
+python migrate_metadata.py --src datasets/v1/stego/
+```
+
+This generates `.json` sidecars from legacy filenames using:
+
+```python
+method → technique mapping:
+  "alpha"    → "alpha"
+  "palette"  → "palette"
+  "lsb"      → "lsb.rgb"
+  "exif"     → "exif"
+  "eoi"      → "raw"
+ai42 = (method == "alpha")
+```
+
+---
+
+## 10. References
+
+- `ai_consensus.md` – Decision: LSB-first, AI42 only in Alpha
+- `starlight/metadata.py` – `EmbeddingType`, `ALGO_TO_EMBEDDING`
+- `scanner_spec.json` – Updated to require `"embedding"` object
+
+---
+
+**Prepared by:** Project Starlight AI Consensus (Grok, Claude, Gemini, ChatGPT)  
+**Approved:** 2025-11-03  
+**Next Review:** After J-UNIWARD integration
+```
+
