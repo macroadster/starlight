@@ -52,10 +52,22 @@ All developers should review [gemini_submission_2025/ai_common_sense_on_blockcha
 ## Coordination Issues and Action Items
 
 ### 1. Trainer Issues – `trainer.py`
+
+### CRITICAL ISSUE (2025-11-04): Palette & Index Data Loss in Training
+
+A major issue has been identified in `trainer.py` that is the primary cause of detection failures for `PALETTE` and some `LSB` methods on palette-based images (e.g., GIF, BMP).
+
+- **Problem**: The `StegoImageDataset` in `trainer.py` unconditionally converts all images to RGB format (`img.convert('RGB')`) before feeding them to the model.
+- **Impact**: This conversion **destroys the original pixel data**, which consists of indices into a color palette. For steganography methods that hide data in the LSB of these *indices*, the evidence is erased during this preprocessing step. The model is therefore trained on "clean" RGB data, even when the original file contained steganography.
+- **Affected Methods**:
+    - **Palette Stegenography**: Fails because the palette index modifications are lost.
+    - **LSB Steganography on Palette Images**: Fails for the same reason.
+    - **Alpha Steganography on GIFs**: The conversion to a single RGB frame likely mishandles per-frame alpha channels, leading to failures.
+- **Action**: The `trainer.py` and `scanner.py` preprocessing pipelines must be updated to handle palette-indexed images without converting them to RGB, ensuring the raw index data is analyzed.
+
 - Current trainers fail to differentiate **Alpha-based vs RGB-based** LSB steganography.
 - Root cause: inconsistent metadata tagging and training labels between generators.
 - **Action:** Add explicit algorithm flags in training metadata (e.g., `embedding_type = 'RGB' | 'ALPHA' | 'PALETTE'`).
-
 ### 2. Validation Data & Generator Baseline – `create_validation_set.py`
 - `create_validation_set.py` temporarily acts as a **unified training data generator** due to cross-AI diversity.
 - This script will migrate to:
@@ -97,6 +109,17 @@ All developers should review [gemini_submission_2025/ai_common_sense_on_blockcha
   - Claude v7: ✓ Completed (Alpha has AI42, Palette does not)
   - Gemini: ✓ Completed (Alpha has AI42)
   - Grok: N/A (RGB LSB only, no alpha implementation)
+
+### 7. LSB Bit Order Standardization for Generic LSB
+
+**DECISION (2025-11-04):** To enhance model robustness and reflect real-world diversity, generic LSB steganography (`pixel.lsb.rgb`) will support **both LSB-first and MSB-first bit encoding**.
+
+-   **Rationale:** Different embedding tools or architectures may use varying bit orders. Training the model on both will improve its generalization and detection capabilities.
+-   **Impact on Generators:** Data generators must be capable of producing `pixel.lsb.rgb` stego with either LSB-first or MSB-first bit encoding.
+-   **Action Required:**
+    1.  **`docs/STEGO_FORMAT_SPEC.md` Update:** The specification for `pixel.lsb.rgb` must be updated to include a `bit_order` field in its JSON sidecar metadata (`"bit_order": "lsb-first" | "msb-first"`).
+    2.  **`starlight_extractor.py` Update:** The extractor's `extract_lsb` function must be modified to read the `bit_order` from the JSON sidecar and apply the correct decoding logic. If the `bit_order` field is missing, it should default to LSB-first (as per current spec) or attempt both.
+    3.  **Data Generators Update:** All data generators must be updated to include the `bit_order` field in the JSON sidecar for `pixel.lsb.rgb` embeddings.
 
 ---
 

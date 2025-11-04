@@ -1,5 +1,6 @@
 import os
-import argparse 
+import argparse
+import json
 import numpy as np
 from PIL import Image
 
@@ -267,6 +268,19 @@ def generate_images(limit=None, resolution=RESOLUTION):
                 embed_result = embed_func(clean_path, stego_path, full_byte_payload)
                 
                 if embed_result:
+                    # Create and save the JSON sidecar
+                    json_path = stego_path + '.json'
+                    embedding_data = {}
+                    if algorithm_name == PNG_ALGORITHM: # 'alpha'
+                        embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+                    elif algorithm_name == JPEG_ALGORITHM: # 'eoi'
+                        embedding_data = {"category": "eoi", "technique": "raw", "ai42": False}
+
+                    if embedding_data:
+                        sidecar_content = {"embedding": embedding_data}
+                        with open(json_path, 'w') as f:
+                            json.dump(sidecar_content, f, indent=2)
+
                     # 4. Perform verification
                     verification_success = test_func(stego_path, full_byte_payload)
                     

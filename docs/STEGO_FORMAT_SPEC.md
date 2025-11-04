@@ -1,7 +1,7 @@
 # Project Starlight Steganography Format Specification (v2.0)
 
 **Version:** 2.0  
-**Last Updated:** 2025-11-03  
+**Last Updated:** 2025-11-04  
 **Status:** Active – Approved for trainer, scanner, and generator use
 
 ---
@@ -25,7 +25,7 @@ All implementations **MUST** include a `.json` sidecar file with the `embedding`
 |---------|------|
 | **Blockchain Compatibility** | All extraction **must work without clean reference images** |
 | **AI Hint (`AI42`)** | Only used in **AI-specific** methods (currently: `alpha`) |
-| **Bit Order** | **LSB-first** for all pixel-based methods (standardized 2025-11-02) |
+| Bit Order | **LSB-first** for `alpha` and `palette`. `lsb.rgb` can be LSB-first or MSB-first, specified in metadata. |
 | **Payload Terminator** | All methods append `b'\x00'` (null byte) after payload |
 | **Metadata Sidecar** | Every stego file has `{filename}.json` with `embedding_type` |
 
@@ -54,7 +54,8 @@ embedding_type
   "properties": {
     "category": { "type": "string", "enum": ["pixel", "metadata", "eoi"] },
     "technique": { "type": "string", "minLength": 1 },
-    "ai42": { "type": "boolean" }
+    "ai42": { "type": "boolean" },
+    "bit_order": { "type": "string", "enum": ["lsb-first", "msb-first"], "description": "Required for pixel.lsb.rgb to specify bit endianness." }
   },
   "additionalProperties": false
 }
@@ -118,15 +119,19 @@ embedding_type
 
 - **Image:** RGB (PNG, BMP)
 - **Embedding:** LSB of R→G→B→R→G→B… (flattened sequential)
-- **Bit Order:** **LSB-first**
+- **Bit Order:** Can be **LSB-first** or **MSB-first**. Must be specified in sidecar metadata.
 - **Payload Structure:**
   ```
   [payload UTF-8] + [0x00]
   ```
   - **No `AI42`**
-- **Sidecar Example:**
+- **Sidecar Example (LSB-first):**
   ```json
-  { "embedding": { "category": "pixel", "technique": "lsb.rgb", "ai42": false } }
+  { "embedding": { "category": "pixel", "technique": "lsb.rgb", "ai42": false, "bit_order": "lsb-first" } }
+  ```
+- **Sidecar Example (MSB-first):**
+  ```json
+  { "embedding": { "category": "pixel", "technique": "lsb.rgb", "ai42": false, "bit_order": "msb-first" } }
   ```
 
 ---
@@ -197,7 +202,7 @@ embedding_type
 |-------|------------------|------------|-----------|
 | `alpha` | Yes | `0x00` | LSB-first |
 | `palette` | No | `0x00` | LSB-first |
-| `lsb.rgb` | No | `0x00` | LSB-first |
+| `lsb.rgb` | No | `0x00` | From metadata (`bit_order`) |
 | `exif` | No | `0x00` | N/A |
 | `eoi` | No | `0x00` | N/A |
 
@@ -248,7 +253,7 @@ ai42 = (method == "alpha")
 ---
 
 **Prepared by:** Project Starlight AI Consensus (Grok, Claude, Gemini, ChatGPT)  
-**Approved:** 2025-11-03  
+**Approved:** 2025-11-04  
 **Next Review:** After J-UNIWARD integration
 ```
 

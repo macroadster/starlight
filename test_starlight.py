@@ -13,7 +13,7 @@ import random # Import random for sampling
 DATASET_ROOT = 'datasets'
 # The maximum number of files to sample from each submission directory for testing.
 # Set to None or a very large number to test all files.
-SAMPLE_SIZE = 30 
+SAMPLE_SIZE = 30
 # Common image extensions to find all files
 IMAGE_FILE_PATTERN = '*{ext}'
 IMAGE_EXTENSIONS = ['png', 'gif', 'jpeg', 'jpg', 'webp', 'bmp']
@@ -64,31 +64,25 @@ def normalize_text(text):
     # Removes all spaces, tabs, newlines, and returns the lowercase string
     return ''.join(text.split()).lower()
 
-def run_extraction_test(image_path, algorithm, clean_path=None, payload_path=None):
+def run_extraction_test(image_path, algorithm, payload_path=None):
     """
     Runs the scanner.py script for a specific image and algorithm.
     Returns a tuple: (result_status, failure_details)
-    
-    UPDATED: Now parses the reported message length for SDM, and increases tolerance.
     """
     
-    # Base command arguments for single file analysis and extraction
-    command = [
-        'python3', 
-        EXTRACTOR_SCRIPT, 
-        image_path,
-        '--extract' # Important: Add the --extract flag
-    ]
-    
-    if algorithm == 'sdm' and clean_path:
-        command.extend(['--clean_path', clean_path])
-
     # Read expected payload for comparison
     expected_content = read_expected_payload(payload_path)
     if expected_content.startswith("ERROR_READING_PAYLOAD"):
         return "ERROR", expected_content
-    # Execute the command
+    
     try:
+        # --- Run scanner.py (detection and extraction are automatic) ---
+        command = [
+            'python3', 
+            EXTRACTOR_SCRIPT, 
+            image_path
+        ]
+        
         result = subprocess.run(
             command,
             capture_output=True,
@@ -99,63 +93,46 @@ def run_extraction_test(image_path, algorithm, clean_path=None, payload_path=Non
         
         stdout_lines = result.stdout.split('\n')
         
-        # --- 1. Extract reported message length first (more reliable for SDM) ---
-        reported_message_length = 0
-        reported_length_regex = re.compile(r"Message length:\s*(\d+)\s*chars")
+        # --- Parse detection results ---
+        predicted_class = "unknown"
+        confidence = 0.0
+        
+        # Regex to find "Predicted: {class} (confidence: {confidence:.2%})"
+        prediction_regex = re.compile(r"Predicted: (\w+) \(confidence: ([\d.]+)%\)")
         
         for line in stdout_lines:
-            match = reported_length_regex.search(line)
+            match = prediction_regex.search(line)
             if match:
-                reported_message_length = int(match.group(1))
-                break # Found the length, stop searching
-
-        # --- 2. Logic to find the extracted message block for general check ---
-        start_tag = "✓ MESSAGE EXTRACTED:"
-        end_delimiter = "=" * 80
-        extracted_text = ""
-        start_capturing = False
-        
-        for i, line in enumerate(stdout_lines):
-            line_stripped = line.strip()
-            
-            if line_stripped == start_tag:
-                start_capturing = True
-                continue
-            
-            if start_capturing and line_stripped == end_delimiter:
-                message_start = i + 1 
-                try:
-                    message_end = stdout_lines[message_start:].index(end_delimiter) + message_start
-                except ValueError:
-                    return "FAILURE", "Extraction start tag found, but missing closing '=====' delimiter."
-                
-                extracted_text = '\n'.join(stdout_lines[message_start:message_end]).strip()
+                predicted_class = match.group(1).lower()
+                confidence = float(match.group(2)) / 100.0 # Convert percentage to float
                 break
-
         
+        # --- Evaluate Detection Result ---
+        if predicted_class == 'clean':
+            # If a stego image is detected as clean, it's a failure
+            return "FAILURE", f"Detected as clean (confidence: {confidence:.2%}) but expected {algorithm}."
+        elif predicted_class != algorithm:
+            # If a stego image is detected as a wrong stego type, it's a failure
+            return "FAILURE", f"Detected as {predicted_class} (confidence: {confidence:.2%}) but expected {algorithm}."
+        
+        # --- Parse extraction results ---
+        start_tag = "Extracted Message:"
+        # The end of the message is not clearly delimited, so we'll have to parse differently.
+        # The message seems to be the last part of the output.
+        
+        extracted_text = ""
+        try:
+            start_index = result.stdout.index(start_tag) + len(start_tag)
+            extracted_text = result.stdout[start_index:].strip()
+        except ValueError:
+            # If start_tag is not found, it means no message was extracted.
+            pass
+
         if expected_content:
             normalized_expected = normalize_text(expected_content)
             expected_len = len(normalized_expected)
             
-            # --- SDM-SPECIFIC VALIDATION LOGIC (using reported length) ---
-            if algorithm == 'sdm':
-                # Use the reported length from scanner.py as it is the true extracted length.
-                extracted_len = reported_message_length
-                
-                target_percent = 0.02
-                target_len = expected_len * target_percent 
-                
-                if extracted_len > 0 and target_len <= extracted_len:
-                    return "SUCCESS", f"SDM: Extracted reported length ({extracted_len}) is within {target_percent:.0%} of the expected payload ({expected_len})."
-                else:
-                    details = (f"SDM Extracted length validation failed (using reported length). "
-                               rf"Target range ({target_percent:.0%}): "
-                               f"Actual: {extracted_len} chars. Expected Total: {expected_len} chars.")
-                    return "FAILURE", details
-            
-            # --- GENERAL (100%) VALIDATION LOGIC for all other algorithms ---
-            elif extracted_text:
-                # For non-SDM, use the normalized length from the printed block (assumes full message printed).
+            if extracted_text:
                 normalized_extracted = normalize_text(extracted_text)
                 extracted_len = len(normalized_extracted)
                 
@@ -164,24 +141,19 @@ def run_extraction_test(image_path, algorithm, clean_path=None, payload_path=Non
                 max_len = expected_len * 1.20
 
                 if extracted_len > 0 and min_len <= extracted_len <= max_len:
-                    return "SUCCESS", "Extracted content length (normalized) is similar to expected payload (Full 100% check)."
+                    return "SUCCESS", f"Detected {predicted_class} (conf: {confidence:.2%}) and extracted content length (normalized) is similar to expected payload."
                 else:
-                    details = (f"Extracted content length validation failed (Normalized Comparison). "
+                    details = (f"Detected {predicted_class} (conf: {confidence:.2%}) but extracted content length validation failed (Normalized Comparison). "
                                f"Expected range: [{min_len:.0f} - {max_len:.0f}] chars. "
                                f"Actual: {extracted_len} chars. Expected: {expected_len} chars.")
                     return "FAILURE", details
-            
             else:
-                 # If an SDM file failed to report length and other files failed to provide content
-                 return "FAILURE", "No extraction block found, and no message length was reported."
-        
+                return "FAILURE", f"Detected {predicted_class} (conf: {confidence:.2%}) but no extraction block found."
         else:
-            # If no ground truth payload is found, assume success if a message was captured.
-            if extracted_text or reported_message_length > 0:
-                 return "SUCCESS", "Extraction performed (no ground truth payload for comparison)."
+            if extracted_text:
+                return "SUCCESS", f"Detected {predicted_class} (conf: {confidence:.2%}) and extraction performed (no ground truth payload for comparison)."
             else:
-                 return "FAILURE", "No extraction block found, and no message length was reported."
-
+                return "FAILURE", f"Detected {predicted_class} (conf: {confidence:.2%}) but no extraction block found."
 
     except FileNotFoundError:
         return "ERROR", f"Could not find {EXTRACTOR_SCRIPT}."
@@ -252,7 +224,7 @@ def main():
             payload_path = os.path.join(root_dir, f'{payload_base_name}.md')
 
             # 4. Run the test and record the result
-            result, failure_details = run_extraction_test(image_path, algorithm, clean_path, payload_path)
+            result, failure_details = run_extraction_test(image_path, algorithm, payload_path=payload_path)
             
             # --- Log individual test result ---
             log_message = f"TEST RESULT: [{algorithm.upper()}] {result:7s} | File: {stego_filename} | Details: {failure_details}"

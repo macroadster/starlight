@@ -1,6 +1,7 @@
 import os
 import numpy as np
 from PIL import Image
+import json
 
 # --- Helper Function to Find and Read Markdown File ---
 
@@ -101,6 +102,15 @@ os.makedirs(stego_dir, exist_ok=True)
 img_out = Image.fromarray(pixels)
 # Save to the new structured path
 img_out.save(stego_image_path)
+
+# --- Save JSON Sidecar ---
+json_path = stego_image_path + '.json'
+embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+sidecar_content = {"embedding": embedding_data}
+with open(json_path, 'w') as f:
+    json.dump(sidecar_content, f, indent=2)
+
+print(f"Generated JSON sidecar: {json_path}")
 
 print(f"\nAI hint and full message bytes embedded successfully into {stego_image_path}.")
 

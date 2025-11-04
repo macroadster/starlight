@@ -22,6 +22,8 @@ import logging
 
 import argparse
 
+import json
+
 from pathlib import Path
 
 from typing import Callable
@@ -30,71 +32,23 @@ from PIL import Image
 
 
 
-
-
-# --- PAYLOADS ---
-
-ALL_MARKDOWN_CONTENT = b""
+import itertools
 
 
 
-def load_all_markdown_content(root_dir: Path) -> bytes:
+try:
 
-    """Loads all .md files from the datasets directory into a single byte string."""
+    from tqdm import tqdm
 
-    all_content = b""
+except ImportError:
 
-    # Use a consistent set of markdown files for deterministic payloads
+    def tqdm(iterable, *args, **kwargs):
 
-    md_files = sorted(list(root_dir.glob("datasets/**/*.md")))
+        print("tqdm not found, progress bar will not be shown. To install: pip install tqdm", file=sys.stderr)
 
-    if not md_files:
-
-        logging.error("No markdown payload files found. Exiting.")
-
-        sys.exit(1)
-
-    
-
-    logging.info(f"Loading {len(md_files)} markdown files for payloads...")
-
-    for md_file in md_files:
-
-        try:
-
-            all_content += md_file.read_bytes() + b"\n\n"
-
-        except Exception as e:
-
-            logging.warning(f"Could not read payload file {md_file}: {e}")
-
-    
-
-    return all_content
+        return iterable
 
 
-
-def get_text_payload(num_bytes: int) -> bytes:
-
-    """Gets a random chunk of text from the global markdown content."""
-
-    if not ALL_MARKDOWN_CONTENT or num_bytes == 0:
-
-        return b""
-
-    
-
-    # To avoid always starting at the beginning, pick a random start point
-
-    start_index = random.randint(0, len(ALL_MARKDOWN_CONTENT) - 1)
-
-    
-
-    # Get a chunk of text, wrapping around if necessary
-
-    chunk = (ALL_MARKDOWN_CONTENT[start_index:] + ALL_MARKDOWN_CONTENT[:start_index])[:num_bytes]
-
-    return chunk
 
 
 
@@ -102,34 +56,34 @@ def get_text_payload(num_bytes: int) -> bytes:
 
 try:
 
+
+
     import piexif
 
+
+
 except ImportError:
+
+
 
     piexif = None
 
 
-def embed_alpha(cover: Image.Image) -> Image.Image:
+def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
     """
     Embed in alpha channel using LSB-first (byte-reversed) bit order.
     SPEC: AI42 (LSB-first) + Message (LSB-first) + 0x00 (LSB-first)
-    Dynamically generates a random payload to fill 50% of capacity.
+    Embeds the provided payload.
     """
     img = cover.convert("RGBA")
     
     pixels = list(img.getdata())
-    max_alpha_bits = len(pixels) # Each pixel has 1 alpha bit
     
-    # Generate payload from markdown to fill 50% of capacity
-    payload_bytes_to_embed = int((max_alpha_bits * 0.5) // 8)
-    payload = get_text_payload(payload_bytes_to_embed)
-
     prefix = b"AI42"
     full_payload = prefix + payload + b" \x00"
     
     if len(full_payload) * 8 > len(pixels):
-        # This should ideally not happen with 50% fill, but good to keep
-        raise ValueError("Payload too large for alpha embedding.")
+        raise ValueError(f"Payload too large for alpha embedding. Needs {len(full_payload) * 8} bits, has {len(pixels)}.")
     
     new_data = []
     pixel_index = 0
@@ -150,27 +104,22 @@ def embed_alpha(cover: Image.Image) -> Image.Image:
     return out
 
 
-def embed_lsb(cover: Image.Image) -> Image.Image:
+def embed_lsb(cover: Image.Image, payload: bytes) -> Image.Image:
     """
     Embed in RGB channels using MSB-first bit order.
     SPEC: Generic LSB, null-terminated, no hint. Always produces an RGB image.
-    Dynamically generates a random payload to fill 50% of capacity.
+    Embeds the provided payload.
     """
     img = cover.convert("RGB")  # Always convert to RGB
     pixels = list(img.getdata())
     
     max_lsb_bits = len(pixels) * 3 # Each pixel has 3 RGB bits
     
-    # Generate payload from markdown to fill 50% of capacity
-    payload_bytes_to_embed = int((max_lsb_bits * 0.5) // 8)
-    payload = get_text_payload(payload_bytes_to_embed)
-
     # MSB-first encoding with null terminator
     bits = "".join(f"{b:08b}" for b in payload) + "00000000"
     
     if len(bits) > max_lsb_bits:
-        # This should ideally not happen with 50% fill, but good to keep
-        raise ValueError("Payload too large for LSB embedding.")
+        raise ValueError(f"Payload too large for LSB embedding. Needs {len(bits)} bits, has {max_lsb_bits}.")
     
     new_data = []
     bit_index = 0
@@ -191,10 +140,10 @@ def embed_lsb(cover: Image.Image) -> Image.Image:
     out.putdata(new_data)
     return out
 
-def embed_palette(cover: Image.Image) -> Image.Image:
+def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
     """
     Embed in palette indices using MSB-first bit order.
-    SPEC: MSB-first, null-terminated. Dynamically generates a random payload to fill 50% of capacity.
+    SPEC: MSB-first, null-terminated. Embeds the provided payload.
     """
     if cover.mode != 'P':
         img = cover.convert("P", palette=Image.ADAPTIVE, colors=256)
@@ -205,12 +154,7 @@ def embed_palette(cover: Image.Image) -> Image.Image:
         raise ValueError("Image must have a palette for this technique.")
 
     indices = list(img.getdata())
-    max_palette_bits = len(indices) # Each index is 1 bit for LSB
-
-    # Generate payload from markdown to fill 50% of capacity
-    payload_bytes_to_embed = int((max_palette_bits * 0.5) // 8)
-    payload = get_text_payload(payload_bytes_to_embed)
-
+    
     # Convert payload to MSB-first bits + null terminator
     bits = ""
     for byte in payload:
@@ -230,26 +174,25 @@ def embed_palette(cover: Image.Image) -> Image.Image:
     return img
 
 
-def embed_exif(cover: Image.Image) -> Image.Image:
+def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
     """
     Embed in EXIF UserComment with ASCII encoding header.
-    SPEC: ASCII\x00\x00\x00 prefix + message. Dynamically generates a random payload.
+    SPEC: ASCII\x00\x00\x00 prefix + message. Embeds the provided payload.
     """
     if piexif is None:
         raise RuntimeError("piexif not installed; cannot perform EXIF embedding.")
     
     img = cover.convert("RGB")
     
-    # Generate a text payload. EXIF capacity is not directly image-size dependent,
-    # so a fixed, reasonably large size (e.g., 1KB) is used.
-    payload_size = 1024 # 1KB payload
-    payload = get_text_payload(payload_size)
-
     # SPEC: Use ASCII encoding header
+    full_payload = b"ASCII\x00\x00\x00" + payload
+    if len(full_payload) > 65535:
+        raise ValueError("Payload too large for EXIF UserComment (max 65535 bytes).")
+
     exif_dict = {
         "0th": {},
         "Exif": {
-            piexif.ExifIFD.UserComment: b"ASCII\x00\x00\x00" + payload
+            piexif.ExifIFD.UserComment: full_payload
         },
         "GPS": {},
         "1st": {},
@@ -260,18 +203,13 @@ def embed_exif(cover: Image.Image) -> Image.Image:
     return img
 
 
-def embed_eoi(cover: Image.Image) -> Image.Image:
+def embed_eoi(cover: Image.Image, payload: bytes) -> Image.Image:
     """
     Embed after JPEG EOI marker.
-    SPEC: Raw append after EOI marker (may have hint prefix). Dynamically generates a random payload.
+    SPEC: Raw append after EOI marker (may have hint prefix). Embeds the provided payload.
     """
     img = cover.convert("RGB")
     
-    # Generate a text payload. EOI capacity is not directly image-size dependent,
-    # so a fixed, reasonably large size (e.g., 1KB) is used.
-    payload_size = 1024 # 1KB payload
-    payload = get_text_payload(payload_size)
-
     img.info["eoi_append"] = payload
     return img
 
@@ -316,22 +254,27 @@ def save_jpeg_with_eoi_append(img, path, append_bytes, quality=95):
 # === MAIN SCRIPT ===
 
 def main():
-    global ALL_MARKDOWN_CONTENT
     parser = argparse.ArgumentParser(
-        description="Generate stego validation set. Creates all algorithm types for each clean image."
+        description="Generate stego validation set based on markdown payloads."
     )
     parser.add_argument("--clean_source", type=str, default="clean",
                         help="Directory of clean source images.")
     parser.add_argument("--output_stego", type=str, default="stego",
                         help="Directory to save generated stego images.")
+    parser.add_argument("--limit", type=int, default=10,
+                        help="Limit the number of clean images to use for generation.")
     args = parser.parse_args()
 
     source_dir = Path(args.clean_source)
     stego_dir = Path(args.output_stego)
 
-    # Load markdown content for payloads
-    project_root = Path(__file__).parent.parent.parent 
-    ALL_MARKDOWN_CONTENT = load_all_markdown_content(project_root)
+    # Load markdown payloads from the script's directory
+    script_dir = Path(__file__).parent
+    md_files = sorted(list(script_dir.glob("*.md")))
+    if not md_files:
+        logging.error(f"No markdown payload files found in {script_dir}")
+        sys.exit(1)
+    logging.info(f"Found {len(md_files)} markdown payloads.")
 
     if not source_dir.is_dir():
         logging.error(f"Source directory not found: {source_dir}")
@@ -339,73 +282,115 @@ def main():
 
     stego_dir.mkdir(parents=True, exist_ok=True)
 
+    # Filter and verify source images
+    logging.info("Verifying source images...")
+    source_images_unverified = [p for p in source_dir.iterdir() if p.is_file()]
+    source_images = []
+    for path in source_images_unverified:
+        if path.name == '.DS_Store':
+            continue
+        try:
+            with Image.open(path) as img:
+                img.verify()  # Fast check for corruption
+            source_images.append(path)
+        except Exception as e:
+            logging.warning(f"Skipping non-image or corrupt file: {path.name} ({e})")
+    
+    logging.info(f"Found {len(source_images)} valid clean images.")
+
+    # Apply limit if specified
+    if args.limit is not None and args.limit > 0:
+        source_images = source_images[:args.limit]
+        logging.info(f"Using a limited set of {len(source_images)} clean images.")
+
+    # Pre-load payloads
+    payloads = {}
+    for md_file in md_files:
+        try:
+            payloads[md_file] = md_file.read_bytes()
+        except Exception as e:
+            logging.warning(f"Could not read payload file {md_file.name}, skipping: {e}")
+
     # Define canonical output formats. LSB/Alpha are handled dynamically.
-    algo_to_format = {
-        "palette": ".bmp",
-        "exif": ".jpg",
-        "eoi": ".jpg"
-    }
+    algo_to_format = {"palette": ".bmp", "exif": ".jpg", "eoi": ".jpg"}
 
     # Map algorithm names to functions
     algorithms = {
-        "lsb": embed_lsb,
-        "alpha": embed_alpha,
-        "palette": embed_palette,
-        "exif": embed_exif,
-        "eoi": embed_eoi
+        "lsb": embed_lsb, "alpha": embed_alpha, "palette": embed_palette,
+        "exif": embed_exif, "eoi": embed_eoi
     }
 
-    source_images = [p for p in source_dir.iterdir() if p.is_file()]
-    logging.info(f"Found {len(source_images)} clean images in {source_dir}")
-    count = 0
+    # Create a list of all generation tasks
+    tasks = list(itertools.product(payloads.items(), algorithms.items(), source_images))
+    if not tasks:
+        logging.info("No tasks to perform. Exiting.")
+        return
 
-    for clean_path in source_images:
+    logging.info(f"Preparing to generate {len(tasks)} stego images...")
+
+    total_generated_count = 0
+    image_indices = {}  # To track index for each payload-algorithm pair
+
+    for (md_file, payload_content), (algo_name, embed_func), clean_path in tqdm(tasks, desc="Generating stego images", unit="image"):
         try:
+            payload_name = md_file.stem
+            
+            # Get and increment index for filename
+            index_key = (payload_name, algo_name)
+            image_index = image_indices.get(index_key, 0)
+
             cover_img = Image.open(clean_path)
-            # Ensure image is in a base mode that works for most conversions
             if cover_img.mode not in ['RGB', 'RGBA']:
                 cover_img = cover_img.convert('RGB')
+
+            stego_img = embed_func(cover_img.copy(), payload_content)
+
+            # Determine output format
+            if algo_name in ['lsb', 'alpha']:
+                lossless_formats = ['.png', '.bmp', '.gif', '.tiff', '.webp']
+                output_format = clean_path.suffix.lower() if clean_path.suffix.lower() in lossless_formats else '.png'
+            else:
+                output_format = algo_to_format[algo_name]
+
+            # Format output filename
+            stego_filename = f"{payload_name}_{algo_name}_{image_index:03d}{output_format}"
+            stego_path = stego_dir / stego_filename
+
+            # Save the stego image
+            if algo_name == "exif":
+                save_jpeg_with_exif(stego_img, stego_path, stego_img.info.get("exif_bytes"))
+            elif algo_name == "eoi":
+                save_jpeg_with_eoi_append(stego_img, stego_path, stego_img.info.get("eoi_append", b""))
+            else:
+                save_image(stego_img, stego_path)
+
+            # Create and save the JSON sidecar
+            json_path = stego_path.with_suffix(stego_path.suffix + '.json')
+            embedding_data = {}
+            if algo_name == 'alpha':
+                embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+            elif algo_name == 'palette':
+                # NOTE: This generator uses MSB-first for palette, contrary to spec v2.0. Documenting actual behavior.
+                embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "msb-first"}
+            elif algo_name == 'lsb':
+                embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": "msb-first"}
+            elif algo_name == 'exif':
+                embedding_data = {"category": "metadata", "technique": "exif", "ai42": False}
+            elif algo_name == 'eoi':
+                embedding_data = {"category": "eoi", "technique": "raw", "ai42": False}
+
+            if embedding_data:
+                sidecar_content = {"embedding": embedding_data}
+                with open(json_path, 'w') as f:
+                    json.dump(sidecar_content, f, indent=2)
+
+            image_indices[index_key] = image_index + 1
+            total_generated_count += 1
+
         except Exception as e:
-            logging.warning(f"Skipping non-image or corrupt file: {clean_path.name} ({e})")
-            continue
+            tqdm.write(f"Skipped: {clean_path.name} with {md_file.name} ({algo_name}) - {e}")
 
-        # For each clean image, generate all stego types
-        for algo_name, embed_func in algorithms.items():
-            try:
-                # Use a fresh copy of the image for each algorithm
-                img_copy = cover_img.copy()
-
-                stego_img = embed_func(img_copy)
-
-                # For pixel-based algos, use original format if lossless, else PNG
-                if algo_name in ['lsb', 'alpha']:
-                    lossless_formats = ['.png', '.bmp', '.gif', '.tiff', '.webp']
-                    if clean_path.suffix.lower() in lossless_formats:
-                        output_format = clean_path.suffix
-                    else:
-                        output_format = '.png'  # Default for lossy originals
-                else:
-                    output_format = algo_to_format[algo_name]
-
-                stego_filename = f"{clean_path.stem}_{algo_name}{output_format}"
-                stego_path = stego_dir / stego_filename
-
-                if algo_name == "exif":
-                    save_jpeg_with_exif(stego_img, stego_path,
-                                        stego_img.info.get("exif_bytes"))
-                elif algo_name == "eoi":
-                    save_jpeg_with_eoi_append(stego_img, stego_path,
-                                              stego_img.info.get("eoi_append", b""))
-                else:
-                    save_image(stego_img, stego_path)
-
-                logging.info(f"Generated: {stego_path.name}")
-                count += 1
-
-            except Exception as e:
-                logging.warning(f"Failed to generate {algo_name} for {clean_path.name}: {e}")
-
-    logging.info(f"\nGeneration complete. Total stego images created: {count}")
+    logging.info(f"\nGeneration complete. Total stego images created: {total_generated_count}")
 
 
 if __name__ == "__main__":
