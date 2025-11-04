@@ -346,9 +346,13 @@ def main():
             stego_img = embed_func(cover_img.copy(), payload_content)
 
             # Determine output format
-            if algo_name in ['lsb', 'alpha']:
-                lossless_formats = ['.png', '.bmp', '.gif', '.tiff', '.webp']
-                output_format = clean_path.suffix.lower() if clean_path.suffix.lower() in lossless_formats else '.png'
+            if algo_name == 'alpha' or algo_name == 'lsb':
+                # Alternate between png and webp for variety
+                valid_formats = ['.png', '.webp']
+                output_format = valid_formats[image_index % len(valid_formats)]
+            elif algo_name == 'palette':
+                valid_formats = ['.bmp', '.gif']
+                output_format = valid_formats[image_index % len(valid_formats)]
             else:
                 output_format = algo_to_format[algo_name]
 

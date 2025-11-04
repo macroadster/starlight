@@ -5,6 +5,7 @@ from tqdm import tqdm  # Progress bar for large batches
 import piexif  # For EXIF metadata; pip install piexif
 import argparse  # For command-line arguments
 import logging  # For logging outputs to file
+import json
 
 def generate_clean_image(output_path, size=(512, 512), seed=None, format='JPEG', pattern_type='linear'):
     """
@@ -102,7 +103,7 @@ def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.4):
         # Prepare payload (random if None or empty)
         if payload and isinstance(payload, str) and len(payload) > 0:
             logging.info(f"Embedding provided payload: {len(payload)} chars")
-            binary_payload = ''.join(format(ord(c), '08b')[::-1] for c in payload)
+            binary_payload = ''.join(format(ord(c), '08b')[::-1] for c in (payload + '\x00'))
         else:
             logging.info("No payload provided; generating random payload")
             total_bits = int(payload_size * img_array.size)
@@ -288,6 +289,19 @@ def generate_images(num_images=5, formats=['JPEG', 'PNG'], payload_size=0.4):
                         generate_clean_image(stego_path, seed=i, format=format, pattern_type=pattern)  # Copy clean to stego
                         add_exif_metadata(stego_path, seed_payload)
                         stego_paths.append(stego_path)
+
+                    # --- Create JSON Sidecar ---
+                    json_path = stego_path + '.json'
+                    embedding_data = {}
+                    if algorithm == 'lsb':
+                        embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": "lsb-first"}
+                    elif algorithm == 'exif':
+                        embedding_data = {"category": "metadata", "technique": "exif", "ai42": False}
+                    
+                    if embedding_data:
+                        sidecar_content = {"embedding": embedding_data}
+                        with open(json_path, 'w') as f:
+                            json.dump(sidecar_content, f, indent=2)
                 verify_images(seed_file, stego_paths, seed_payload, format, payload_size)
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ import argparse
 import numpy as np
 from PIL import Image, ImageDraw
 from pathlib import Path
+import json
 
 
 class ClaudeStegGenerator:
@@ -428,6 +429,19 @@ class ClaudeStegGenerator:
                         stego_img.save(stego_path, 'BMP')
                     else:
                         stego_img.save(stego_path, 'PNG')
+
+                    # --- Create JSON Sidecar ---
+                    json_path = stego_path.with_suffix(stego_path.suffix + '.json')
+                    embedding_data = {}
+                    if method_name == 'alpha':
+                        embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+                    elif method_name == 'palette':
+                        embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "lsb-first"}
+                    
+                    if embedding_data:
+                        sidecar_content = {"embedding": embedding_data}
+                        with open(json_path, 'w') as f:
+                            json.dump(sidecar_content, f, indent=2)
                     
                     # Verify extraction
                     extracted = extract_func(stego_path)

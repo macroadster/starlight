@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import json
 from torch.utils.data import Dataset, DataLoader, default_collate
 from PIL import Image
 import numpy as np
@@ -75,23 +76,43 @@ class StegoImageDataset(Dataset):
         self.base_dir = Path(base_dir)
         self.image_files = []
         if subdirs is None: subdirs = ["*"]
+        
+        print(f"[DATASET] Searching in {subdirs}...")
         for subdir_pattern in subdirs:
             for matched_dir in self.base_dir.glob(subdir_pattern):
-                for folder_type in ["clean", "stego"]:
-                    folder = matched_dir / folder_type
-                    if folder.exists():
-                        for ext in ['*.png', '*.bmp', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.tiff', '*.tif']:
-                            self.image_files.extend([(f, folder_type) for f in folder.glob(ext)])
-        print(f"[DATASET] Found {len(self.image_files)} images from {subdirs}")
+                # Add clean files
+                clean_folder = matched_dir / "clean"
+                if clean_folder.exists():
+                    for ext in ['*.png', '*.bmp', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.tiff', '*.tif']:
+                        self.image_files.extend([(f, "clean") for f in clean_folder.glob(ext)])
+                
+                # Add stego files only if they have a .json sidecar
+                stego_folder = matched_dir / "stego"
+                if stego_folder.exists():
+                    for ext in ['*.png', '*.bmp', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.tiff', '*.tif']:
+                        for img_file in stego_folder.glob(ext):
+                            if img_file.with_suffix(img_file.suffix + '.json').exists():
+                                self.image_files.append((img_file, "stego"))
+
+        print(f"[DATASET] Found {len(self.image_files)} images with valid metadata.")
 
     def __len__(self): return len(self.image_files)
 
-    def parse_label(self, filepath, folder_type):
-        if folder_type == "clean": return ALGO_TO_ID["clean"]
-        stem = filepath.stem.lower()
-        for algo, idx in ALGO_TO_ID.items():
-            if algo != "clean" and algo in stem: return idx
-        return ALGO_TO_ID["clean"]
+    def get_label_from_json(self, img_path):
+        json_path = img_path.with_suffix(img_path.suffix + '.json')
+        try:
+            with open(json_path, 'r') as f:
+                metadata = json.load(f)
+            technique = metadata['embedding']['technique']
+            
+            if technique == 'alpha': return ALGO_TO_ID['alpha']
+            elif technique == 'palette': return ALGO_TO_ID['palette']
+            elif technique == 'lsb.rgb': return ALGO_TO_ID['lsb']
+            elif technique == 'exif': return ALGO_TO_ID['exif']
+            elif technique == 'raw': return ALGO_TO_ID['eoi']
+            else: return None
+        except (FileNotFoundError, KeyError, json.JSONDecodeError):
+            return None
 
     def __getitem__(self, idx):
         img_path, folder_type = self.image_files[idx]
@@ -100,27 +121,52 @@ class StegoImageDataset(Dataset):
             exif_features = get_exif_features(img, img_path)
             eoi_features = torch.tensor([1.0 if get_eoi_payload_size(img_path) > 0 else 0.0], dtype=torch.float)
 
+            # Common transforms
+            resize_transform = transforms.Resize((224, 224), antialias=True)
+            tensor_transform = transforms.ToTensor()
+
+            # Initialize all tensors to zeros
+            rgb_tensor = torch.zeros(3, 224, 224)
+            alpha_tensor = torch.zeros(1, 224, 224)
             palette_tensor = torch.zeros(256, 3)
+            indices_tensor = torch.zeros(1, 224, 224)
+
             if img.mode == 'P':
-                palette = img.getpalette()
-                if palette:
-                    palette_padded = (palette + [0] * (768 - len(palette)))[:768]
+                # Extract palette
+                palette_data = img.getpalette()
+                if palette_data:
+                    palette_padded = (palette_data + [0] * (768 - len(palette_data)))[:768]
                     palette_array = np.array(palette_padded).reshape(256, 3) / 255.0
                     palette_tensor = torch.from_numpy(palette_array).float()
+                
+                # Extract indices, treat as a single-channel image
+                indices_img = Image.fromarray(np.array(img))
+                indices_resized_img = resize_transform(indices_img)
+                indices_tensor = tensor_transform(indices_resized_img) # This will normalize to [0,1]
 
-            if img.mode == 'RGBA':
-                rgb, alpha_channel = img.convert('RGB'), np.array(img)[:, :, 3] / 255.0
-                alpha = torch.from_numpy(alpha_channel).float().unsqueeze(0)
-            else:
-                rgb, alpha = img.convert('RGB'), torch.zeros(1, img.size[1], img.size[0])
+            elif img.mode == 'RGBA':
+                rgb_pil = img.convert('RGB')
+                rgb_tensor = tensor_transform(resize_transform(rgb_pil))
+                
+                # Extract alpha channel
+                alpha_np = np.array(img)[:, :, 3]
+                alpha_img = Image.fromarray(alpha_np)
+                alpha_resized_img = resize_transform(alpha_img)
+                alpha_tensor = tensor_transform(alpha_resized_img)
 
-            resize = transforms.Resize((224, 224), antialias=True)
-            rgb_tensor = transforms.ToTensor()(resize(rgb))
-            alpha_tensor = F.interpolate(alpha.unsqueeze(0), size=(224, 224), mode='bilinear', align_corners=False).squeeze(0)
+            else: # Grayscale, RGB, etc.
+                rgb_pil = img.convert('RGB')
+                rgb_tensor = tensor_transform(resize_transform(rgb_pil))
 
-            label = self.parse_label(img_path, folder_type)
+            if folder_type == 'stego':
+                label = self.get_label_from_json(img_path)
+                if label is None:
+                    print(f"WARNING: Could not get label from JSON for {img_path}. Skipping.")
+                    return None
+            else: # clean
+                label = ALGO_TO_ID['clean']
             
-            return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor, label
+            return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor, indices_tensor, label
         except Exception as e:
             print(f"ERROR loading {img_path}: {e}")
             return None
@@ -137,6 +183,19 @@ class LSBDetector(nn.Module):
     def forward(self, rgb):
         lsb = (rgb * 255).long() & 1
         return self.lsb_conv(lsb.float()).flatten(1)
+
+class PaletteIndexDetector(nn.Module):
+    def __init__(self, dim=32):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1)
+        )
+    def forward(self, indices):
+        # indices are normalized to [0,1]. We need to scale them back to [0, 255] to get LSB.
+        lsb = (indices * 255).long() & 1
+        return self.conv(lsb.float()).flatten(1)
 
 class AlphaDetector(nn.Module):
     def __init__(self, dim=32):
@@ -203,13 +262,14 @@ class UniversalStegoDetector(nn.Module):
         self.alpha = AlphaDetector(dim)
         self.meta = ExifEoiDetector(dim)
         self.palette = PaletteDetector(dim)
+        self.palette_index = PaletteIndexDetector(dim)
         self.rgb_base = nn.Sequential(
             nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
             nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
             nn.AdaptiveAvgPool2d(1)
         )
 
-        fusion_dim = dim + (dim + 1) + dim + dim + dim  # lsb, alpha (with marker), meta, rgb, palette
+        fusion_dim = dim + (dim + 1) + dim + dim + dim + dim # lsb, alpha, meta, rgb, palette, palette_index
         self.classifier = nn.Sequential(
             nn.Linear(fusion_dim, 256),
             nn.ReLU(), nn.Dropout(0.5),
@@ -218,20 +278,21 @@ class UniversalStegoDetector(nn.Module):
             nn.Linear(128, num_classes)
         )
 
-    def forward(self, rgb, alpha, exif, eoi, palette):
+    def forward(self, rgb, alpha, exif, eoi, palette, indices):
         f_lsb = self.lsb(rgb)
         f_alpha = self.alpha(alpha)
         f_meta = self.meta(exif, eoi)
         f_palette = self.palette(palette)
         f_rgb = self.rgb_base(rgb).flatten(1)
+        f_palette_index = self.palette_index(indices)
         
-        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette], dim=1)
+        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette, f_palette_index], dim=1)
         return self.classifier(features)
 
 # --- TRAINING & UTILS ---
 def collate_fn(batch):
     batch = list(filter(None, batch))
-    return default_collate(batch) if batch else (None,)*6
+    return default_collate(batch) if batch else (None,)*7
 
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.001, verbose=True, monitor='loss'):
@@ -271,7 +332,7 @@ def train_model(args):
 
     # Calculate class weights from training data
     class_counts = {i: 0 for i in range(NUM_CLASSES)}
-    for _, _, _, _, _, label in train_ds:
+    for _, _, _, _, _, _, label in train_ds:
         if label is not None:
             class_counts[label] += 1
     
@@ -303,11 +364,11 @@ def train_model(args):
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0
-        for rgb, alpha, exif, eoi, palette, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}"):
+        for rgb, alpha, exif, eoi, palette, indices, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}"):
             if rgb is None: continue
-            rgb, alpha, exif, eoi, palette, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), labels.to(device)
+            rgb, alpha, exif, eoi, palette, indices, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), indices.to(device), labels.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(rgb, alpha, exif, eoi, palette), labels)
+            loss = criterion(model(rgb, alpha, exif, eoi, palette, indices), labels)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -317,10 +378,10 @@ def train_model(args):
         class_correct = {i: 0 for i in range(NUM_CLASSES)}
         class_total = {i: 0 for i in range(NUM_CLASSES)}
         with torch.no_grad():
-            for rgb, alpha, exif, eoi, palette, labels in tqdm(val_loader, desc="Validating"):
+            for rgb, alpha, exif, eoi, palette, indices, labels in tqdm(val_loader, desc="Validating"):
                 if rgb is None: continue
-                rgb, alpha, exif, eoi, palette, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), labels.to(device)
-                outputs = model(rgb, alpha, exif, eoi, palette)
+                rgb, alpha, exif, eoi, palette, indices, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), indices.to(device), labels.to(device)
+                outputs = model(rgb, alpha, exif, eoi, palette, indices)
                 val_loss += criterion(outputs, labels).item()
                 
                 preds = outputs.argmax(1)

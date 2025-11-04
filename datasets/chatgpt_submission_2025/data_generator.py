@@ -286,6 +286,25 @@ def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable
                     save_jpeg_with_eoi_append(stego_img, stego, stego_img.info.get("eoi_append", b""))
                 else:
                     save_image(stego_img, stego)
+                
+                # --- Create JSON Sidecar ---
+                json_path = stego.with_suffix(stego.suffix + '.json')
+                embedding_data = {}
+                if algo == 'lsb':
+                    embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": "msb-first"}
+                elif algo == 'alpha':
+                    embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+                elif algo == 'palette':
+                    embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "msb-first"}
+                elif algo == 'exif':
+                    embedding_data = {"category": "metadata", "technique": "exif", "ai42": False}
+                elif algo == 'eoi':
+                    embedding_data = {"category": "eoi", "technique": "raw", "ai42": False}
+                
+                if embedding_data:
+                    sidecar_content = {"embedding": embedding_data}
+                    json_path.write_text(json.dumps(sidecar_content, indent=2))
+
             except Exception as e:
                 logging.warning(f"Failed to save stego {fname}: {e}")
                 clean.unlink(missing_ok=True)
@@ -302,8 +321,8 @@ def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable
 def validate_dataset() -> dict:
     logging.info("\n--- Validating dataset ---")
     result = {"valid": True, "errors": []}
-    clean_files = {f.name for f in CLEAN_DIR.glob("*") if f.is_file()}
-    stego_files = {f.name for f in STEGO_DIR.glob("*") if f.is_file()}
+    clean_files = {f.name for f in CLEAN_DIR.glob("*") if f.is_file() and not f.name.endswith('.json')}
+    stego_files = {f.name for f in STEGO_DIR.glob("*") if f.is_file() and not f.name.endswith('.json')}
 
     # Missing pairs
     missing_in_stego = clean_files - stego_files

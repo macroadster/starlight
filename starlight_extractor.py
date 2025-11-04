@@ -161,6 +161,44 @@ def extract_message_msb_first(bits, max_length=24576):
     return None, bits
 
 
+def extract_message_best_effort(bits, bit_order='msb-first'):
+    """
+    Decodes an entire bitstream and returns the longest valid UTF-8 prefix.
+    Does not rely on terminators or length prefixes.
+    """
+    bytes_data = []
+    if bit_order == 'lsb-first':
+        for i in range(0, len(bits), 8):
+            byte_str = bits[i:i+8]
+            if len(byte_str) == 8:
+                reversed_byte_str = byte_str[::-1]
+                bytes_data.append(int(reversed_byte_str, 2))
+    else: # msb-first
+        for i in range(0, len(bits), 8):
+            byte_str = bits[i:i+8]
+            if len(byte_str) == 8:
+                bytes_data.append(int(byte_str, 2))
+
+    if not bytes_data:
+        return None, bits
+
+    try:
+        # Try to decode the whole thing
+        message = bytes(bytes_data).decode('utf-8')
+        return message.strip(), ""
+    except UnicodeDecodeError as e:
+        # On failure, decode the valid part up to the error
+        valid_bytes = bytes_data[:e.start]
+        if not valid_bytes:
+            return None, bits # Return None if no valid prefix found
+        try:
+            message = bytes(valid_bytes).decode('utf-8')
+            return message.strip(), ""
+        except Exception:
+            # This fallback should ideally not be reached
+            return None, bits
+
+
 def extract_alpha(image_path):
     """
     Extract alpha channel steganography.
@@ -263,7 +301,7 @@ def extract_lsb(image_path, max_bits=1000000):
         if not bits:
             continue
         
-        # Try LSB-first extraction first (may have AI42)
+        # Attempt 1: LSB-first with AI42 (Alpha protocol)
         message, _ = extract_message_lsb_first(bits)
         if message and len(message) > 10:
             confidence = calculate_message_confidence(message)
@@ -271,8 +309,24 @@ def extract_lsb(image_path, max_bits=1000000):
                 best_message = message
                 best_confidence = confidence
         
-        # Try MSB-first extraction
+        # Attempt 2: MSB-first (marker-based, tries AI42, length, and null-term)
         message, _ = extract_message_msb_first(bits)
+        if message and len(message) > 10:
+            confidence = calculate_message_confidence(message)
+            if confidence > best_confidence:
+                best_message = message
+                best_confidence = confidence
+
+        # Attempt 3: Best effort LSB-first (no markers)
+        message, _ = extract_message_best_effort(bits, bit_order='lsb-first')
+        if message and len(message) > 10:
+            confidence = calculate_message_confidence(message)
+            if confidence > best_confidence:
+                best_message = message
+                best_confidence = confidence
+
+        # Attempt 4: Best effort MSB-first (no markers)
+        message, _ = extract_message_best_effort(bits, bit_order='msb-first')
         if message and len(message) > 10:
             confidence = calculate_message_confidence(message)
             if confidence > best_confidence:
