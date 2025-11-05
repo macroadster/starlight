@@ -198,15 +198,16 @@ class UniversalStegoDetector(nn.Module):
         )
 
         fusion_dim = dim + (dim + 1) + dim + dim + dim + dim # lsb, alpha, meta, rgb, palette, palette_index
-        self.classifier = nn.Sequential(
+        
+        # Split the classifier into a feature fusion part and a final classification layer
+        self.feature_fusion = nn.Sequential(
             nn.Linear(fusion_dim, 256),
             nn.ReLU(), nn.Dropout(0.5),
             nn.Linear(256, 128),
-            nn.ReLU(), nn.Dropout(0.5),
-            nn.Linear(128, num_classes)
         )
+        self.classifier = nn.Linear(128, num_classes)
 
-    def forward(self, rgb, alpha, exif, eoi, palette, indices):
+    def forward_features(self, rgb, alpha, exif, eoi, palette, indices):
         f_lsb = self.lsb(rgb)
         f_alpha = self.alpha(alpha)
         f_meta = self.meta(exif, eoi)
@@ -214,7 +215,13 @@ class UniversalStegoDetector(nn.Module):
         f_rgb = self.rgb_base(rgb).flatten(1)
         f_palette_index = self.palette_index(indices)
         
-        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette, f_palette_index], dim=1)
+        combined_features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette, f_palette_index], dim=1)
+        
+        # Return the final feature vector before classification
+        return self.feature_fusion(combined_features)
+
+    def forward(self, rgb, alpha, exif, eoi, palette, indices):
+        features = self.forward_features(rgb, alpha, exif, eoi, palette, indices)
         return self.classifier(features)
 
 # --- IMAGE PROCESSING ---
@@ -270,57 +277,78 @@ def preprocess_image(img_path):
 
 # --- SCANNER ---
 class StegoScanner:
-    def __init__(self, model_path, confidence_threshold=0.5):
-        self.model = UniversalStegoDetector().to(device)
-        self.model.load_state_dict(torch.load(model_path, map_location=device))
-        self.model.eval()
-        self.confidence_threshold = confidence_threshold
+    def __init__(self, model_path, margin=2.0, clean_ref_path=None):
+        self.feature_extractor = UniversalStegoDetector().to(device)
+        self.feature_extractor.load_state_dict(torch.load(model_path, map_location=device))
+        self.feature_extractor.eval()
+        self.margin = margin
         
+        # Establish a clean reference feature vector
+        self.clean_reference_features = self._get_clean_reference_features(clean_ref_path)
+        
+    def _get_clean_reference_features(self, clean_ref_path):
+        if clean_ref_path:
+            # Use a specific clean image if provided
+            print(f"[INIT] Using {clean_ref_path} as clean reference.")
+            preprocessed = preprocess_image(clean_ref_path)
+            if preprocessed is None:
+                raise ValueError(f"Failed to preprocess clean reference image: {clean_ref_path}")
+            tensors = tuple(t.unsqueeze(0).to(device) for t in preprocessed)
+            with torch.no_grad():
+                return self.feature_extractor.forward_features(*tensors)
+        else:
+            # Fallback: Use a zero tensor as a generic 'clean' baseline
+            # This is a placeholder and might not be optimal. A real clean image is preferred.
+            print("[INIT] No clean reference path provided. Using zero tensor as clean baseline.")
+            dummy_rgb = torch.zeros(1, 3, 224, 224).to(device)
+            dummy_alpha = torch.zeros(1, 1, 224, 224).to(device)
+            dummy_exif = torch.zeros(1, 2).to(device)
+            dummy_eoi = torch.zeros(1, 1).to(device)
+            dummy_palette = torch.zeros(1, 256, 3).to(device)
+            dummy_indices = torch.zeros(1, 1, 224, 224).to(device)
+            with torch.no_grad():
+                return self.feature_extractor.forward_features(dummy_rgb, dummy_alpha, dummy_exif, dummy_eoi, dummy_palette, dummy_indices)
+
     def detect(self, img_path):
-        """Detect steganography in an image."""
+        """Detect steganography in an image using distance to clean reference."""
         preprocessed = preprocess_image(img_path)
         if preprocessed is None:
             return None
 
-        rgb, alpha, exif, eoi, palette, indices = preprocessed
+        tensors = tuple(t.unsqueeze(0).to(device) for t in preprocessed)
 
         with torch.no_grad():
-            rgb = rgb.unsqueeze(0).to(device)
-            alpha = alpha.unsqueeze(0).to(device)
-            exif = exif.unsqueeze(0).to(device)
-            eoi = eoi.unsqueeze(0).to(device)
-            palette = palette.unsqueeze(0).to(device)
-            indices = indices.unsqueeze(0).to(device)
+            img_features = self.feature_extractor.forward_features(*tensors)
+            distance = F.pairwise_distance(img_features, self.clean_reference_features)
+            distance_val = distance.item()
 
-            outputs = self.model(rgb, alpha, exif, eoi, palette, indices)
-            probs = F.softmax(outputs, dim=1)
-            confidence, predicted = torch.max(probs, 1)
-
-            predicted_class = ID_TO_ALGO[int(predicted.item())]
-            confidence_score = confidence.item()
-
-            # Get top 3 predictions
-            top3_probs, top3_indices = torch.topk(probs, 3, dim=1)
-            top3_predictions = [
-                (ID_TO_ALGO[int(idx.item())], prob.item())
-                for idx, prob in zip(top3_indices[0], top3_probs[0])
-            ]
+            # Classify based on distance to clean reference
+            is_stego = distance_val > self.margin
+            predicted_class = 'stego' if is_stego else 'clean'
+            
+            # Confidence can be derived from how far it is from the margin
+            # For stego: (distance - margin) / margin
+            # For clean: (margin - distance) / margin
+            # Clamp to [0, 1]
+            if is_stego:
+                confidence = min(1.0, max(0.0, (distance_val - self.margin) / self.margin))
+            else:
+                confidence = min(1.0, max(0.0, (self.margin - distance_val) / self.margin))
 
             return {
                 'predicted_class': predicted_class,
-                'confidence': confidence_score,
-                'top3_predictions': top3_predictions,
-                'is_stego': predicted_class != 'clean' and confidence_score > self.confidence_threshold
+                'confidence': confidence,
+                'distance_to_clean': distance_val,
+                'is_stego': is_stego
             }
     
     def extract(self, img_path, predicted_class):
-        """Extract hidden message based on predicted class."""
+        """Extract hidden message if detected as stego. Tries all extractors."""
         if predicted_class == 'clean':
             return None
         
-        # Convert Path to string for extraction functions
+        # If detected as stego, try all extractors as we don't know the specific type
         img_path_str = str(img_path)
-        
         extraction_map = {
             'alpha': lambda: extract_alpha(img_path_str),
             'palette': lambda: extract_palette(img_path_str),
@@ -329,14 +357,18 @@ class StegoScanner:
             'eoi': lambda: extract_eoi(img_path_str)
         }
         
-        extractor = extraction_map.get(predicted_class)
-        if extractor:
+        extracted_messages = {}
+        for algo, extractor_func in extraction_map.items():
             try:
-                message, _ = extractor()
-                return message
-            except Exception as e:
-                print(f"\n  [ERROR] Extraction failed for {Path(img_path_str).name}: {e}")
-                return None
+                message, _ = extractor_func()
+                if message:
+                    extracted_messages[algo] = message
+            except Exception:
+                pass # Ignore extraction errors for other types
+        
+        if extracted_messages:
+            # Return the first non-empty message found, or a summary
+            return extracted_messages
         return None
     
     def scan_file(self, img_path, extract_messages=True):
@@ -357,7 +389,7 @@ class StegoScanner:
         
         if extract_messages and detection['is_stego']:
             message = self.extract(img_path, detection['predicted_class'])
-            result['extracted_message'] = message if message else "No message extracted"
+            result['extracted_message'] = message if message else {}
         
         return result
     
@@ -395,10 +427,14 @@ class StegoScanner:
                 print(f"\n[FOUND] {img_path.name}")
                 print(f"  Path: {img_path}")
                 print(f"  Type: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
-                if extract_messages and result.get('extracted_message'):
-                    msg = result['extracted_message']
+        if extract_messages and result.get('extracted_message'):
+            msg_dict = result['extracted_message']
+            if msg_dict:
+                for algo, msg in msg_dict.items():
                     preview = msg[:100] + '...' if len(msg) > 100 else msg
-                    print(f"  Message: {preview}")
+                    print(f"  Message ({algo}): {preview}")
+            else:
+                print(f"  Message: No message extracted")
         
         # Summary
         print(f"\n{'='*60}")
@@ -432,8 +468,10 @@ def main():
     parser = argparse.ArgumentParser(description="Steganography Scanner and Extractor")
     parser.add_argument('target', help='Image file or directory to scan')
     parser.add_argument('--model', default="models/starlight.pth", help='Path to trained model (.pth file)')
-    parser.add_argument('--threshold', type=float, default=0.5, 
-                       help='Confidence threshold for detection (default: 0.5)')
+    parser.add_argument('--margin', type=float, default=0.8,
+                       help='Distance threshold for detection (from training log, best at 0.8)')
+    parser.add_argument('--clean_ref', type=str, default=None,
+                       help='Path to a known clean image to use as reference for detection. Defaults to a zero tensor if not provided.')
     parser.add_argument('--no-extract', action='store_true',
                        help='Only detect, do not extract messages')
     parser.add_argument('--recursive', action='store_true', default=True,
@@ -456,9 +494,9 @@ def main():
     
     print(f"[INIT] Loading model from {args.model}")
     print(f"[INIT] Device: {device}")
-    print(f"[INIT] Confidence threshold: {args.threshold}")
+    print(f"[INIT] Detection margin: {args.margin}")
     
-    scanner = StegoScanner(args.model, args.threshold)
+    scanner = StegoScanner(args.model, margin=args.margin, clean_ref_path=args.clean_ref)
     
     target_path = Path(args.target)
     
@@ -470,15 +508,14 @@ def main():
         print(f"RESULTS")
         print(f"{'='*60}")
         print(f"File: {result['file']}")
-        print(f"Predicted: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
+        print(f"Predicted: {result['predicted_class']} (confidence: {result['confidence']:.2%}) (Distance: {result['distance_to_clean']:.2f})")
         print(f"Is Stego: {result['is_stego']}")
-        print(f"\nTop 3 Predictions:")
-        for pred_class, prob in result['top3_predictions']:
-            print(f"  {pred_class}: {prob:.2%}")
         
-        if not args.no_extract and result.get('extracted_message'):
-            print(f"\nExtracted Message:")
-            print(f"{result['extracted_message']}")
+        if not args.no_extract and result.get('extracted_message') and isinstance(result['extracted_message'], dict):
+            print(f"\nExtracted Messages (attempted all types):")
+            for algo, msg in result['extracted_message'].items():
+                preview = msg[:100] + '...' if len(msg) > 100 else msg
+                print(f"  - {algo}: {preview}")
         
         if args.output:
             with open(args.output, 'w') as f:

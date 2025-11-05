@@ -299,7 +299,10 @@ def generate_images(num_images=5, formats=['JPEG', 'PNG'], payload_size=0.4):
                         embedding_data = {"category": "metadata", "technique": "exif", "ai42": False}
                     
                     if embedding_data:
-                        sidecar_content = {"embedding": embedding_data}
+                        sidecar_content = {
+                            "embedding": embedding_data,
+                            "clean_file": os.path.basename(clean_path)
+                        }
                         with open(json_path, 'w') as f:
                             json.dump(sidecar_content, f, indent=2)
                 verify_images(seed_file, stego_paths, seed_payload, format, payload_size)

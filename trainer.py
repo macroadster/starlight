@@ -22,6 +22,7 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from torchvision import transforms
+import random
 
 try:
     import piexif
@@ -297,15 +298,16 @@ class UniversalStegoDetector(nn.Module):
         )
 
         fusion_dim = dim + (dim + 1) + dim + dim + dim + dim # lsb, alpha, meta, rgb, palette, palette_index
-        self.classifier = nn.Sequential(
+        
+        # Split the classifier into a feature fusion part and a final classification layer
+        self.feature_fusion = nn.Sequential(
             nn.Linear(fusion_dim, 256),
             nn.ReLU(), nn.Dropout(0.5),
             nn.Linear(256, 128),
-            nn.ReLU(), nn.Dropout(0.5),
-            nn.Linear(128, num_classes)
         )
+        self.classifier = nn.Linear(128, num_classes)
 
-    def forward(self, rgb, alpha, exif, eoi, palette, indices):
+    def forward_features(self, rgb, alpha, exif, eoi, palette, indices):
         f_lsb = self.lsb(rgb)
         f_alpha = self.alpha(alpha)
         f_meta = self.meta(exif, eoi)
@@ -313,13 +315,160 @@ class UniversalStegoDetector(nn.Module):
         f_rgb = self.rgb_base(rgb).flatten(1)
         f_palette_index = self.palette_index(indices)
         
-        features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette, f_palette_index], dim=1)
+        combined_features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette, f_palette_index], dim=1)
+        
+        # Return the final feature vector before classification
+        return self.feature_fusion(combined_features)
+
+    def forward(self, rgb, alpha, exif, eoi, palette, indices):
+        features = self.forward_features(rgb, alpha, exif, eoi, palette, indices)
         return self.classifier(features)
+
+
+class ContrastiveLoss(nn.Module):
+    """Contrastive loss function."""
+    def __init__(self, margin=2.0):
+        super(ContrastiveLoss, self).__init__()
+        self.margin = margin
+
+    def forward(self, distance, label):
+        # label=1 for different (stego), label=0 for same (clean)
+        loss_different = label * torch.pow(torch.clamp(self.margin - distance, min=0.0), 2)
+        loss_same = (1 - label) * torch.pow(distance, 2)
+        return torch.mean(loss_different + loss_same)
+
+
+class PairedStegoDataset(Dataset):
+    def __init__(self, base_dir, subdirs=None, transform=None):
+        self.base_dir = Path(base_dir)
+        self.transform = transform
+        self.stego_pairs = []
+        self.clean_files = []
+
+        if subdirs is None: subdirs = ["*"]
+        print(f"[DATASET] Searching for pairs in {subdirs}...")
+
+        for subdir_pattern in subdirs:
+            for matched_dir in self.base_dir.glob(subdir_pattern):
+                clean_folder = matched_dir / "clean"
+                stego_folder = matched_dir / "stego"
+
+                if not (clean_folder.exists() and stego_folder.exists()):
+                    continue
+
+                # Add all clean files to a list for negative pairing
+                for ext in ['*.png', '*.bmp', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.tiff', '*.tif']:
+                    self.clean_files.extend(clean_folder.glob(ext))
+
+                # Find pairs by reading JSON sidecars
+                for stego_file in stego_folder.glob("*.json"):
+                    try:
+                        with open(stego_file, 'r') as f:
+                            metadata = json.load(f)
+                        
+                        clean_filename = metadata.get('clean_file')
+                        if not clean_filename:
+                            continue
+
+                        # The actual image file has the same name as the json file, minus the .json extension
+                        actual_stego_file = stego_file.with_suffix('')
+                        clean_file_path = clean_folder / clean_filename
+                        
+                        if actual_stego_file.exists() and clean_file_path.exists():
+                            self.stego_pairs.append({'stego': actual_stego_file, 'clean': clean_file_path})
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+        
+        print(f"[DATASET] Found {len(self.stego_pairs)} stego/clean pairs via JSON metadata.")
+        print(f"[DATASET] Found {len(self.clean_files)} total clean files for negative pairing.")
+
+    def __len__(self):
+        # Double the length to account for 50% positive and 50% negative pairs
+        return len(self.stego_pairs) * 2
+
+    def preprocess_image(self, img_path):
+        img = Image.open(img_path)
+        exif_features = get_exif_features(img, img_path)
+        eoi_features = torch.tensor([1.0 if get_eoi_payload_size(img_path) > 0 else 0.0], dtype=torch.float)
+
+        resize_transform = transforms.Resize((224, 224), antialias=True)
+        tensor_transform = transforms.ToTensor()
+
+        rgb_tensor = torch.zeros(3, 224, 224)
+        alpha_tensor = torch.zeros(1, 224, 224)
+        palette_tensor = torch.zeros(256, 3)
+        indices_tensor = torch.zeros(1, 224, 224)
+
+        if img.mode == 'P':
+            palette_data = img.getpalette()
+            if palette_data:
+                palette_padded = (palette_data + [0] * (768 - len(palette_data)))[:768]
+                palette_array = np.array(palette_padded).reshape(256, 3) / 255.0
+                palette_tensor = torch.from_numpy(palette_array).float()
+            indices_img = Image.fromarray(np.array(img))
+            indices_resized_img = resize_transform(indices_img)
+            indices_tensor = tensor_transform(indices_resized_img)
+        elif img.mode == 'RGBA':
+            rgb_pil = img.convert('RGB')
+            rgb_tensor = tensor_transform(resize_transform(rgb_pil))
+            alpha_np = np.array(img)[:, :, 3]
+            alpha_img = Image.fromarray(alpha_np)
+            alpha_resized_img = resize_transform(alpha_img)
+            alpha_tensor = tensor_transform(alpha_resized_img)
+        else:
+            rgb_pil = img.convert('RGB')
+            rgb_tensor = tensor_transform(resize_transform(rgb_pil))
+        
+        return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor, indices_tensor
+
+    def __getitem__(self, idx):
+        # Use modulo to allow for the doubled length
+        actual_idx = idx % len(self.stego_pairs)
+
+        # 50% chance to return a positive pair (clean/stego)
+        if idx < len(self.stego_pairs):
+            pair = self.stego_pairs[actual_idx]
+            img1_path, img2_path = pair['clean'], pair['stego']
+            label = torch.tensor(1.0, dtype=torch.float32)
+        # 50% chance to return a negative pair (clean/clean)
+        else:
+            img1_path = self.clean_files[actual_idx % len(self.clean_files)]
+            img2_path = random.choice(self.clean_files)
+            label = torch.tensor(0.0, dtype=torch.float32)
+        
+        try:
+            tensors1 = self.preprocess_image(img1_path)
+            tensors2 = self.preprocess_image(img2_path)
+            return tensors1, tensors2, label
+        except Exception as e:
+            print(f"ERROR loading pair for {img1_path} or {img2_path}: {e}")
+            return None, None, None
+
+
+class SiameseStegoNet(nn.Module):
+    def __init__(self, base_model):
+        super(SiameseStegoNet, self).__init__()
+        self.base_model = base_model
+
+    def forward_one(self, tensors):
+        return self.base_model.forward_features(*tensors)
+
+    def forward(self, tensors1, tensors2):
+        features1 = self.forward_one(tensors1)
+        features2 = self.forward_one(tensors2)
+        
+        distance = F.pairwise_distance(features1, features2)
+        return distance
 
 # --- TRAINING & UTILS ---
 def collate_fn(batch):
     batch = list(filter(None, batch))
     return default_collate(batch) if batch else (None,)*7
+
+def collate_pairs(batch):
+    batch = list(filter(lambda x: x[0] is not None, batch))
+    if not batch: return None, None, None
+    return default_collate(batch)
 
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0.001, verbose=True, monitor='loss'):
@@ -352,37 +501,31 @@ class EarlyStopping:
 def train_model(args):
     train_subdirs = args.train_subdirs.split(',') if args.train_subdirs else ["sample"]
     val_subdirs = args.val_subdirs.split(',') if args.val_subdirs else ["val"]
-    train_ds = StegoImageDataset(args.datasets_dir, subdirs=train_subdirs)
-    val_ds = StegoImageDataset(args.datasets_dir, subdirs=val_subdirs)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, collate_fn=collate_fn, pin_memory=False)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn, pin_memory=False)
-
-    # Calculate class weights from training data
-    class_counts = {i: 0 for i in range(NUM_CLASSES)}
-    for _, _, _, _, _, _, label in train_ds:
-        if label is not None:
-            class_counts[label] += 1
     
-    total_samples = sum(class_counts.values())
-    class_weights = torch.zeros(NUM_CLASSES)
-    for i in range(NUM_CLASSES):
-        if class_counts[i] > 0:
-            class_weights[i] = total_samples / (NUM_CLASSES * class_counts[i])
-        else:
-            class_weights[i] = 1.0
-    #class_weights[ALGO_TO_ID["lsb"]] = class_weights[ALGO_TO_ID["lsb"]] * 2.0  # Triple the weight for LSB class 
-    id_to_algo = {v: k for k, v in ALGO_TO_ID.items()}
-    weights_dict = {id_to_algo[i]: f"{class_weights[i]:.4f}" for i in range(NUM_CLASSES)}
-    print(f"[CLASS WEIGHTS] {weights_dict}")
-    class_weights = class_weights.to(device)
+    # Use the new PairedStegoDataset
+    train_ds = PairedStegoDataset(args.datasets_dir, subdirs=train_subdirs)
+    val_ds = PairedStegoDataset(args.datasets_dir, subdirs=val_subdirs)
 
-    model = UniversalStegoDetector().to(device)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, collate_fn=collate_pairs, pin_memory=False)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, collate_fn=collate_pairs, pin_memory=False)
+
+    # Initialize the base model and the new Siamese wrapper
+    base_model = UniversalStegoDetector().to(device)
+    model = SiameseStegoNet(base_model).to(device)
+
     if args.resume:
-        model.load_state_dict(torch.load(args.model))
-        print(f"[RESUME] Loaded model from {args.model}")
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
+        # Note: Resuming training for a siamese network might require saving/loading the whole model
+        # or ensuring the base_model state_dict is loaded correctly.
+        try:
+            model.load_state_dict(torch.load(args.model))
+            print(f"[RESUME] Loaded Siamese model from {args.model}")
+        except RuntimeError:
+            base_model.load_state_dict(torch.load(args.model))
+            print(f"[RESUME] Loaded base model weights into Siamese network from {args.model}")
+
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = ContrastiveLoss(margin=args.margin)
     early_stopper = EarlyStopping(patience=args.patience, monitor='acc')
     
     model_path = Path(args.model)
@@ -391,51 +534,69 @@ def train_model(args):
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0
-        for rgb, alpha, exif, eoi, palette, indices, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}"):
-            if rgb is None: continue
-            rgb, alpha, exif, eoi, palette, indices, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), indices.to(device), labels.to(device)
+        for tensors1, tensors2, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}"):
+            if tensors1 is None: continue
+            
+            # Move all tensors in the tuples to the device
+            tensors1 = tuple(t.to(device) for t in tensors1)
+            tensors2 = tuple(t.to(device) for t in tensors2)
+            labels = labels.to(device)
+
             optimizer.zero_grad()
-            loss = criterion(model(rgb, alpha, exif, eoi, palette, indices), labels)
+            distances = model(tensors1, tensors2)
+            loss = criterion(distances, labels)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
 
         model.eval()
         val_loss, correct, total = 0, 0, 0
-        class_correct = {i: 0 for i in range(NUM_CLASSES)}
-        class_total = {i: 0 for i in range(NUM_CLASSES)}
+        all_distances = []
+        all_labels = []
         with torch.no_grad():
-            for rgb, alpha, exif, eoi, palette, indices, labels in tqdm(val_loader, desc="Validating"):
-                if rgb is None: continue
-                rgb, alpha, exif, eoi, palette, indices, labels = rgb.to(device), alpha.to(device), exif.to(device), eoi.to(device), palette.to(device), indices.to(device), labels.to(device)
-                outputs = model(rgb, alpha, exif, eoi, palette, indices)
-                val_loss += criterion(outputs, labels).item()
+            for tensors1, tensors2, labels in tqdm(val_loader, desc="Validating"):
+                if tensors1 is None: continue
+                tensors1 = tuple(t.to(device) for t in tensors1)
+                tensors2 = tuple(t.to(device) for t in tensors2)
+                labels = labels.to(device)
+
+                distances = model(tensors1, tensors2)
+                val_loss += criterion(distances, labels).item()
                 
-                preds = outputs.argmax(1)
-                correct += (preds == labels).sum().item()
-                total += labels.size(0)
+                all_distances.extend(distances.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
 
-                for i in range(len(labels)):
-                    label = labels[i].item()
-                    pred = preds[i].item()
-                    if label == pred:
-                        class_correct[label] += 1
-                    class_total[label] += 1
-        
+        # Find the best threshold for accuracy on the validation set
+        best_acc = 0
+        best_thresh = 0
+        for thresh in np.arange(0.1, args.margin, 0.05):
+            preds = (np.array(all_distances) < thresh).astype(float)
+            # Note: In our setup, label=1 is different, distance should be > thresh
+            # So prediction is correct if (dist > thresh and label == 1) or (dist < thresh and label == 0)
+            # Let's redefine prediction: 1 for different (stego), 0 for same (clean)
+            preds = (np.array(all_distances) > thresh).astype(float)
+            acc = np.mean(preds == np.array(all_labels)) * 100
+            if acc > best_acc:
+                best_acc = acc
+                best_thresh = thresh
+
         val_loss /= len(val_loader)
-        val_acc = correct / total if total > 0 else 0
-        print(f"Epoch {epoch+1} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+        print(f"Epoch {epoch+1} | Val Loss: {val_loss:.4f} | Val Acc: {best_acc:.2f}% (at threshold {best_thresh:.2f})")
 
-        print("  Per-algorithm accuracy:")
-        for class_id, count in class_total.items():
-            if count > 0:
-                accuracy = 100 * class_correct[class_id] / count
-                print(f"    - {id_to_algo[class_id]}: {accuracy:.2f}% ({class_correct[class_id]}/{count})")
+        # Detailed accuracy for same vs different pairs
+        labels_arr = np.array(all_labels)
+        preds_arr = (np.array(all_distances) > best_thresh).astype(float)
         
-        improved = early_stopper(val_acc, model)
+        same_acc = np.mean(preds_arr[labels_arr == 0] == labels_arr[labels_arr == 0]) * 100 if (labels_arr == 0).any() else -1
+        diff_acc = np.mean(preds_arr[labels_arr == 1] == labels_arr[labels_arr == 1]) * 100 if (labels_arr == 1).any() else -1
+        print(f"  Accuracy on CLEAN pairs: {same_acc:.2f}%")
+        print(f"  Accuracy on STEGO pairs: {diff_acc:.2f}%")
+
+        improved = early_stopper(best_acc, model)
         if improved:
-            torch.save(model.state_dict(), str(model_path))
-            print(f"  [SAVED] Model improved! Saved to {model_path}")
+            # Save the base_model's weights, as that's what the scanner will use.
+            torch.save(model.base_model.state_dict(), str(model_path))
+            print(f"  [SAVED] Model improved! Base model weights saved to {model_path}")
 
         scheduler.step()
 
@@ -457,9 +618,10 @@ if __name__ == "__main__":
     parser.add_argument("--datasets_dir", type=str, default="datasets")
     parser.add_argument("--model", default="models/starlight.pth", help="Path to save/load the model")
     parser.add_argument("--epochs", type=int, default=40)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--patience", type=int, default=7, help="Early stopping patience")
+    parser.add_argument('--patience', type=int, default=7, help='Patience for early stopping')
+    parser.add_argument('--margin', type=float, default=2.0, help='Margin for Contrastive Loss')
     parser.add_argument("--resume", action="store_true", help="Resume training from the model path")
     parser.add_argument("--train_subdirs", type=str, default="sample_submission_2025", help="Comma-separated list of training subdir patterns")
     parser.add_argument("--val_subdirs", type=str, default="val", help="Comma-separated list of validation subdir patterns")

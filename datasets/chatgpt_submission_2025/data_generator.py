@@ -302,7 +302,10 @@ def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable
                     embedding_data = {"category": "eoi", "technique": "raw", "ai42": False}
                 
                 if embedding_data:
-                    sidecar_content = {"embedding": embedding_data}
+                    sidecar_content = {
+                        "embedding": embedding_data,
+                        "clean_file": clean.name
+                    }
                     json_path.write_text(json.dumps(sidecar_content, indent=2))
 
             except Exception as e:

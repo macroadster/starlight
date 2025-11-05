@@ -384,7 +384,10 @@ def main():
                 embedding_data = {"category": "eoi", "technique": "raw", "ai42": False}
 
             if embedding_data:
-                sidecar_content = {"embedding": embedding_data}
+                sidecar_content = {
+                    "embedding": embedding_data,
+                    "clean_file": clean_path.name
+                }
                 with open(json_path, 'w') as f:
                     json.dump(sidecar_content, f, indent=2)
 

@@ -439,7 +439,10 @@ class ClaudeStegGenerator:
                         embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "lsb-first"}
                     
                     if embedding_data:
-                        sidecar_content = {"embedding": embedding_data}
+                        sidecar_content = {
+                            "embedding": embedding_data,
+                            "clean_file": clean_path.name
+                        }
                         with open(json_path, 'w') as f:
                             json.dump(sidecar_content, f, indent=2)
                     
