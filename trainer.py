@@ -175,14 +175,41 @@ class StegoImageDataset(Dataset):
 class LSBDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        self.lsb_conv = nn.Sequential(
-            nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
-            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+        
+        # Define a fixed high-pass filter kernel (from SRM)
+        srm_kernel = [[-1, 2, -2, 2, -1],
+                      [2, -6, 8, -6, 2],
+                      [-2, 8, -12, 8, -2],
+                      [2, -6, 8, -6, 2],
+                      [-1, 2, -2, 2, -1]]
+        srm_kernel = torch.tensor(srm_kernel, dtype=torch.float32) / 12.0
+        srm_kernel = srm_kernel.view(1, 1, 5, 5)
+        
+        # Create a non-trainable conv layer to apply this filter to each RGB channel
+        self.srm_filter = nn.Conv2d(3, 3, kernel_size=5, padding=2, bias=False, groups=3)
+        self.srm_filter.weight.data = torch.cat([srm_kernel] * 3, dim=0)
+        self.srm_filter.weight.requires_grad = False
+
+        # The rest of the network is trainable and processes the noise residuals
+        self.trainable_conv = nn.Sequential(
+            nn.Conv2d(3, dim, 3, 1, 1), # Takes the 3-channel residual as input
+            nn.BatchNorm2d(dim), 
+            nn.Tanh(),
+            nn.Conv2d(dim, dim, 3, 1, 1), 
+            nn.BatchNorm2d(dim), 
+            nn.ReLU(),
             nn.AdaptiveAvgPool2d(1)
         )
+
     def forward(self, rgb):
-        lsb = (rgb * 255).long() & 1
-        return self.lsb_conv(lsb.float()).flatten(1)
+        # De-normalize the image tensor from [0, 1] to [0, 255] before filtering
+        rgb_255 = rgb * 255.0
+
+        # Pass the image through the fixed high-pass filter to get noise residuals
+        residuals = self.srm_filter(rgb_255)
+        
+        # Pass residuals to the trainable part of the network
+        return self.trainable_conv(residuals).flatten(1)
 
 class PaletteIndexDetector(nn.Module):
     def __init__(self, dim=32):

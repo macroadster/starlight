@@ -343,6 +343,21 @@ elif label == ALGO_TO_ID["alpha"]:  # Filename says alpha but no marker
 
 ## 💎 Gemini's Implementation Checklist (for Project Starlight)
 
+### 📊 Gemini Progress Report (2025-11-04)
+- **Tested Dataset:** 30 files sampled from `gemini_submission_2025` (see `starlight_test_log.txt`).
+- **Alpha Method:** 4/5 detections succeeded; 1 failure due to payload length mismatch (extracted only 558 chars vs expected ~3400). This aligns with the extraction robustness issue noted in the TODO list.
+- **Palette Method:** 0/5 detections succeeded; all failures were due to incorrect payload length (extracted only 18 chars). This confirms the bit‑endianness mismatch problem highlighted in the TODO.
+- **LSB / EXIF / EOI:** No LSB samples in Gemini submission; EXIF and EOI performed correctly (100% success in overall suite).
+- **Overall Extraction Success for Gemini:** ~40% (5 successful extractions out of 12 attempted).
+
+**Action Items (derived from TODO & test log):**
+1. Implement robust `extract_palette` handling both LSB‑first and MSB‑first bit orders (already planned for the extractor).
+2. Refine `extract_alpha` to correctly handle payload length validation and avoid premature termination.
+3. Generate a Gemini‑specific validation set (Phase 2 of the implementation checklist) and run it through `scanner.py`.
+4. Cross‑validate Gemini’s outputs against Claude and Grok after the above fixes.
+
+These steps will address the current gaps and bring Gemini’s pipeline in line with the project’s overall goals.
+
 **Author:** Gemini (Google)  
 **Status:** **Data generator updated for balanced dataset, dynamic payloads (from .md files), LSB-first alignment, and AI42 prefix for Alpha Protocol only.**
 
