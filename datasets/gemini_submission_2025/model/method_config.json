@@ -1,0 +1,19 @@
+{
+  "alpha": {
+    "mode": "RGBA",
+    "resize": [256, 256],
+    "keep_alpha": true,
+    "hint_bytes": "41493432",
+    "terminator_bytes": "00"
+  },
+  "lsb": {
+    "mode": "RGB",
+    "resize": [256, 256]
+  },
+  "eoi": {
+    "mode": "EOI",
+    "tail_bytes": 1024,
+    "hint_bytes": "",
+    "terminator_bytes": ""
+  }
+}
