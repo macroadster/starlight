@@ -1,79 +1,79 @@
 {
   "validation_summary": {
     "total_images_tested": 10,
-    "average_probability": 0.26318690158160124,
+    "average_probability": -0.038638608530163765,
     "positive_predictions": 0
   },
   "detailed_results": [
     {
       "label": "Clean PNG",
-      "path": "clean/seed2_lsb_003.png",
-      "probability": 0.2630153759084922,
+      "path": "clean/AGENTS_lsb_017.png",
+      "probability": -0.03906171768903732,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/README_lsb_003.png",
-      "probability": 0.2630153759084922,
+      "path": "clean/seed3_lsb_022.png",
+      "probability": -0.03761766478419304,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/seed1_lsb_004.png",
-      "probability": 0.2633794678224296,
+      "path": "clean/plan_lsb_023.png",
+      "probability": -0.04004307836294174,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/sample_seed_lsb_003.png",
-      "probability": 0.2630153759084922,
+      "path": "clean/seed4_lsb_026.png",
+      "probability": -0.03716372326016426,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/seed4_lsb_003.png",
-      "probability": 0.2630153759084922,
+      "path": "clean/AGENTS_lsb_014.png",
+      "probability": -0.03818691149353981,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/README_lsb_004.png",
-      "probability": 0.2633794678224296,
+      "path": "clean/AGENTS_lsb_019.png",
+      "probability": -0.04026498645544052,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/README_lsb_000.png",
-      "probability": 0.26350891236010016,
+      "path": "clean/AGENTS_lsb_023.png",
+      "probability": -0.04004307836294174,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/seed3_lsb_000.png",
-      "probability": 0.26350891236010016,
+      "path": "clean/seed1_lsb_006.png",
+      "probability": -0.04032088443636894,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/seed3_lsb_003.png",
-      "probability": 0.2630153759084922,
+      "path": "clean/plan_lsb_009.png",
+      "probability": -0.038514163345098495,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     },
     {
       "label": "Clean PNG",
-      "path": "clean/seed1_lsb_003.png",
-      "probability": 0.2630153759084922,
+      "path": "clean/seed3_lsb_028.png",
+      "probability": -0.035169877111911774,
       "predicted": false,
-      "type": "lsb"
+      "type": "none"
     }
   ]
 }

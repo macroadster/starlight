@@ -137,8 +137,10 @@ class StarlightModel:
                     outputs = self.detector.run(None, {self.input_name: input_data})
                     prob = float(outputs[0][0])
                     return {
-                        "method": method,
+                        "image_path": img_path,
                         "stego_probability": prob,
+                        "task": self.task,
+                        "method": method,
                         "predicted": prob > 0.5
                     }
                 except Exception:
@@ -146,8 +148,10 @@ class StarlightModel:
             # Fallback to rule-based analysis
             prob = self._calculate_overall_probability(img_path)
             return {
-                "method": method,
+                "image_path": img_path,
                 "stego_probability": prob,
+                "task": self.task,
+                "method": method,
                 "predicted": prob > 0.5
             }
         elif self.task == "extract":
