@@ -1,0 +1,31 @@
+{
+  "alpha": {
+    "claude_submission_2025": 0.5,
+    "chatgpt_submission_2025": 0.5,
+    "gemini_submission_2025": 0.998,
+    "grok_submission_2025": 0.996
+  },
+  "palette": {
+    "claude_submission_2025": 0.5,
+    "chatgpt_submission_2025": 0.5,
+    "grok_submission_2025": 0.996
+  },
+  "lsb": {
+    "chatgpt_submission_2025": 0.5,
+    "gemini_submission_2025": 0.998,
+    "grok_submission_2025": 0.996
+  },
+  "dct": {
+    "chatgpt_submission_2025": 0.5,
+    "grok_submission_2025": 0.996
+  },
+  "exif": {
+    "chatgpt_submission_2025": 0.5,
+    "grok_submission_2025": 0.996
+  },
+  "eoi": {
+    "chatgpt_submission_2025": 0.5,
+    "gemini_submission_2025": 0.998,
+    "grok_submission_2025": 0.996
+  }
+}
