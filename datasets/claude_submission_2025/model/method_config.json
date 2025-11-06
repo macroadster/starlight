@@ -1,0 +1,14 @@
+{
+  "alpha": {
+    "mode": "RGBA",
+    "resize": [256, 256],
+    "keep_alpha": true,
+    "description": "PNG alpha channel LSB with AI42 protocol"
+  },
+  "palette": {
+    "mode": "P",
+    "resize": [256, 256],
+    "keep_palette": true,
+    "description": "BMP palette index manipulation"
+  }
+}
