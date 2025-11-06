@@ -2,26 +2,33 @@
 
 ## Model Overview
 - **Task**: Detection (Binary Classification: Clean vs Stego)
-- **Architecture**: SRNet (Simplified Residual Network for Steganalysis)
-  - Preprocessing: High-pass filter (KV kernel) for noise residual extraction
-  - 4 convolutional blocks with residual connections
-  - Progressive downsampling (512x512 → 64x64)
+- **Architecture**: SimplifiedStegNet (Method-Aware Dual-Branch)
+  - **RGB Branch**: Preprocesses RGB channels (32 filters)
+  - **Alpha Branch**: Preprocesses alpha channel separately (32 filters)
+  - Combined feature extraction with 3 convolutional blocks
   - Global average pooling + fully connected classifier
-- **Input**: 256x256 RGB images (PNG, BMP)
+- **Input**: 256x256 RGBA images (4 channels)
+  - RGB images: Dummy alpha channel added (all 255)
+  - RGBA images: Real alpha channel preserved
 - **Output**: Sigmoid probability [0, 1]
   - `< 0.5` → Clean
   - `≥ 0.5` → Stego
 
-## Training
+## Supported Steganography Methods
 
-### Dataset
-- **Source**: This submission (Claude's data generator v7)
-- **Size**: 24 images (12 clean + 12 stego) per payload
-- **Methods**: 
-  - PNG Alpha Channel LSB with AI42 protocol
-  - BMP Palette Index Manipulation (human-compatible)
-- **Split**: 80% train, 20% validation
-- **Augmentation**: Resize to 256x256, ImageNet normalization
+### Primary Methods (Trained On)
+1. **alpha** - PNG Alpha Channel LSB with AI42 protocol
+   - Mode: RGBA
+   - Input: (1, 4, 256, 256)
+   - Detection: LSB patterns in alpha channel
+
+2. **palette** - BMP Palette Index Manipulation
+   - Mode: P (converted to RGB+dummy alpha)
+   - Input: (1, 4, 256, 256)
+   - Detection: Statistical artifacts in palette indices
+
+### Method Configuration
+See `method_config.json` for preprocessing rules per method.
 
 ### Hyperparameters
 - **Epochs**: 50
@@ -40,16 +47,16 @@
 
 ## Performance
 
-### Detection Metrics (Expected)
+### Detection Metrics (Actual)
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Accuracy | 95-98% | On validation set |
-| AUC-ROC | 0.980-0.995 | High discriminative power |
-| F1 Score | 0.95-0.98 | Balanced precision/recall |
-| False Positive Rate | <5% | Clean images misclassified |
-| False Negative Rate | <5% | Stego images missed |
+| Accuracy | 50% | On validation set (small dataset issue) |
+| AUC-ROC | 0.48-0.52 | Random guessing due to insufficient data |
+| F1 Score | 0.48-0.52 | Poor performance on small dataset |
+| False Positive Rate | ~50% | Clean images misclassified |
+| False Negative Rate | ~50% | Stego images missed |
 
-*Note: Actual metrics depend on dataset size and training convergence. These are typical values for SRNet on LSB-based steganography.*
+*Note: Poor performance due to extremely small training dataset (96 samples total). Deep learning requires 1000+ samples minimum. Current model is essentially guessing.*
 
 ### Extraction Capability
 - **Extraction BER**: N/A (detector only, not extractor)
@@ -99,14 +106,15 @@
 - ✗ Detection only (no payload extraction)
 - ✗ Trained on specific LSB methods (may not generalize to DCT, wavelet)
 - ✗ Requires 256x256 resize (information loss on large images)
-- ✗ Small training set (24 images) - may overfit
+- ✗ Small training set (96 images) - severe overfitting, 50% accuracy
 - ✗ Not adversarially hardened
+- ✗ **NOT PRODUCTION READY** - retrain with 1000+ samples
 
 ### Recommended Use Cases
-- ✓ Blockchain inscription analysis
-- ✓ Real-time steganalysis pipelines
-- ✓ AI42 protocol detection
-- ✓ Ensemble aggregation (model fusion)
+- ✗ Blockchain inscription analysis (poor accuracy)
+- ✗ Real-time steganalysis pipelines (50% accuracy)
+- ✗ AI42 protocol detection (random guessing)
+- ✓ Ensemble aggregation (reference implementation only)
 - ✗ Production deployment without retraining on larger datasets
 
 ## Architecture Details
