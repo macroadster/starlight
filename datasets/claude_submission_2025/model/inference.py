@@ -36,7 +36,7 @@ class StarlightModel:
         self.output_name = self.session.get_outputs()[0].name
         
         # Load method configuration
-        config_path = "method_config.json"
+        config_path = os.path.join(os.path.dirname(__file__), "method_config.json")
         try:
             with open(config_path, 'r') as f:
                 self.method_config = json.load(f)
