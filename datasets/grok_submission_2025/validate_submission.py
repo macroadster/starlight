@@ -119,9 +119,9 @@ def validate_ensemble():
 
     try:
         model_configs = [
-            {"task": "detect", "method": "neural", "weight": 1.0},
-            {"task": "detect", "method": "lsb", "weight": 1.0},
-            {"task": "detect", "method": "exif", "weight": 1.0},
+            {"task": "detect", "method": "neural", "weight": 0.5},
+            {"task": "detect", "method": "lsb", "weight": 0.3},
+            {"task": "detect", "method": "exif", "weight": 0.2},
         ]
 
         ensemble = SuperStarlightDetector(model_configs)
@@ -222,9 +222,9 @@ def run_comprehensive_test():
 
     # Test with ensemble
     model_configs = [
-        {"task": "detect", "method": "neural", "weight": 1.0},
-        {"task": "detect", "method": "lsb", "weight": 1.0},
-        {"task": "detect", "method": "exif", "weight": 1.0},
+        {"task": "detect", "method": "neural", "weight": 0.5},
+        {"task": "detect", "method": "lsb", "weight": 0.3},
+        {"task": "detect", "method": "exif", "weight": 0.2},
     ]
 
     ensemble = SuperStarlightDetector(model_configs)
