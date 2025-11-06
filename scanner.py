@@ -2,7 +2,7 @@
 """
 Steganography Scanner and Extractor
 
-Uses the Universal 6-class Stego Detector model to identify steganography,
+Uses the aggregated Starlight ensemble model to identify steganography,
 then extracts hidden messages using starlight_extractor utilities.
 """
 
@@ -24,6 +24,9 @@ from starlight_extractor import (
     extract_alpha, extract_palette, 
     extract_lsb, extract_exif, extract_eoi
 )
+
+# Import ensemble model
+from aggregate_models import SuperStarlightDetector, create_ensemble
 
 try:
     import piexif
@@ -277,14 +280,22 @@ def preprocess_image(img_path):
 
 # --- SCANNER ---
 class StegoScanner:
-    def __init__(self, model_path, margin=2.0, clean_ref_path=None):
-        self.feature_extractor = UniversalStegoDetector().to(device)
-        self.feature_extractor.load_state_dict(torch.load(model_path, map_location=device))
-        self.feature_extractor.eval()
-        self.margin = margin
-        
-        # Establish a clean reference feature vector
-        self.clean_reference_features = self._get_clean_reference_features(clean_ref_path)
+    def __init__(self, model_path=None, margin=2.0, clean_ref_path=None, use_ensemble=True):
+        if use_ensemble:
+            print("[INIT] Using aggregated ensemble model")
+            self.detector = create_ensemble()
+            self.use_ensemble = True
+        else:
+            print("[INIT] Using single PyTorch model")
+            self.feature_extractor = UniversalStegoDetector().to(device)
+            if model_path:
+                self.feature_extractor.load_state_dict(torch.load(model_path, map_location=device))
+            self.feature_extractor.eval()
+            self.margin = margin
+            self.use_ensemble = False
+            
+            # Establish a clean reference feature vector
+            self.clean_reference_features = self._get_clean_reference_features(clean_ref_path)
         
     def _get_clean_reference_features(self, clean_ref_path):
         if clean_ref_path:
@@ -310,37 +321,50 @@ class StegoScanner:
                 return self.feature_extractor.forward_features(dummy_rgb, dummy_alpha, dummy_exif, dummy_eoi, dummy_palette, dummy_indices)
 
     def detect(self, img_path):
-        """Detect steganography in an image using distance to clean reference."""
-        preprocessed = preprocess_image(img_path)
-        if preprocessed is None:
-            return None
-
-        tensors = tuple(t.unsqueeze(0).to(device) for t in preprocessed)
-
-        with torch.no_grad():
-            img_features = self.feature_extractor.forward_features(*tensors)
-            distance = F.pairwise_distance(img_features, self.clean_reference_features)
-            distance_val = distance.item()
-
-            # Classify based on distance to clean reference
-            is_stego = distance_val > self.margin
-            predicted_class = 'stego' if is_stego else 'clean'
-            
-            # Confidence can be derived from how far it is from the margin
-            # For stego: (distance - margin) / margin
-            # For clean: (margin - distance) / margin
-            # Clamp to [0, 1]
-            if is_stego:
-                confidence = min(1.0, max(0.0, (distance_val - self.margin) / self.margin))
-            else:
-                confidence = min(1.0, max(0.0, (self.margin - distance_val) / self.margin))
-
+        """Detect steganography in an image using ensemble or single model."""
+        if self.use_ensemble:
+            # Use ensemble model
+            result = self.detector.predict(img_path)
+            if 'error' in result:
+                return None
+                
             return {
-                'predicted_class': predicted_class,
-                'confidence': confidence,
-                'distance_to_clean': distance_val,
-                'is_stego': is_stego
+                'predicted_class': 'stego' if result['predicted'] else 'clean',
+                'confidence': abs(result['ensemble_probability'] - 0.5) * 2,  # Convert to confidence
+                'ensemble_probability': result['ensemble_probability'],
+                'stego_type': result['stego_type'],
+                'is_stego': result['predicted'],
+                'individual_results': result.get('individual_results', [])
             }
+        else:
+            # Use single PyTorch model
+            preprocessed = preprocess_image(img_path)
+            if preprocessed is None:
+                return None
+
+            tensors = tuple(t.unsqueeze(0).to(device) for t in preprocessed)
+
+            with torch.no_grad():
+                img_features = self.feature_extractor.forward_features(*tensors)
+                distance = F.pairwise_distance(img_features, self.clean_reference_features)
+                distance_val = distance.item()
+
+                # Classify based on distance to clean reference
+                is_stego = distance_val > self.margin
+                predicted_class = 'stego' if is_stego else 'clean'
+                
+                # Confidence can be derived from how far it is from the margin
+                if is_stego:
+                    confidence = min(1.0, max(0.0, (distance_val - self.margin) / self.margin))
+                else:
+                    confidence = min(1.0, max(0.0, (self.margin - distance_val) / self.margin))
+
+                return {
+                    'predicted_class': predicted_class,
+                    'confidence': confidence,
+                    'distance_to_clean': distance_val,
+                    'is_stego': is_stego
+                }
     
     def extract(self, img_path, predicted_class):
         """Extract hidden message if detected as stego. Tries all extractors."""
@@ -385,6 +409,7 @@ class StegoScanner:
             result['error'] = 'Failed to process image'
             return result
         
+        # Merge detection results
         result.update(detection)
         
         if extract_messages and detection['is_stego']:
@@ -427,14 +452,22 @@ class StegoScanner:
                 print(f"\n[FOUND] {img_path.name}")
                 print(f"  Path: {img_path}")
                 print(f"  Type: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
-        if extract_messages and result.get('extracted_message'):
-            msg_dict = result['extracted_message']
-            if msg_dict:
-                for algo, msg in msg_dict.items():
-                    preview = msg[:100] + '...' if len(msg) > 100 else msg
-                    print(f"  Message ({algo}): {preview}")
-            else:
-                print(f"  Message: No message extracted")
+                if 'stego_type' in result:
+                    print(f"  Stego Type: {result['stego_type']}")
+                if 'ensemble_probability' in result:
+                    print(f"  Ensemble Probability: {result['ensemble_probability']:.3f}")
+                    
+                if extract_messages and result.get('extracted_message'):
+                    msg_dict = result['extracted_message']
+                    if isinstance(msg_dict, dict):
+                        for algo, msg in msg_dict.items():
+                            preview = msg[:100] + '...' if len(msg) > 100 else msg
+                            print(f"  Message ({algo}): {preview}")
+                    else:
+                        preview = str(msg_dict)[:100] + '...' if len(str(msg_dict)) > 100 else str(msg_dict)
+                        print(f"  Message: {preview}")
+                else:
+                    print(f"  Message: No message extracted")
         
         # Summary
         print(f"\n{'='*60}")
@@ -479,24 +512,35 @@ def main():
     parser.add_argument('--output', help='Output JSON file for results')
     parser.add_argument('--detail', action='store_true',
                        help='Display detailed detection results during directory scan')
+    parser.add_argument('--single-model', action='store_true',
+                       help='Use single PyTorch model instead of ensemble')
     
     args = parser.parse_args()
-    
-    # Check if model exists
-    if not os.path.exists(args.model):
-        print(f"Error: Model file not found: {args.model}")
-        sys.exit(1)
     
     # Check if target exists
     if not os.path.exists(args.target):
         print(f"Error: Target not found: {args.target}")
         sys.exit(1)
     
-    print(f"[INIT] Loading model from {args.model}")
-    print(f"[INIT] Device: {device}")
-    print(f"[INIT] Detection margin: {args.margin}")
+    use_ensemble = not args.single_model
     
-    scanner = StegoScanner(args.model, margin=args.margin, clean_ref_path=args.clean_ref)
+    if use_ensemble:
+        print("[INIT] Using aggregated ensemble model")
+    else:
+        # Check if model exists for single model mode
+        if not os.path.exists(args.model):
+            print(f"Error: Model file not found: {args.model}")
+            sys.exit(1)
+        print(f"[INIT] Loading model from {args.model}")
+        print(f"[INIT] Device: {device}")
+        print(f"[INIT] Detection margin: {args.margin}")
+    
+    scanner = StegoScanner(
+        model_path=args.model if not use_ensemble else None,
+        margin=args.margin, 
+        clean_ref_path=args.clean_ref,
+        use_ensemble=use_ensemble
+    )
     
     target_path = Path(args.target)
     
@@ -508,14 +552,25 @@ def main():
         print(f"RESULTS")
         print(f"{'='*60}")
         print(f"File: {result['file']}")
-        print(f"Predicted: {result['predicted_class']} (confidence: {result['confidence']:.2%}) (Distance: {result['distance_to_clean']:.2f})")
+        print(f"Predicted: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
+        if 'distance_to_clean' in result:
+            print(f"Distance: {result['distance_to_clean']:.2f}")
+        if 'ensemble_probability' in result:
+            print(f"Ensemble Probability: {result['ensemble_probability']:.3f}")
+        if 'stego_type' in result:
+            print(f"Stego Type: {result['stego_type']}")
         print(f"Is Stego: {result['is_stego']}")
         
-        if not args.no_extract and result.get('extracted_message') and isinstance(result['extracted_message'], dict):
+        if not args.no_extract and result.get('extracted_message'):
             print(f"\nExtracted Messages (attempted all types):")
-            for algo, msg in result['extracted_message'].items():
-                preview = msg[:100] + '...' if len(msg) > 100 else msg
-                print(f"  - {algo}: {preview}")
+            msg_dict = result['extracted_message']
+            if isinstance(msg_dict, dict):
+                for algo, msg in msg_dict.items():
+                    preview = msg[:100] + '...' if len(msg) > 100 else msg
+                    print(f"  - {algo}: {preview}")
+            else:
+                preview = str(msg_dict)[:100] + '...' if len(str(msg_dict)) > 100 else str(msg_dict)
+                print(f"  - Message: {preview}")
         
         if args.output:
             with open(args.output, 'w') as f:
