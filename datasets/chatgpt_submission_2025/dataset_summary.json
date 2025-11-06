@@ -1,0 +1,21 @@
+{
+  "payload_count": 6,
+  "algorithms_used": [
+    "alpha",
+    "eoi",
+    "exif",
+    "lsb",
+    "palette"
+  ],
+  "clean_files": 450,
+  "stego_files": 590,
+  "validation_passed": true,
+  "errors": [],
+  "generated_counts": {
+    "lsb": 30,
+    "alpha": 30,
+    "palette": 20,
+    "exif": 30,
+    "eoi": 30
+  }
+}
