@@ -79,7 +79,8 @@ class StarlightModel:
         self.method_config = self._load_method_config()
 
     def _load_method_config(self) -> Dict:
-        config_path = "model/method_config.json"
+        # Look for method_config.json in the same directory as this script
+        config_path = os.path.join(os.path.dirname(__file__), "method_config.json")
         if not os.path.exists(config_path):
             raise FileNotFoundError("method_config.json is required")
         with open(config_path) as f:
