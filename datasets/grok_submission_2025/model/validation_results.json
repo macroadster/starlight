@@ -1,0 +1,79 @@
+{
+  "validation_summary": {
+    "total_images_tested": 10,
+    "average_probability": 0.26318690158160124,
+    "positive_predictions": 0
+  },
+  "detailed_results": [
+    {
+      "label": "Clean PNG",
+      "path": "clean/seed2_lsb_003.png",
+      "probability": 0.2630153759084922,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/README_lsb_003.png",
+      "probability": 0.2630153759084922,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/seed1_lsb_004.png",
+      "probability": 0.2633794678224296,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/sample_seed_lsb_003.png",
+      "probability": 0.2630153759084922,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/seed4_lsb_003.png",
+      "probability": 0.2630153759084922,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/README_lsb_004.png",
+      "probability": 0.2633794678224296,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/README_lsb_000.png",
+      "probability": 0.26350891236010016,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/seed3_lsb_000.png",
+      "probability": 0.26350891236010016,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/seed3_lsb_003.png",
+      "probability": 0.2630153759084922,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean PNG",
+      "path": "clean/seed1_lsb_003.png",
+      "probability": 0.2630153759084922,
+      "predicted": false,
+      "type": "lsb"
+    }
+  ]
+}

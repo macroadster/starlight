@@ -1,0 +1,60 @@
+{
+  "ensemble_config": [
+    {
+      "task": "detect",
+      "method": "neural",
+      "weight": 1.6500000000000001,
+      "description": "Neural network detector"
+    },
+    {
+      "task": "detect",
+      "method": "lsb",
+      "weight": 1.0,
+      "description": "LSB statistical detector"
+    },
+    {
+      "task": "detect",
+      "method": "exif",
+      "weight": 1.0,
+      "description": "EXIF metadata detector"
+    }
+  ],
+  "test_results": [
+    {
+      "label": "Clean LSB",
+      "path": "clean/README_lsb_000.png",
+      "probability": 0.3039367441595879,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Stego LSB",
+      "path": "stego/README_lsb_000.png",
+      "probability": 0.30393673027128365,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Clean EXIF",
+      "path": "clean/README_exif_000.jpeg",
+      "probability": 0.3587322840249822,
+      "predicted": false,
+      "type": "lsb"
+    },
+    {
+      "label": "Stego EXIF",
+      "path": "stego/README_exif_000.jpeg",
+      "probability": 0.3587322840249822,
+      "predicted": false,
+      "type": "lsb"
+    }
+  ],
+  "performance": {
+    "models_count": 3,
+    "ensemble_weights": [
+      0.4520547945205479,
+      0.273972602739726,
+      0.273972602739726
+    ]
+  }
+}
