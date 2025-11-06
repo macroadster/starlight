@@ -1,0 +1,48 @@
+{
+  "lsb": {
+    "ensemble": "lsb",
+    "input_shape": [
+      1,
+      3,
+      256,
+      256
+    ]
+  },
+  "alpha": {
+    "ensemble": "alpha",
+    "input_shape": [
+      1,
+      4,
+      256,
+      256
+    ]
+  },
+  "dct": {
+    "ensemble": "dct",
+    "input_shape": [
+      1,
+      4096
+    ]
+  },
+  "exif": {
+    "ensemble": "exif",
+    "input_shape": [
+      1,
+      1024
+    ]
+  },
+  "eoi": {
+    "ensemble": "eoi",
+    "input_shape": [
+      1,
+      1024
+    ]
+  },
+  "palette": {
+    "ensemble": "palette",
+    "input_shape": [
+      1,
+      1024
+    ]
+  }
+}
