@@ -56,24 +56,25 @@ class ClaudeStegGenerator:
         width, height = 512, 512
         
         if img_type == 'gradient':
-            img_array = np.zeros((height, width, 3), dtype=np.uint8)
+            img_array = np.zeros((height, width, 4), dtype=np.uint8)
             for y in range(height):
                 for x in range(width):
                     img_array[y, x] = [
                         int(255 * x / width),
                         int(255 * y / height),
-                        int(255 * (x + y) / (width + height))
+                        int(255 * (x + y) / (width + height)),
+                        255  # Fully opaque alpha channel
                     ]
-            return Image.fromarray(img_array)
+            return Image.fromarray(img_array, mode='RGBA')
         
         elif img_type == 'geometric':
-            img = Image.new('RGB', (width, height), color='white')
+            img = Image.new('RGBA', (width, height), color=(255, 255, 255, 255))
             draw = ImageDraw.Draw(img)
             np.random.seed(index)
             for _ in range(20):
                 x1, y1 = np.random.randint(0, width, 2)
                 x2, y2 = np.random.randint(0, width, 2)
-                color = tuple(np.random.randint(0, 256, 3).tolist())
+                color = tuple(np.random.randint(0, 256, 4).tolist())
                 shape = np.random.choice(['rectangle', 'ellipse', 'line'])
                 
                 # Ensure coordinates are in correct order (min, max)
@@ -94,11 +95,12 @@ class ClaudeStegGenerator:
         
         elif img_type == 'noise':
             np.random.seed(index)
-            img_array = np.random.randint(50, 200, (height, width, 3), dtype=np.uint8)
-            return Image.fromarray(img_array)
+            img_array = np.random.randint(50, 200, (height, width, 4), dtype=np.uint8)
+            img_array[:, :, 3] = 255  # Set alpha to fully opaque
+            return Image.fromarray(img_array, mode='RGBA')
         
         else:  # 'blocks'
-            img = Image.new('RGB', (width, height))
+            img = Image.new('RGBA', (width, height))
             draw = ImageDraw.Draw(img)
             block_size = 64
             
@@ -107,7 +109,8 @@ class ClaudeStegGenerator:
                     color = (
                         ((x // block_size) * 40) % 256,
                         ((y // block_size) * 60) % 256,
-                        ((x + y) // block_size * 30) % 256
+                        ((x + y) // block_size * 30) % 256,
+                        255  # Fully opaque alpha
                     )
                     draw.rectangle([x, y, x + block_size, y + block_size], fill=color)
             return img
@@ -211,7 +214,7 @@ class ClaudeStegGenerator:
 
         # Convert to palette mode
         try:
-            img_palette = img.convert('P', palette=Image.ADAPTIVE, colors=256)
+            img_palette = img.convert('P', palette=Image.Palette.ADAPTIVE, colors=256)
         except Exception as e:
             raise ValueError(f"Failed to convert to palette mode: {e}")
 
