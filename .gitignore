@@ -1,3 +1,21 @@
 # Ignore generated dataset manifests
 manifest_*.yaml
 
+# Ignore Python cache files
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Ignore model files (too large for repo)
+*.onnx
+*.pth
+**/*.onnx
+**/*.pth
+
+# Ignore generated datasets (keep only source code)
+clean/
+stego/
+**/clean/
+**/stego/
+

@@ -37,6 +37,11 @@ GrokModel = load_model_from_path(
     'grok'
 )
 
+ClaudeModel = load_model_from_path(
+    os.path.join(os.path.dirname(__file__), 'datasets', 'claude_submission_2025', 'model'),
+    'claude'
+)
+
 
 class SuperStarlightDetector:
     """
@@ -83,6 +88,9 @@ class SuperStarlightDetector:
                 elif source == "grok" and GrokModel:
                     model_path = os.path.join(os.path.dirname(__file__), 'datasets', 'grok_submission_2025', 'model', 'detector.onnx')
                     model = GrokModel(model_path, task="detect")
+                elif source == "claude" and ClaudeModel:
+                    model_path = os.path.join(os.path.dirname(__file__), 'datasets', 'claude_submission_2025', 'model', 'detector.onnx')
+                    model = ClaudeModel(model_path, task="detect")
                 else:
                     # Fallback to generic model
                     model = None
@@ -195,7 +203,13 @@ def load_model_card(model_path: str) -> Dict:
         for line in content.split("\n"):
             if "AUC-ROC" in line and "|" in line:
                 try:
-                    auc = float(line.split("|")[2].strip())
+                    auc_str = line.split("|")[2].strip()
+                    # Handle range values like "0.980-0.995"
+                    if "-" in auc_str:
+                        # Take the higher value for weight calculation
+                        auc = float(auc_str.split("-")[1].strip())
+                    else:
+                        auc = float(auc_str)
                     card["performance"] = card.get("performance", {})
                     card["performance"]["AUC-ROC"] = auc
                 except (ValueError, IndexError):
@@ -204,19 +218,32 @@ def load_model_card(model_path: str) -> Dict:
     # Extract coverage
     if "Steganography Coverage" in content:
         coverage_start = content.find("Steganography Coverage")
-        coverage_section = content[coverage_start : coverage_start + 200]
-        if "`" in coverage_section:
-            coverage_text = coverage_section.split("`")[1]
-            card["steganography_coverage"] = [
-                c.strip() for c in coverage_text.split(",")
-            ]
+        coverage_section = content[coverage_start : coverage_start + 500]
+        # Look for numbered methods or bullet points
+        methods = []
+        lines = coverage_section.split("\n")
+        for line in lines:
+            if "**" in line:  # Bold method names
+                method = line.split("**")[1].split("**")[0].strip()
+                methods.append(method)
+            elif line.startswith("1.") or line.startswith("2."):  # Numbered list
+                method = line.split(".", 1)[1].strip()
+                if "**" in method:
+                    method = method.split("**")[1].split("**")[0].strip()
+                methods.append(method)
+        
+        if methods:
+            card["steganography_coverage"] = methods
 
     # Extract speed
-    if "GPU:" in content:
+    if "GPU (" in content or "GPU:" in content:
         for line in content.split("\n"):
-            if "GPU:" in line:
+            if "GPU (" in line or "GPU:" in line:
                 try:
-                    speed_str = line.split("GPU:")[1].split("ms")[0].strip()
+                    if "GPU (" in line:
+                        speed_str = line.split("GPU (")[1].split("ms")[0].strip()
+                    else:
+                        speed_str = line.split("GPU:")[1].split("ms")[0].strip()
                     card["inference_speed"] = card.get("inference_speed", {})
                     card["inference_speed"]["GPU"] = float(speed_str)
                 except (ValueError, IndexError):
@@ -229,7 +256,7 @@ def create_ensemble():
     """Create and test the ensemble model"""
     print("=== Creating Super Starlight Ensemble ===")
 
-    # Model configurations for ensemble - aggregating ChatGPT and Grok models
+    # Model configurations for ensemble - aggregating ChatGPT, Grok, and Claude models
     model_configs = [
         {
             "task": "detect",
@@ -244,6 +271,13 @@ def create_ensemble():
             "source": "grok",
             "weight": 1.0,
             "description": "Grok neural network detector",
+        },
+        {
+            "task": "detect",
+            "method": "neural",
+            "source": "claude",
+            "weight": 1.0,
+            "description": "Claude neural network detector (Alpha + Palette)",
         },
         {
             "task": "detect",
@@ -264,17 +298,20 @@ def create_ensemble():
     # Load model cards and calculate weights
     chatgpt_card = load_model_card("datasets/chatgpt_submission_2025/model")
     grok_card = load_model_card("datasets/grok_submission_2025/model")
+    claude_card = load_model_card("datasets/claude_submission_2025/model")
     
-    model_cards = [card for card in [chatgpt_card, grok_card] if card]
+    model_cards = [card for card in [chatgpt_card, grok_card, claude_card] if card]
     if model_cards:
         weights = calculate_model_weights(model_cards)
         # Apply weights to corresponding models
         if chatgpt_card and len(weights) > 0:
             model_configs[0]["weight"] = weights[0] if len(weights) > 0 else 1.0
         if grok_card and len(weights) > 1:
-            for i in range(1, min(4, len(weights) + 1)):
-                if i < len(model_configs):
-                    model_configs[i]["weight"] = weights[1]
+            model_configs[1]["weight"] = weights[1] if len(weights) > 1 else 1.0
+            model_configs[3]["weight"] = weights[1] if len(weights) > 1 else 1.0  # Grok LSB
+            model_configs[4]["weight"] = weights[1] if len(weights) > 1 else 1.0  # Grok EXIF
+        if claude_card and len(weights) > 2:
+            model_configs[2]["weight"] = weights[2] if len(weights) > 2 else 1.0
 
     print("Model configurations:")
     for i, config in enumerate(model_configs):
@@ -291,6 +328,10 @@ def create_ensemble():
         ("datasets/chatgpt_submission_2025/stego/sample_seed_alpha_000.png", "ChatGPT Stego"),
         ("datasets/grok_submission_2025/clean/README_lsb_000.png", "Grok Clean LSB"),
         ("datasets/grok_submission_2025/stego/README_lsb_000.png", "Grok Stego LSB"),
+        ("datasets/claude_submission_2025/clean/essence_seed_alpha_000.png", "Claude Clean Alpha"),
+        ("datasets/claude_submission_2025/stego/essence_seed_alpha_000.png", "Claude Stego Alpha"),
+        ("datasets/claude_submission_2025/clean/essence_seed_palette_000.bmp", "Claude Clean Palette"),
+        ("datasets/claude_submission_2025/stego/essence_seed_palette_000.bmp", "Claude Stego Palette"),
     ]
 
     results = []
