@@ -1,0 +1,28 @@
+{
+  "lsb": {
+    "mode": "RGB",
+    "resize": [256, 256]
+  },
+  "alpha": {
+    "mode": "RGBA",
+    "resize": [256, 256],
+    "keep_alpha": true
+  },
+  "dct": {
+    "mode": "DCT",
+    "input_shape": [1, 4096]
+  },
+  "exif": {
+    "mode": "EXIF",
+    "max_bytes": 1024
+  },
+  "eoi": {
+    "mode": "EOI",
+    "tail_bytes": 1024
+  },
+  "palette": {
+    "mode": "P",
+    "resize": [256, 256],
+    "keep_palette": true
+  }
+}

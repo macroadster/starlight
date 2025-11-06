@@ -1,0 +1,4 @@
+onnxruntime>=1.16.0
+Pillow>=9.0.0
+numpy>=1.21.0
+jpegio>=0.2.0
