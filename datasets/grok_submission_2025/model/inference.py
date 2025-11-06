@@ -3,6 +3,8 @@ import numpy as np
 from PIL import Image
 import os
 import sys
+import json
+from typing import Dict, Any
 
 # Optional ONNX imports
 try:
@@ -33,100 +35,145 @@ except ImportError as e:
 
 
 class StarlightModel:
-    def __init__(self, model_path="model/detector.onnx", task="detect"):
-        """
-        Initialize Starlight model for steganography detection and extraction.
-
-        Args:
-            model_path (str): Path to ONNX model file
-            task (str): 'detect', 'extract_lsb', or 'extract_exif'
-        """
-        self.model_path = model_path
+    def __init__(
+        self,
+        detector_path: str = "model/detector.onnx",
+        extractor_path: str = None,
+        task: str = "detect"
+    ):
+        self.detector_path = detector_path
+        self.extractor_path = extractor_path
         self.task = task
 
-        # Load ONNX model if available
-        if ONNX_AVAILABLE and os.path.exists(model_path):
-            try:
-                self.session = ort.InferenceSession(model_path)  # type: ignore
-                self.input_name = self.session.get_inputs()[0].name
-                self.has_model = True
-            except Exception as e:
-                print(f"Warning: Could not load ONNX model: {e}")
-                self.session = None
-                self.input_name = None
-                self.has_model = False
-        else:
-            self.session = None
-            self.input_name = None
-            self.has_model = False
+        # Load ONNX models if available
+        self.detector = None
+        self.extractor = None
+        if ONNX_AVAILABLE:
+            # Dynamically select available providers: CUDA > CoreML > CPU
+            providers = []
+            available_providers = ort.get_available_providers()
+            if 'CUDAExecutionProvider' in available_providers:
+                providers.append('CUDAExecutionProvider')
+            if 'CoreMLExecutionProvider' in available_providers:
+                providers.append('CoreMLExecutionProvider')
+            providers.append('CPUExecutionProvider')
 
-    def preprocess(self, img_path):
-        """Preprocess image for neural network model."""
-        img = Image.open(img_path).convert("RGB").resize((256, 256))
+            session_options = ort.SessionOptions()
+            if 'CUDAExecutionProvider' in providers:
+                session_options.enable_mem_pattern = False  # Optimize for GPU
+            elif 'CoreMLExecutionProvider' in providers:
+                session_options.enable_mem_pattern = False  # Optimize for MPS
+
+            if os.path.exists(detector_path):
+                try:
+                    self.detector = ort.InferenceSession(detector_path, sess_options=session_options, providers=providers)
+                    self.input_name = self.detector.get_inputs()[0].name
+                except Exception as e:
+                    print(f"Warning: Could not load detector: {e}")
+            if extractor_path and os.path.exists(extractor_path):
+                try:
+                    self.extractor = ort.InferenceSession(extractor_path, sess_options=session_options, providers=providers)
+                except Exception as e:
+                    print(f"Warning: Could not load extractor: {e}")
+
+        self.method_config = self._load_method_config()
+
+    def _load_method_config(self) -> Dict:
+        config_path = "model/method_config.json"
+        if not os.path.exists(config_path):
+            raise FileNotFoundError("method_config.json is required")
+        with open(config_path) as f:
+            return json.load(f)
+
+    def _detect_method_from_filename(self, img_path: str) -> str:
+        basename = os.path.basename(img_path)
+        parts = basename.split("_")
+        if len(parts) >= 3:
+            method = parts[-2]  # e.g., alpha, eoi, dct
+            if method in self.method_config:
+                return method
+        return "lsb"  # Default fallback
+
+    def preprocess(self, img_path: str, method: str = None) -> np.ndarray:
+        method = method or self._detect_method_from_filename(img_path)
+        config = self.method_config.get(method, self.method_config["lsb"])
+
+        if config["mode"] == "RGB":
+            return self._preprocess_rgb(img_path, config)
+        elif config["mode"] == "RGBA":
+            return self._preprocess_rgba(img_path, config)
+        elif config["mode"] == "EXIF":
+            return self._preprocess_exif(img_path)
+        else:
+            raise NotImplementedError(f"Mode {config['mode']} not supported")
+
+    def _preprocess_rgb(self, img_path, config):
+        img = Image.open(img_path).convert("RGB").resize(config["resize"])
         arr = np.array(img).astype(np.float32) / 255.0
         arr = np.transpose(arr, (2, 0, 1))
         return np.expand_dims(arr, 0)
 
-    def predict(self, img_path):
-        """
-        Main prediction method supporting multiple steganography detection methods.
+    def _preprocess_rgba(self, img_path, config):
+        img = Image.open(img_path).convert("RGBA").resize(config["resize"])
+        arr = np.array(img).astype(np.float32) / 255.0
+        arr = np.transpose(arr, (2, 0, 1))  # (4, H, W)
+        return np.expand_dims(arr, 0)
 
-        Args:
-            img_path (str): Path to image file
+    def _preprocess_exif(self, img_path):
+        img = Image.open(img_path)
+        exif = img.info.get("exif")
+        data = np.frombuffer(exif or b'', dtype=np.uint8)[:1024]
+        padded = np.zeros(1024, dtype=np.float32)
+        padded[:len(data)] = data.astype(np.float32) / 255.0
+        return padded.reshape(1, -1)
 
-        Returns:
-            dict: Prediction results
-        """
-        if not os.path.exists(img_path):
-            return {"error": "Image file not found"}
+    def predict(self, img_path: str, method: str = None) -> Dict[str, Any]:
+        method = method or self._detect_method_from_filename(img_path)
+        input_data = self.preprocess(img_path, method)
 
-        # Neural network prediction (if model available)
-        nn_result = {}
-        if self.has_model and self.session is not None:
-            try:
-                input_data = self.preprocess(img_path)
-                outputs = self.session.run(None, {self.input_name: input_data})
-
-                if self.task == "detect":
-                    # Apply sigmoid to get probability
-                    raw_output = float(outputs[0][0])
-                    prob = 1 / (1 + np.exp(-raw_output))  # sigmoid
-                    nn_result = {"nn_probability": prob, "nn_predicted": prob > 0.5}
-                elif self.task == "extract_lsb":
-                    # Neural network LSB extraction
-                    bits = outputs[0].round().astype(int)
-                    payload_bytes = "".join([chr(int(b)) for b in bits])
-                    nn_result = {"nn_extracted_payload": payload_bytes}
-            except Exception as e:
-                nn_result = {"nn_error": str(e)}
-
-        # LSB analysis (always available)
-        lsb_result = self._analyze_lsb(img_path)
-
-        # EXIF analysis (for JPEG images)
-        exif_result = self._analyze_exif(img_path)
-
-        # Combine results
-        combined_result = {
-            "image_path": img_path,
-            "task": self.task,
-        }
-
-        # Add neural network results
-        combined_result.update(nn_result)
-
-        # Add LSB results
-        combined_result.update(lsb_result)
-
-        # Add EXIF results
-        combined_result.update(exif_result)
-
-        # Overall stego probability (weighted combination)
-        combined_result["stego_probability"] = self._calculate_overall_probability(
-            combined_result
-        )
-
-        return combined_result
+        if self.task == "detect":
+            if self.detector and self.input_name:
+                try:
+                    outputs = self.detector.run(None, {self.input_name: input_data})
+                    prob = float(outputs[0][0])
+                    return {
+                        "method": method,
+                        "stego_probability": prob,
+                        "predicted": prob > 0.5
+                    }
+                except Exception:
+                    pass
+            # Fallback to rule-based analysis
+            prob = self._calculate_overall_probability(img_path)
+            return {
+                "method": method,
+                "stego_probability": prob,
+                "predicted": prob > 0.5
+            }
+        elif self.task == "extract":
+            if self.extractor:
+                try:
+                    outputs = self.extractor.run(None, {self.extractor.get_inputs()[0].name: input_data})
+                    payload = ''.join(chr(int(b)) for b in np.argmax(outputs[0], axis=-1))
+                    return {
+                        "method": method,
+                        "extracted_payload": payload
+                    }
+                except Exception:
+                    pass
+            # Fallback to rule-based extraction
+            if method in ["lsb", "sequential_lsb"]:
+                payload = self._extract_lsb(img_path)
+            elif method == "exif":
+                payload = self._extract_exif(img_path)
+            else:
+                payload = ""
+            return {
+                "method": method,
+                "extracted_payload": payload
+            }
+        else:
+            return {"error": f"Unknown task: {self.task}"}
 
     def _analyze_lsb(self, img_path):
         """Analyze LSB patterns for steganography detection."""
@@ -211,26 +258,53 @@ class StarlightModel:
         except Exception as e:
             return {"exif_error": str(e)}
 
-    def _calculate_overall_probability(self, results):
+    def _calculate_overall_probability(self, img_path):
         """Calculate overall steganography probability from all methods."""
+        lsb_result = self._analyze_lsb(img_path)
+        exif_result = self._analyze_exif(img_path)
+
         probabilities = []
 
-        # Neural network probability (most reliable)
-        if "nn_probability" in results:
-            probabilities.append(results["nn_probability"] * 0.5)  # Weight: 50%
-
         # LSB probability
-        if "lsb_probability" in results:
-            probabilities.append(results["lsb_probability"] * 0.3)  # Weight: 30%
+        if "lsb_probability" in lsb_result:
+            probabilities.append(lsb_result["lsb_probability"] * 0.7)  # Weight: 70%
 
         # EXIF probability
-        if "exif_probability" in results:
-            probabilities.append(results["exif_probability"] * 0.2)  # Weight: 20%
+        if "exif_probability" in exif_result:
+            probabilities.append(exif_result["exif_probability"] * 0.3)  # Weight: 30%
 
         if probabilities:
             return min(sum(probabilities), 1.0)
         else:
             return 0.0
+
+    def _extract_lsb(self, img_path):
+        """Extract LSB payload."""
+        try:
+            if extract_lsb_simple is None:
+                return ""
+            extracted_bits = extract_lsb_simple(img_path, 800)  # More bits
+            bytes_list = []
+            for i in range(0, len(extracted_bits), 8):
+                if i + 8 <= len(extracted_bits):
+                    byte_bits = extracted_bits[i : i + 8]
+                    byte_val = 0
+                    for bit in byte_bits:
+                        byte_val = (byte_val << 1) | bit
+                    bytes_list.append(byte_val)
+            return "".join([chr(b) if 32 <= b <= 126 else "" for b in bytes_list])
+        except:
+            return ""
+
+    def _extract_exif(self, img_path):
+        """Extract EXIF payload."""
+        try:
+            if extract_exif_payload is None:
+                return ""
+            extraction = extract_exif_payload(img_path)
+            return extraction.get("payload", "")
+        except:
+            return ""
 
 
 # Convenience functions for specific tasks
@@ -240,13 +314,7 @@ def detect_steganography(img_path):
     return model.predict(img_path)
 
 
-def extract_lsb_payload(img_path):
-    """Extract LSB payload from image."""
-    model = StarlightModel(task="extract_lsb")
-    return model.predict(img_path)
-
-
-def extract_exif_payload_from_image(img_path):
-    """Extract EXIF payload from JPEG image."""
-    model = StarlightModel(task="extract_exif")
-    return model.predict(img_path)
+def extract_payload(img_path, method=None):
+    """Extract payload from image."""
+    model = StarlightModel(task="extract")
+    return model.predict(img_path, method)

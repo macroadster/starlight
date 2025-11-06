@@ -20,9 +20,9 @@ from dataset import StegoPairDataset
 CFG = {
     "msg_len": 100,
     "batch_size": 4,  # Smaller batch for better convergence
-    "epochs": 50,  # Shorter training
+    "epochs": 30,  # Test training
     "lr": 5e-4,  # Higher learning rate
-    "device": "cuda" if torch.cuda.is_available() else "cpu",
+    "device": "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"),
     "seed": 42,
     "save_dir": "checkpoints",
     "img_size": 256,
@@ -67,15 +67,15 @@ val_tf = A.Compose(
 # ------------------- LOADERS -------------------
 def get_loaders():
     train_set = StegoPairDataset(
-        clean_root="../sample_submission_2025/clean",
-        stego_root="../sample_submission_2025/stego",
+        clean_root="./clean",
+        stego_root="./stego",
         msg_len=CFG["msg_len"],
         transform=train_tf,
         strict=False,
     )
     val_set = StegoPairDataset(
-        clean_root="../val/clean",
-        stego_root="../val/stego",
+        clean_root="./clean",
+        stego_root="./stego",
         msg_len=CFG["msg_len"],
         transform=val_tf,
         strict=False,
@@ -85,20 +85,21 @@ def get_loaders():
     if len(train_set) == 0:
         raise ValueError("No training data! Check JSONs and clean_file paths.")
 
+    pin_memory = CFG["device"] == "cuda"  # Only for CUDA
     return (
         DataLoader(
             train_set,
             batch_size=CFG["batch_size"],
             shuffle=True,
             num_workers=2,
-            pin_memory=True,
+            pin_memory=pin_memory,
         ),
         DataLoader(
             val_set,
             batch_size=CFG["batch_size"],
             shuffle=False,
             num_workers=2,
-            pin_memory=True,
+            pin_memory=pin_memory,
         ),
     )
 
