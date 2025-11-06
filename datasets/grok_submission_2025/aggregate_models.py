@@ -52,15 +52,7 @@ class SuperStarlightDetector:
                 individual_results.append(result)
 
                 # Extract probability based on model method
-                method = config.get("method", "neural")
-                if method == "neural":
-                    prob = result.get("nn_probability", 0.0)
-                elif method == "lsb":
-                    prob = result.get("lsb_probability", 0.0)
-                elif method == "exif":
-                    prob = result.get("exif_probability", 0.0)
-                else:
-                    prob = result.get("stego_probability", 0.0)
+                prob = result.get("stego_probability", 0.0)
 
                 weighted_probs.append(prob * self.weights[i])
 
@@ -87,7 +79,7 @@ class SuperStarlightDetector:
         return {
             "image_path": img_path,
             "ensemble_probability": ensemble_prob,
-            "predicted": ensemble_prob > 0.5,
+            "predicted": ensemble_prob > 0.3,
             "stego_type": stego_type,
             "individual_results": individual_results,
             "model_weights": self.weights,
