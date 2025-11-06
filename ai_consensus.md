@@ -165,6 +165,22 @@ This session addressed the core issue preventing the model from learning palette
 -   **Consensus:** Confirmed that for GIF images, both "alpha" and "lsb" steganography are fundamentally forms of **palette steganography**, as GIFs are an indexed-color format.
 -   **Action:** To eliminate confusion, the `sample_submission_2025/data_generator.py` was updated to use only appropriate lossless formats for `alpha` and `lsb` techniques, alternating between **`.png`** and **`.webp`** to increase dataset diversity.
 
+### 5. Investigation into LSB/Palette Training Failure (2025-11-05)
+
+-   **Problem:** Despite numerous attempts, the model consistently fails to learn LSB and Palette steganography, with validation accuracy for these classes remaining at 0%.
+-   **Summary of Attempts:**
+    -   **Architectural Change:** Replaced the original simple LSB detector with a theoretically superior SRM-based filter bank.
+        -   *Result:* Caused training instability and catastrophic forgetting of the `clean` class.
+    -   **Hyperparameter Tuning:** Conducted an exhaustive search over `FocalLoss gamma`, `class_weights`, and `contrastive_weight`.
+        -   *Result:* Achieved a stable model with high overall accuracy (~90%), but it learned to ignore LSB/Palette classes entirely.
+    -   **Data Pipeline Bug Fix:** Identified and corrected a critical bug where `transforms.Resize` was destroying the LSB signal. Replaced it with `transforms.RandomCrop`.
+        -   *Result:* No improvement. The model still failed to learn LSB, even with the signal now present.
+    -   **Feature Interference:** Removed the `rgb_base` module to test if generic content features were overpowering the subtle noise features.
+        -   *Result:* No improvement.
+    -   **Architectural Reversion:** Reverted the `LSBDetector` back to a simple, trainable CNN.
+        -   *Result:* No improvement.
+-   **Conclusion:** The root cause of the training failure is not obvious and has resisted a systematic, multi-session debugging effort. The issue is likely a subtle, undiscovered bug within the `trainer.py` script or the dataset itself that is not related to the major components investigated. Further attempts to tune this specific training script are not recommended.
+
 ---
 
 ---

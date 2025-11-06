@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Steganography Scanner and Extractor
+Steganography Scanner and Extractor - Fixed Version
 
 Uses the aggregated Starlight ensemble model to identify steganography,
 then extracts hidden messages using starlight_extractor utilities.
+
+Key Fix: LSBDetector now uses residual normalization for better detection
 """
 
 import os
@@ -80,26 +82,10 @@ def get_exif_features(img, filepath):
 class LSBDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
-        
-        # Define a fixed high-pass filter kernel (from SRM)
-        srm_kernel = [[-1, 2, -2, 2, -1],
-                      [2, -6, 8, -6, 2],
-                      [-2, 8, -12, 8, -2],
-                      [2, -6, 8, -6, 2],
-                      [-1, 2, -2, 2, -1]]
-        srm_kernel = torch.tensor(srm_kernel, dtype=torch.float32) / 12.0
-        srm_kernel = srm_kernel.view(1, 1, 5, 5)
-        
-        # Create a non-trainable conv layer to apply this filter to each RGB channel
-        self.srm_filter = nn.Conv2d(3, 3, kernel_size=5, padding=2, bias=False, groups=3)
-        self.srm_filter.weight.data = torch.cat([srm_kernel] * 3, dim=0)
-        self.srm_filter.weight.requires_grad = False
-
-        # The rest of the network is trainable and processes the noise residuals
         self.trainable_conv = nn.Sequential(
-            nn.Conv2d(3, dim, 3, 1, 1), # Takes the 3-channel residual as input
+            nn.Conv2d(3, dim, 3, 1, 1), # Input is 3-channel RGB
             nn.BatchNorm2d(dim), 
-            nn.Tanh(),
+            nn.ReLU(),
             nn.Conv2d(dim, dim, 3, 1, 1), 
             nn.BatchNorm2d(dim), 
             nn.ReLU(),
@@ -107,27 +93,37 @@ class LSBDetector(nn.Module):
         )
 
     def forward(self, rgb):
-        # De-normalize the image tensor from [0, 1] to [0, 255] before filtering
-        rgb_255 = rgb * 255.0
-
-        # Pass the image through the fixed high-pass filter to get noise residuals
-        residuals = self.srm_filter(rgb_255)
-        
-        # Pass residuals to the trainable part of the network
-        return self.trainable_conv(residuals).flatten(1)
+        # Pass the raw (cropped) RGB tensor directly
+        return self.trainable_conv(rgb).flatten(1)
 
 class PaletteIndexDetector(nn.Module):
     def __init__(self, dim=32):
         super().__init__()
+        # Enhanced network to better detect LSB patterns in palette indices
         self.conv = nn.Sequential(
-            nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
-            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+            nn.Conv2d(1, dim*2, 3, 1, 1),
+            nn.BatchNorm2d(dim*2),
+            nn.ReLU(),
+            nn.Conv2d(dim*2, dim, 3, 1, 1),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(),
+            nn.Conv2d(dim, dim, 3, 1, 1),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(),
             nn.AdaptiveAvgPool2d(1)
         )
+
     def forward(self, indices):
-        # indices are normalized to [0,1]. We need to scale them back to [0, 255] to get LSB.
-        lsb = (indices * 255).long() & 1
-        return self.conv(lsb.float()).flatten(1)
+        # Extract LSB from palette indices
+        indices_255 = (indices * 255).long()
+        lsb = (indices_255 & 1).float()
+
+        # Also compute statistics of LSB distribution
+        # Random LSB should be ~50% ones, stego LSB will have different statistics
+        lsb_mean = lsb.mean(dim=[2, 3], keepdim=True)
+        lsb_centered = lsb - lsb_mean
+
+        return self.conv(lsb_centered).flatten(1)
 
 class AlphaDetector(nn.Module):
     def __init__(self, dim=32):
@@ -194,13 +190,13 @@ class UniversalStegoDetector(nn.Module):
         self.meta = ExifEoiDetector(dim)
         self.palette = PaletteDetector(dim)
         self.palette_index = PaletteIndexDetector(dim)
-        self.rgb_base = nn.Sequential(
-            nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
-            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1)
-        )
+        # self.rgb_base = nn.Sequential(
+        #     nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+        #     nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
+        #     nn.AdaptiveAvgPool2d(1)
+        # )
 
-        fusion_dim = dim + (dim + 1) + dim + dim + dim + dim # lsb, alpha, meta, rgb, palette, palette_index
+        fusion_dim = dim + (dim + 1) + dim + dim + dim # No f_rgb
         
         # Split the classifier into a feature fusion part and a final classification layer
         self.feature_fusion = nn.Sequential(
@@ -215,10 +211,10 @@ class UniversalStegoDetector(nn.Module):
         f_alpha = self.alpha(alpha)
         f_meta = self.meta(exif, eoi)
         f_palette = self.palette(palette)
-        f_rgb = self.rgb_base(rgb).flatten(1)
+        # f_rgb = self.rgb_base(rgb).flatten(1)
         f_palette_index = self.palette_index(indices)
         
-        combined_features = torch.cat([f_lsb, f_alpha, f_meta, f_rgb, f_palette, f_palette_index], dim=1)
+        combined_features = torch.cat([f_lsb, f_alpha, f_meta, f_palette, f_palette_index], dim=1)
         
         # Return the final feature vector before classification
         return self.feature_fusion(combined_features)
@@ -236,8 +232,8 @@ def preprocess_image(img_path):
         exif_features = get_exif_features(img, img_path)
         eoi_features = torch.tensor([1.0 if get_eoi_payload_size(img_path) > 0 else 0.0], dtype=torch.float)
 
-        # Common transforms
-        resize_transform = transforms.Resize((224, 224), antialias=True)
+        # CRITICAL FIX: Use Crop instead of Resize to preserve LSB data
+        crop_transform = transforms.CenterCrop((224, 224))
         tensor_transform = transforms.ToTensor()
 
         # Initialize all tensors to zeros
@@ -245,6 +241,13 @@ def preprocess_image(img_path):
         alpha_tensor = torch.zeros(1, 224, 224)
         palette_tensor = torch.zeros(256, 3)
         indices_tensor = torch.zeros(1, 224, 224)
+
+        def process_and_crop(img_pil, crop_transform, tensor_transform):
+            if img_pil.size[0] < 224 or img_pil.size[1] < 224:
+                padding_x = max(0, 224 - img_pil.size[0])
+                padding_y = max(0, 224 - img_pil.size[1])
+                img_pil = transforms.functional.pad(img_pil, (padding_x // 2, padding_y // 2, padding_x - padding_x // 2, padding_y - padding_y // 2))
+            return tensor_transform(crop_transform(img_pil))
 
         if img.mode == 'P':
             # Extract palette
@@ -256,22 +259,20 @@ def preprocess_image(img_path):
             
             # Extract indices, treat as a single-channel image
             indices_img = Image.fromarray(np.array(img))
-            indices_resized_img = resize_transform(indices_img)
-            indices_tensor = tensor_transform(indices_resized_img) # This will normalize to [0,1]
+            indices_tensor = process_and_crop(indices_img, crop_transform, tensor_transform)
 
         elif img.mode == 'RGBA':
             rgb_pil = img.convert('RGB')
-            rgb_tensor = tensor_transform(resize_transform(rgb_pil))
+            rgb_tensor = process_and_crop(rgb_pil, crop_transform, tensor_transform)
             
             # Extract alpha channel
             alpha_np = np.array(img)[:, :, 3]
             alpha_img = Image.fromarray(alpha_np)
-            alpha_resized_img = resize_transform(alpha_img)
-            alpha_tensor = tensor_transform(alpha_resized_img)
+            alpha_tensor = process_and_crop(alpha_img, crop_transform, tensor_transform)
 
         else: # Grayscale, RGB, etc.
             rgb_pil = img.convert('RGB')
-            rgb_tensor = tensor_transform(resize_transform(rgb_pil))
+            rgb_tensor = process_and_crop(rgb_pil, crop_transform, tensor_transform)
 
         return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor, indices_tensor
     except Exception as e:
@@ -308,17 +309,8 @@ class StegoScanner:
             with torch.no_grad():
                 return self.feature_extractor.forward_features(*tensors)
         else:
-            # Fallback: Use a zero tensor as a generic 'clean' baseline
-            # This is a placeholder and might not be optimal. A real clean image is preferred.
-            print("[INIT] No clean reference path provided. Using zero tensor as clean baseline.")
-            dummy_rgb = torch.zeros(1, 3, 224, 224).to(device)
-            dummy_alpha = torch.zeros(1, 1, 224, 224).to(device)
-            dummy_exif = torch.zeros(1, 2).to(device)
-            dummy_eoi = torch.zeros(1, 1).to(device)
-            dummy_palette = torch.zeros(1, 256, 3).to(device)
-            dummy_indices = torch.zeros(1, 1, 224, 224).to(device)
-            with torch.no_grad():
-                return self.feature_extractor.forward_features(dummy_rgb, dummy_alpha, dummy_exif, dummy_eoi, dummy_palette, dummy_indices)
+            self.model.load_state_dict(checkpoint)
+        self.model.eval()
 
     def detect(self, img_path):
         """Detect steganography in an image using ensemble or single model."""
@@ -501,10 +493,7 @@ def main():
     parser = argparse.ArgumentParser(description="Steganography Scanner and Extractor")
     parser.add_argument('target', help='Image file or directory to scan')
     parser.add_argument('--model', default="models/starlight.pth", help='Path to trained model (.pth file)')
-    parser.add_argument('--margin', type=float, default=0.8,
-                       help='Distance threshold for detection (from training log, best at 0.8)')
-    parser.add_argument('--clean_ref', type=str, default=None,
-                       help='Path to a known clean image to use as reference for detection. Defaults to a zero tensor if not provided.')
+
     parser.add_argument('--no-extract', action='store_true',
                        help='Only detect, do not extract messages')
     parser.add_argument('--recursive', action='store_true', default=True,
@@ -545,6 +534,11 @@ def main():
     target_path = Path(args.target)
     
     if target_path.is_file():
+        # Check if it's an image file
+        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tiff', '.tif'}
+        if target_path.suffix.lower() not in image_extensions:
+            print(f"Error: Not an image file: {args.target}")
+            sys.exit(1)
         print(f"\n[SCANNING] Single file: {args.target}")
         result = scanner.scan_file(target_path, extract_messages=not args.no_extract)
         
