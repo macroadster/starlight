@@ -86,21 +86,49 @@ class SuperStarlightDetector:
             try:
                 # Choose model based on source
                 source = config.get("source", "grok")
-                if source == "chatgpt" and ChatGPTModel:
-                    model_path = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'chatgpt_submission_2025', 'model', 'detector.onnx')
-                    model = ChatGPTModel(model_path)
-                elif source == "grok" and GrokModel:
-                    model_path = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'grok_submission_2025', 'model', 'detector.onnx')
-                    model = GrokModel(model_path, task="detect")
-                elif source == "claude" and ClaudeModel:
-                    model_path = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'claude_submission_2025', 'model', 'detector.onnx')
-                    model = ClaudeModel(model_path, task="detect")
-                elif source == "gemini" and GeminiModel:
-                    model = GeminiModel()
-                    model.task = "detect"
-                else:
-                    # Fallback to generic model
-                    model = None
+                model = None
+                try:
+                    if source == "chatgpt" and ChatGPTModel:
+                        model_path = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'chatgpt_submission_2025', 'model', 'detector.onnx')
+                        if os.path.exists(model_path):
+                            model = ChatGPTModel(model_path)
+                    elif source == "grok" and GrokModel:
+                        model_path = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'grok_submission_2025', 'model', 'detector.onnx')
+                        if os.path.exists(model_path):
+                            # Patch the method_config path in GrokModel before instantiation
+                            import sys
+                            original_path = sys.path[:]
+                            sys.path.insert(0, os.path.dirname(model_path))
+                            try:
+                                model = GrokModel(model_path, task="detect")
+                            finally:
+                                sys.path[:] = original_path
+                    elif source == "claude" and ClaudeModel:
+                        model_path = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'claude_submission_2025', 'model', 'detector.onnx')
+                        if os.path.exists(model_path):
+                            # Patch the method_config path in ClaudeModel before instantiation
+                            import sys
+                            original_path = sys.path[:]
+                            sys.path.insert(0, os.path.dirname(model_path))
+                            try:
+                                model = ClaudeModel(model_path, task="detect")
+                            finally:
+                                sys.path[:] = original_path
+                    elif source == "gemini" and GeminiModel:
+                        model_path = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'gemini_submission_2025', 'model', 'detector.onnx')
+                        if os.path.exists(model_path):
+                            # Change working directory temporarily for method_config.json
+                            old_cwd = os.getcwd()
+                            os.chdir(os.path.dirname(model_path))
+                            try:
+                                model = GeminiModel()
+                                model.task = "detect"
+                            finally:
+                                os.chdir(old_cwd)
+                except Exception as init_error:
+                    print(f"Error initializing {source} model: {init_error}")
+                
+                if not model:
                     result = {"error": f"Model {source} not available"}
                     individual_results.append(result)
                     weighted_probs.append(0.0)
@@ -455,8 +483,8 @@ def create_ensemble():
         },
     }
 
-    os.makedirs("../model", exist_ok=True)
-    with open("../model/ensemble_results.json", "w") as f:
+    os.makedirs("../models", exist_ok=True)
+    with open("../models/ensemble_results.json", "w") as f:
         json.dump(output, f, indent=2)
 
     # Create additional model files
@@ -465,7 +493,7 @@ def create_ensemble():
     create_leaderboard()
 
     print("\n=== Ensemble Complete ===")
-    print("Results saved to model/ensemble_results.json")
+    print("Results saved to models/ensemble_results.json")
     print("Model components saved in 'models/' directory")
 
     return ensemble
