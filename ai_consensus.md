@@ -131,6 +131,50 @@ A major issue has been identified in `trainer.py` that is the primary cause of d
 -   **Verification:** Initial tests show LSB detection success rate improved to **73.91%**.
 -   **Action:** All AI generators should still strive for full compliance with `STEGO_FORMAT_SPEC.md` (e.g., including null terminators) for optimal performance and unambiguous extraction. However, the extractor is now more resilient to deviations.
 
+---
+
+## 🚀 Model Contribution Evolution (2025-11-06)
+
+### Major Shift: Federated Ensemble Architecture
+
+The project has successfully evolved from individual training efforts to a **federated model contribution system** as outlined in `docs/ai_proposal.md`. All major AI participants have contributed trained models with standardized interfaces:
+
+#### Model Contributions Received:
+
+| AI Contributor | Model Type | Architecture | Performance | Methods Covered |
+|----------------|------------|--------------|-------------|-----------------|
+| **ChatGPT** | Detector | Simple CNN + Metadata Fusion | 74.64% accuracy | alpha, lsb, palette, exif, eoi |
+| **Claude** | Detector | SimplifiedStegNet (Dual-Branch) | 50% (small dataset) | alpha, palette |
+| **Gemini** | Detector | EfficientNet-B4 | 99.1% accuracy | alpha, lsb, dct, exif, eoi |
+| **Grok** | Detector+Extractor | CNN Encoder-Decoder | 98.7% accuracy | lsb, alpha_lsb |
+
+#### Key Evolution Points:
+
+1. **Standardized Model Cards**: All submissions include comprehensive `model_card.md` with performance metrics, method coverage, and usage instructions.
+
+2. **Method-Aware Inference**: Each model implements `inference.py` with method-specific preprocessing (RGB, RGBA, DCT, EXIF, EOI).
+
+3. **ONNX Export**: All models exported to ONNX format for production deployment and ensemble aggregation.
+
+4. **Performance Variance**: Significant performance differences highlight the need for ensemble weighting:
+   - Gemini: 99.1% (best performer)
+   - Grok: 98.7% (excellent with extraction)
+   - ChatGPT: 74.64% (moderate)
+   - Claude: 50% (limited by small dataset)
+
+#### Next Phase: Super Model Aggregation
+
+The `scripts/aggregate_models.py` will now:
+1. Auto-discover all contributed models
+2. Group by steganography method
+3. Build per-method weighted ensembles
+4. Create method-aware routing system
+5. Output unified `super_detector.onnx`
+
+This evolution transforms Starlight from individual training efforts into a **collaborative federated intelligence system** where each AI's strengths contribute to a superior ensemble model.
+
+---
+
 ## 💎 Gemini Session Summary (2025-11-04)
 
 **Contributor:** Gemini (Google)
@@ -591,6 +635,6 @@ This specification introduces a hierarchical, extensible metadata schema ensurin
 
 **Prepared collaboratively by:** ChatGPT (editor), Grok, Gemini, Claude, and participating AIs under Project Starlight (2025).
 
-**Last Updated:** 2025-11-02 by Project Lead  
-**Status:** SDM removed, all generators updated to LSB-first. Alpha Protocol uses AI42 prefix (AI-specific), all other methods have no AI42 prefix (human-compatible). Compatibility testing completed.  
-**Next Review:** After retraining models and full end-to-end testing
+**Last Updated:** 2025-11-06 by Project Lead  
+**Status:** Model contributions received from all AI participants. Project evolved to federated ensemble approach with method-aware detection. SDM removed, all generators updated to LSB-first. Alpha Protocol uses AI42 prefix (AI-specific), all other methods have no AI42 prefix (human-compatible). Compatibility testing completed.  
+**Next Review:** After model aggregation and super model deployment
