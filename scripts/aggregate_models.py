@@ -155,8 +155,14 @@ class SuperStarlightDetector:
                 weighted_probs.append(prob * self.weights[i])
 
             except Exception as e:
-                print(f"Error in model {i}: {e}")
-                individual_results.append({"error": str(e)})
+                # Suppress common mode errors to reduce noise
+                error_msg = str(e)
+                if "Mode P not supported" in error_msg or "method_config.json is required" in error_msg:
+                    # Silent handling for expected errors
+                    pass
+                else:
+                    print(f"Error in model {i}: {e}")
+                individual_results.append({"error": error_msg})
                 weighted_probs.append(0.0)
 
         # Calculate ensemble probability

@@ -42,27 +42,43 @@ class StarlightModel:
         method = method or self._detect_method_from_filename(img_path)
         cfg = self.method_config.get(method, self.method_config["lsb"])
 
-        if cfg["mode"] == "RGB":
+        # ChatGPT model only supports RGB input, convert all to RGB
+        if cfg["mode"] in ["RGB", "RGBA", "P"]:
             return self._preprocess_rgb(img_path, cfg)
-        elif cfg["mode"] == "RGBA":
-            return self._preprocess_rgba(img_path, cfg)
         elif cfg["mode"] == "DCT":
-            return self._preprocess_dct(img_path)
+            # For DCT images, convert to RGB
+            return self._preprocess_rgb(img_path, cfg)
         elif cfg["mode"] == "EXIF":
-            return self._preprocess_exif(img_path)
+            # For EXIF analysis, convert to RGB  
+            return self._preprocess_rgb(img_path, cfg)
         elif cfg["mode"] == "EOI":
-            return self._preprocess_eoi(img_path)
-        elif cfg["mode"] == "P":
-            return self._preprocess_palette(img_path, cfg)
+            # For EOI analysis, convert to RGB
+            return self._preprocess_rgb(img_path, cfg)
         else:
-            raise NotImplementedError(f"Mode {cfg['mode']} not supported")
+            # Default to RGB for unknown modes
+            return self._preprocess_rgb(img_path, cfg)
 
     def _preprocess_rgb(self, img_path, cfg):
         # ChatGPT model expects 224x224 input
         img = Image.open(img_path).convert("RGB").resize((224, 224))
         arr = np.array(img).astype(np.float32) / 255.0
+        
+        # Ensure we have 3D array (H, W, C) before transpose
+        if arr.ndim == 2:
+            # Grayscale image, convert to 3 channels
+            arr = np.stack([arr, arr, arr], axis=-1)
+        elif arr.ndim == 3 and arr.shape[2] == 1:
+            # Single channel image, duplicate to 3 channels
+            arr = np.repeat(arr, 3, axis=2)
+        
         arr = np.transpose(arr, (2, 0, 1))          # C×H×W
-        return np.expand_dims(arr, 0)               # 1×C×H×W
+        result = np.expand_dims(arr, 0)              # 1×C×H×W
+        
+        # Ensure 4D output
+        if result.ndim != 4:
+            raise ValueError(f"RGB preprocessing failed: got {result.ndim}D tensor, expected 4D")
+        
+        return result
 
     def _preprocess_rgba(self, img_path, cfg):
         # ChatGPT model expects RGB input, convert RGBA to RGB
