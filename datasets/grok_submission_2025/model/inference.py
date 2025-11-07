@@ -105,6 +105,10 @@ class StarlightModel:
             return self._preprocess_rgba(img_path, config)
         elif config["mode"] == "EXIF":
             return self._preprocess_exif(img_path)
+        elif config["mode"] == "EOI":
+            return self._preprocess_eoi(img_path)
+        elif config["mode"] == "P":
+            return self._preprocess_palette(img_path, config)
         else:
             raise NotImplementedError(f"Mode {config['mode']} not supported")
 
@@ -127,6 +131,35 @@ class StarlightModel:
         padded = np.zeros(1024, dtype=np.float32)
         padded[:len(data)] = data.astype(np.float32) / 255.0
         return padded.reshape(1, -1)
+
+    def _preprocess_eoi(self, img_path):
+        """Preprocess EOI (End of Image) steganography by reading tail bytes"""
+        with open(img_path, 'rb') as f:
+            f.seek(0, 2)  # Go to the end of file
+            file_size = f.tell()
+            
+            read_size = min(file_size, 1024)
+            f.seek(-read_size, 2)
+            tail = f.read(read_size)
+            
+        eoi_pos = tail.find(b'\xFF\xD9')
+        
+        if eoi_pos != -1:
+            appended = tail[eoi_pos + 2:]
+        else:
+            appended = b''  # If EOI marker not found, assume no appended data
+            
+        data = np.frombuffer(appended, dtype=np.uint8)[:1024]
+        padded = np.zeros(1024, dtype=np.float32)
+        padded[:len(data)] = data.astype(np.float32) / 255.0
+        return padded.reshape(1, -1)
+
+    def _preprocess_palette(self, img_path, config):
+        """Preprocess palette images by converting to RGB"""
+        img = Image.open(img_path).convert("RGB").resize(config["resize"])
+        arr = np.array(img).astype(np.float32) / 255.0
+        arr = np.transpose(arr, (2, 0, 1))
+        return np.expand_dims(arr, 0)
 
     def predict(self, img_path: str, method: str = None) -> Dict[str, Any]:
         method = method or self._detect_method_from_filename(img_path)

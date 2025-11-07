@@ -1,0 +1,107 @@
+{
+  "ensemble_config": [
+    {
+      "task": "detect",
+      "method": "neural",
+      "source": "chatgpt",
+      "weight": 1.1,
+      "description": "ChatGPT neural network detector"
+    },
+    {
+      "task": "detect",
+      "method": "neural",
+      "source": "grok",
+      "weight": 1.6500000000000001,
+      "description": "Grok neural network detector"
+    },
+    {
+      "task": "detect",
+      "method": "neural",
+      "source": "claude",
+      "weight": 1.1,
+      "description": "Claude neural network detector (Alpha + Palette)"
+    },
+    {
+      "task": "detect",
+      "method": "lsb",
+      "source": "grok",
+      "weight": 1.6500000000000001,
+      "description": "Grok LSB statistical detector"
+    },
+    {
+      "task": "detect",
+      "method": "exif",
+      "source": "grok",
+      "weight": 1.6500000000000001,
+      "description": "Grok EXIF metadata detector"
+    }
+  ],
+  "test_results": [
+    {
+      "label": "ChatGPT Clean",
+      "path": "datasets/chatgpt_submission_2025/clean/sample_seed_alpha_000.png",
+      "probability": 0.07712769508361816,
+      "predicted": false,
+      "type": "none"
+    },
+    {
+      "label": "ChatGPT Stego",
+      "path": "datasets/chatgpt_submission_2025/stego/sample_seed_alpha_000.png",
+      "probability": 0.07712767674372747,
+      "predicted": false,
+      "type": "none"
+    },
+    {
+      "label": "Grok Clean LSB",
+      "path": "datasets/grok_submission_2025/clean/README_lsb_000.png",
+      "probability": 0.07672756910324097,
+      "predicted": false,
+      "type": "none"
+    },
+    {
+      "label": "Grok Stego LSB",
+      "path": "datasets/grok_submission_2025/stego/README_lsb_000.png",
+      "probability": 0.07672757827318633,
+      "predicted": false,
+      "type": "none"
+    },
+    {
+      "label": "Claude Clean Alpha",
+      "path": "datasets/claude_submission_2025/clean/essence_seed_alpha_000.png",
+      "probability": 0.07730327202723578,
+      "predicted": false,
+      "type": "none"
+    },
+    {
+      "label": "Claude Stego Alpha",
+      "path": "datasets/claude_submission_2025/stego/essence_seed_alpha_000.png",
+      "probability": 0.07730341874636137,
+      "predicted": false,
+      "type": "none"
+    },
+    {
+      "label": "Claude Clean Palette",
+      "path": "datasets/claude_submission_2025/clean/essence_seed_palette_000.bmp",
+      "probability": 0.07630221660320576,
+      "predicted": false,
+      "type": "none"
+    },
+    {
+      "label": "Claude Stego Palette",
+      "path": "datasets/claude_submission_2025/stego/essence_seed_palette_000.bmp",
+      "probability": 0.07638654342064491,
+      "predicted": false,
+      "type": "none"
+    }
+  ],
+  "performance": {
+    "models_count": 5,
+    "ensemble_weights": [
+      0.15384615384615385,
+      0.23076923076923078,
+      0.15384615384615385,
+      0.23076923076923078,
+      0.23076923076923078
+    ]
+  }
+}
