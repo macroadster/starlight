@@ -201,7 +201,12 @@ def custom_collate(batch):
 def train_model(clean_dir='clean', stego_dir='stego', epochs=100, batch_size=8, lr=0.001):
     """Train the steganalysis model"""
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
     print(f"Using device: {device}")
     
     # Enhanced data transforms with augmentation
