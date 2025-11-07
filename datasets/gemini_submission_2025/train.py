@@ -10,6 +10,8 @@ import numpy as np
 import glob
 from sklearn.model_selection import train_test_split
 import json
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # --- CONFIGURATION ---
 HINT_BYTES = b'AI42'
