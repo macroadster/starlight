@@ -502,9 +502,9 @@ if __name__ == "__main__":
         print(f"[DEVICE] CUDA Device: {torch.cuda.get_device_name()}")
     parser = argparse.ArgumentParser(description="ChatGPT Submission Trainer")
     parser.add_argument("--datasets_dir", type=str, default="datasets")
-    parser.add_argument("--subdir", type=str, default="chatgpt_submission_2025", help="Training subdirectory")
+    parser.add_argument("--subdir", type=str, default=".", help="Training subdirectory")
     parser.add_argument("--val_subdir", type=str, default="val", help="Validation subdirectory")
-    parser.add_argument("--model", type=str, default="datasets/chatgpt_submission_2025/model/detector.pth", 
+    parser.add_argument("--model", type=str, default="model/detector.pth", 
                        help="Path to save the model")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=32)

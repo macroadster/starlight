@@ -7,7 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.onnx
-import sys
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 import os
 
 class SteganographyDetector(nn.Module):
@@ -132,23 +133,23 @@ def export_to_onnx():
             output = model(rgb_dummy, metadata_dummy)
             print(f"Model output shape: {output.shape}")
         
-        # Export to ONNX
+        # Legacy export (works) – the dynamo exporter currently cannot handle this model
         torch.onnx.export(
             model,
             (rgb_dummy, metadata_dummy),
             onnx_path,
             export_params=True,
             opset_version=11,
-            do_constant_folding=True,
             input_names=input_names,
             output_names=output_names,
             dynamic_axes={
-                'rgb': {0: 'batch_size'},
-                'metadata': {0: 'batch_size'},
-                'logits': {0: 'batch_size'}
-            }
+                "rgb": {0: "batch_size"},
+                "metadata": {0: "batch_size"},
+                "logits": {0: "batch_size"},
+            },
         )
-        
+        print(f"Model exported to {onnx_path}")
+
         print(f"Model exported to {onnx_path}")
         
         # Verify the exported model
@@ -168,9 +169,9 @@ def export_to_onnx():
             'metadata': metadata_dummy.numpy()
         }
         
-        # Run inference
         outputs = ort_session.run(None, test_inputs)
-        print(f"✅ ONNX Runtime test passed - Output shape: {outputs[0].shape}")
+        output_arr = outputs[0]
+        print(f"✅ ONNX Runtime test passed - Output shape: {output_arr.shape}")
         
         return True
         
