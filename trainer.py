@@ -626,25 +626,39 @@ def train_model(args):
         print(f"[ERROR] Model file was not saved!")
 
 
+def orchestrate_training(args):
+    datasets_dir = Path(args.datasets_dir)
+    submissions = [d for d in datasets_dir.iterdir() if d.is_dir() and d.name.endswith('_submission_2025') and d.name != 'sample_submission_2025']
+
+    for submission in submissions:
+        print(f"[ORCHESTRATE] Processing {submission.name}")
+
+        # Clean clean and stego directories
+        clean_dir = submission / "clean"
+        stego_dir = submission / "stego"
+        if clean_dir.exists():
+            import shutil
+            shutil.rmtree(clean_dir)
+        if stego_dir.exists():
+            import shutil
+            shutil.rmtree(stego_dir)
+        print(f"[ORCHESTRATE] Cleaned directories for {submission.name}")
+
+        # Run data_generator.py --limit
+        cmd_data = f"cd {submission} && python data_generator.py --limit {args.limit}"
+        print(f"[ORCHESTRATE] Running: {cmd_data}")
+        os.system(cmd_data)
+
+        # Run train.py --epochs
+        cmd_train = f"cd {submission} && python train.py --epochs {args.epoch}"
+        print(f"[ORCHESTRATE] Running: {cmd_train}")
+        os.system(cmd_train)
+
 if __name__ == "__main__":
     print(f"[DEVICE] Using: {device}")
-    parser = argparse.ArgumentParser(description="Starlight Trainer - Fixed Siamese Training")
+    parser = argparse.ArgumentParser(description="Starlight Trainer - Orchestrate training for all submissions")
     parser.add_argument("--datasets_dir", type=str, default="datasets")
-    parser.add_argument("--model", default="models/starlight.pth", help="Path to save/load the model")
-    parser.add_argument("--epochs", type=int, default=40)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument('--patience', type=int, default=7, help='Patience for early stopping')
-    parser.add_argument('--margin', type=float, default=2.0, help='Margin for Contrastive Loss')
-    parser.add_argument('--contrastive_weight', type=float, default=0.1, help='Weight for contrastive loss (reduced to focus on classification)')
-    parser.add_argument('--classification_weight', type=float, default=1.0, help='Weight for classification loss')
-    parser.add_argument('--use_focal_loss', action='store_true', help='Use Focal Loss instead of Cross-Entropy for better class imbalance handling')
-    parser.add_argument('--focal_loss_gamma', type=float, default=2.0, help='Gamma parameter for Focal Loss')
-    parser.add_argument('--class_weights', type=str, default=None, 
-                       help='Custom class weights as comma-separated values: alpha,palette,lsb,exif,eoi,clean (e.g., "2,3,3,2,2,0.5")')
-    parser.add_argument("--resume", action="store_true", help="Resume training from the model path")
-    parser.add_argument("--train_subdirs", type=str, default="sample_submission_2025", help="Comma-separated list of training subdir patterns")
-    parser.add_argument("--val_subdirs", type=str, default="val", help="Comma-separated list of validation subdir patterns")
+    parser.add_argument("--epoch", type=int, required=True, help="Number of epochs for training")
+    parser.add_argument("--limit", type=int, required=True, help="Limit for data generation")
     args = parser.parse_args()
-    os.makedirs("models", exist_ok=True)
-    train_model(args)
+    orchestrate_training(args)
