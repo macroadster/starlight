@@ -200,69 +200,98 @@ def train(model, dataloader, criterion, optimizer, device, task):
     return total_loss / len(dataloader)
 
 def main():
-    parser = argparse.ArgumentParser(description="Train a steganography detector or extractor.")
-    parser.add_argument("--method", type=str, required=True, choices=["alpha", "eoi"], help="Steganography method.")
-    parser.add_argument("--task", type=str, required=True, choices=["detect", "extract"], help="Task to perform.")
+    parser = argparse.ArgumentParser(description="Train all steganography detectors and extractors.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
     args = parser.parse_args()
 
-    # --- Model and Data Config ---
-    if args.method == "alpha":
-        preprocess_fn = preprocess_alpha
-        file_extension = "png"
-        if args.task == "detect":
-            model = AlphaDetector()
-            criterion = nn.BCELoss()
-        else:
-            model = AlphaExtractor()
-            criterion = nn.BCEWithLogitsLoss()
-    else: # eoi
-        preprocess_fn = preprocess_eoi
-        file_extension = "jpeg"
-        if args.task == "detect":
-            model = EoiDetector()
-            criterion = nn.BCELoss()
-        else:
-            model = EoiExtractor()
-            criterion = nn.MSELoss()
-
-    # --- Data Loading ---
-    clean_files = glob.glob(f"clean/*_{args.method}_*.{file_extension}")
-    stego_files = glob.glob(f"stego/*_{args.method}_*.{file_extension}")
-    all_files = clean_files + stego_files
-    
-    if not all_files:
-        print(f"No files found for method '{args.method}'. Please run data_generator.py first.")
-        return
-
-    train_files, _ = train_test_split(all_files, test_size=0.2, random_state=42)
-    train_dataset = StegoDataset(train_files, preprocess_fn, args.task, args.method)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-
-    # --- Training ---
+    # --- Device Configuration ---
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    print(f"Training {args.method} {args.task} on {device} for {args.epochs} epochs...")
-    for epoch in range(args.epochs):
-        loss = train(model, train_loader, criterion, optimizer, device, args.task)
-        print(f"Epoch {epoch+1}/{args.epochs}, Loss: {loss:.4f}")
+    print(f"Using device: {device}")
 
-    # --- Save Model ---
-    output_path = f"model/{args.task}or_{args.method}.onnx"
-    print(f"Saving model to {output_path}")
-    dummy_input = torch.randn(1, *train_dataset[0][0].shape, device=device)
-    input_names = ["input"]
-    output_names = ["output"]
-    torch.onnx.export(model, dummy_input, output_path, input_names=input_names, output_names=output_names, opset_version=11, verbose=False)
-    print("Done.")
+    # --- Iterate over all methods and tasks ---
+    for method in ["alpha", "eoi"]:
+        for task in ["detect", "extract"]:
+            print(f"--- Starting training for method='{method}', task='{task}' ---")
+
+            # --- Model and Data Config ---
+            if method == "alpha":
+                preprocess_fn = preprocess_alpha
+                file_extension = "png"
+                if task == "detect":
+                    model = AlphaDetector()
+                    criterion = nn.BCELoss()
+                else: # extract
+                    model = AlphaExtractor()
+                    criterion = nn.BCEWithLogitsLoss()
+            else:  # eoi
+                preprocess_fn = preprocess_eoi
+                file_extension = "jpeg"
+                if task == "detect":
+                    model = EoiDetector()
+                    criterion = nn.BCELoss()
+                else: # extract
+                    model = EoiExtractor()
+                    criterion = nn.MSELoss()
+
+            # --- Data Loading ---
+            clean_files = glob.glob(f"clean/*_{method}_*.{file_extension}")
+            stego_files = glob.glob(f"stego/*_{method}_*.{file_extension}")
+            all_files = clean_files + stego_files
+
+            if not all_files:
+                print(f"No files found for method '{method}'. Skipping.")
+                continue
+
+            train_files, _ = train_test_split(all_files, test_size=0.2, random_state=42)
+            train_dataset = StegoDataset(train_files, preprocess_fn, task, method)
+            train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+
+            # --- Training ---
+            model.to(device)
+            optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+            print(f"Training {method} {task} on {device} for {args.epochs} epochs...")
+            for epoch in range(args.epochs):
+                loss = train(model, train_loader, criterion, optimizer, device, task)
+                print(f"Epoch {epoch+1}/{args.epochs}, Loss: {loss:.4f}")
+
+            # --- Save Model ---
+            model_dir = f"model/{method}"
+            os.makedirs(model_dir, exist_ok=True)
+            
+            output_path = f"{model_dir}/{task}or.onnx"
+            
+            print(f"Saving model to {output_path}")
+            
+            # Ensure dummy_input has the correct shape
+            if not train_dataset:
+                print("Skipping model export due to empty dataset.")
+                continue
+            
+            dummy_input = torch.randn(1, *train_dataset[0][0].shape, device=device)
+            
+            input_names = ["input"]
+            output_names = ["output"]
+            
+            torch.onnx.export(
+                model, 
+                dummy_input, 
+                output_path, 
+                input_names=input_names, 
+                output_names=output_names, 
+                opset_version=11, 
+                verbose=False
+            )
+            print(f"--- Finished training for method='{method}', task='{task}' ---\n")
+
+    print("All training complete.")
 
 if __name__ == "__main__":
     main()
