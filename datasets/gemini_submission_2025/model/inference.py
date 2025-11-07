@@ -9,24 +9,18 @@ import argparse
 
 # --- CONFIGURATION ---
 class StarlightModel:
-    def __init__(
-        self,
-        detector_alpha_path: str = "model/detector_alpha.onnx",
-        detector_eoi_path: str = "model/detector_eoi.onnx",
-        extractor_alpha_path: str = "model/extractor_alpha.onnx",
-        extractor_eoi_path: str = "model/extractor_eoi.onnx",
-    ):
-        self.detector_alpha = ort.InferenceSession(detector_alpha_path) if os.path.exists(detector_alpha_path) else None
-        self.detector_eoi = ort.InferenceSession(detector_eoi_path) if os.path.exists(detector_eoi_path) else None
-        self.extractor_alpha = ort.InferenceSession(extractor_alpha_path) if os.path.exists(extractor_alpha_path) else None
-        self.extractor_eoi = ort.InferenceSession(extractor_eoi_path) if os.path.exists(extractor_eoi_path) else None
-        
+    def __init__(self, model_dir: str = "model"):
+        self.model_dir = model_dir
         self.method_config = self._load_method_config()
+        self.sessions = {} # Cache for loaded models
 
     def _load_method_config(self) -> Dict:
-        config_path = "model/method_config.json"
+        config_path = os.path.join(self.model_dir, "method_config.json")
         if not os.path.exists(config_path):
-            raise FileNotFoundError("method_config.json is required")
+            # Look in parent directory if not in model_dir
+            config_path = os.path.join(os.path.dirname(self.model_dir), "method_config.json")
+            if not os.path.exists(config_path):
+                 raise FileNotFoundError("method_config.json is required")
         with open(config_path) as f:
             return json.load(f)
 
@@ -178,22 +172,28 @@ class StarlightModel:
 
     def predict(self, img_path: str, task: str, method: str = None) -> Dict[str, Any]:
         method = method or self._detect_method_from_filename(img_path)
-        input_data = self.preprocess(img_path, method)
+        
+        # Construct model path and load session on-the-fly
+        model_path = os.path.join(self.model_dir, method, f"{task}or.onnx")
+        
+        if model_path in self.sessions:
+            session = self.sessions[model_path]
+        elif os.path.exists(model_path):
+            session = ort.InferenceSession(model_path)
+            self.sessions[model_path] = session
+        else:
+            return {"error": f"Model not found for method: {method}, task: {task} at {model_path}"}
 
-        input_data = np.expand_dims(input_data, 0) # Add batch dimension
+        # Preprocess and run inference
+        input_data = self.preprocess(img_path, method)
+        
+        # Add batch dimension if not present (some preprocessing steps might already add it)
+        if input_data.ndim == 3: # e.g. (C, H, W)
+             input_data = np.expand_dims(input_data, 0)
+        
+        outputs = session.run(None, {session.get_inputs()[0].name: input_data})
 
         if task == "detect":
-            if method == "alpha":
-                session = self.detector_alpha
-            elif method == "eoi":
-                session = self.detector_eoi
-            else:
-                return {"error": f"Detector not available for method: {method}"}
-
-            if not session:
-                return {"error": f"Detector model not loaded for method: {method}."}
-            
-            outputs = session.run(None, {session.get_inputs()[0].name: input_data})
             prob = float(outputs[0][0])
             return {
                 "method": method,
@@ -201,19 +201,7 @@ class StarlightModel:
                 "predicted": prob > 0.5
             }
         elif task == "extract":
-            if method == "alpha":
-                session = self.extractor_alpha
-            elif method == "eoi":
-                session = self.extractor_eoi
-            else:
-                return {"error": f"Extractor not available for method: {method}"}
-
-            if not session:
-                return {"error": f"Extractor model not loaded for method: {method}."}
-            
-            outputs = session.run(None, {session.get_inputs()[0].name: input_data})
-            
-            config = self.method_config.get(method, self.method_config["lsb"])
+            config = self.method_config.get(method, self.method_config.get("lsb", {}))
             hint_bytes_hex = config.get("hint_bytes", "")
             terminator_bytes_hex = config.get("terminator_bytes", "")
             
