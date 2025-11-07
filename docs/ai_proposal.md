@@ -1,6 +1,7 @@
 # **Project Starlight: Model Contribution & Aggregation Proposal**  
-**Updated: November 05, 2025**  
-**Goal:** Evolve Starlight into a **multi-modal, federated AI ecosystem** where contributors submit trained **detection and extraction models** alongside data. Models are **method-aware**, support **non-RGB steganography**, and are aggregated into a **super model** via ensemble fusion.
+**Project Starlight: Model Contribution & Aggregation Proposal**  
+**Updated: November 06, 2025**  
+**Goal:** Evolve Starlight into a **multi-modal, federated AI ecosystem** with **fair, method-specialized voting** — preventing **clean bias** and ensuring **specialized models dominate their domain**.
 
 ---
 
@@ -13,7 +14,7 @@ datasets/
     ├── stego/                      # Stego images
     ├── sample_seed.md              # Optional payload seeds
     ├── data_generator.py           # (Optional) Data generation
-    ├── model/                      # NEW: Model contribution
+    ├── model/                      # Model contribution
     │   ├── detector.onnx           # ONNX detection model
     │   ├── extractor.onnx          # ONNX extraction model (optional)
     │   ├── model_card.md           # Model metadata & performance
@@ -259,22 +260,21 @@ jpegio>=0.2.0
 
 ## **3. Top-Level Aggregation: `scripts/aggregate_models.py`**
 
-### **3.1 Features**
-- Auto-discovers all `model/detector.onnx` and `method_config.json`
-- **Groups models by steganography method**
-- Builds **per-method weighted ensembles**
-- Routes input to correct sub-ensemble at inference
-- Outputs **super model** with **method router**
+### **3.1 Core Fix: NO EQUAL VOTES**
+
+> **Every model does NOT have equal vote.**  
+> **Only models that support the detected method vote.**  
+> **Specialized models dominate their domain.**
 
 ---
 
-### **3.2 Aggregation Logic**
+### **3.2 Method-Specialized Ensemble Voting**
 
 ```python
 class SuperStarlightModel:
     def __init__(self):
-        self.method_ensembles = {}  # "alpha": [model1, model2], ...
-        self.weights = {}           # "alpha": [0.6, 0.4]
+        self.method_ensembles = {}  # "exif": [model1, model2], ...
+        self.weights = {}           # "exif": [0.6, 0.4]
         self.load_all_models()
 
     def load_all_models(self):
@@ -284,7 +284,7 @@ class SuperStarlightModel:
                 continue
             with open(config_path) as f:
                 config = json.load(f)
-            for method, cfg in config.items():
+            for method in config.keys():
                 model_path = subdir / "model" / "detector.onnx"
                 if model_path.exists():
                     self.method_ensembles.setdefault(method, []).append(model_path)
@@ -293,16 +293,70 @@ class SuperStarlightModel:
 
 ---
 
-### **3.3 Output**
+### **3.3 Inference Logic (Fixed)**
 
-```text
-models/
-├── super_detector.onnx
-├── super_extractor.onnx
-├── method_router.json
-├── ensemble_weights.json
-└── leaderboard.md
+```python
+def predict(self, img_path: str) -> Dict:
+    method = self.detect_method(img_path)  # from filename
+    models = self.method_ensembles.get(method, [])
+    
+    if not models:
+        return {"error": f"No model supports method: {method}"}
+
+    votes = []
+    weights = []
+    for model_path in models:
+        try:
+            model = StarlightModel(detector_path=str(model_path))
+            result = model.predict(img_path, method=method)
+            votes.append(result["stego_probability"])
+            weights.append(self.get_weight(model_path, method))
+        except Exception as e:
+            continue  # Skip unsupported
+
+    if not votes:
+        return {"error": "All models failed"}
+
+    # Weighted average — only from models that understand this method
+    final_prob = np.average(votes, weights=weights)
+    return {
+        "method": method,
+        "stego_probability": float(final_prob),
+        "predicted": final_prob > 0.5,
+        "confidence": f"{abs(final_prob - 0.5)*200:.1f}%",
+        "voters": len(votes)
+    }
 ```
+
+---
+
+### **3.4 Weight Assignment (Dynamic)**
+
+| Criteria | Weight Multiplier |
+|--------|-------------------|
+| AUC ≥ 0.99 | ×1.5 |
+| AUC ≥ 0.95 | ×1.2 |
+| Covers 3+ algos | ×1.1 |
+| Extraction BER < 0.01 | ×1.3 |
+| Inference < 5ms (GPU) | ×1.1 |
+| **Specialized (1 method)** | ×1.5 |
+
+> **Specialized models get higher weight in their domain**
+
+---
+
+### **3.5 Example: `AGENTS_exif_000.jpeg`**
+
+| Model | Supports `exif`? | Vote |
+|-------|------------------|------|
+| Grok EXIF detector | Yes | 0.98 |
+| Gemini EOI detector | No | Skipped |
+| Claude Alpha | No | Skipped |
+| Grok LSB | No | Skipped |
+
+**Final Vote**: `0.98` → **"Stego (98.0% confidence)"**
+
+> **No clean bias. EXIF model wins.**
 
 ---
 
@@ -312,12 +366,11 @@ models/
 python scripts/validate_submission.py datasets/grok_submission_2025/
 ```
 **Checks:**
-- `method_config.json` exists and is valid
+- `method_config.json` exists
 - All methods in `model_card.md` are in `method_config.json`
 - `inference.py` runs on sample images:
-  - `alpha` → `(1,4,256,256)`
+  - `exif` → `(1,1024)`
   - `eoi` → `(1,1024)`
-  - `dct` → `(1,4096)`
 - ONNX models load
 - No malicious code
 
@@ -340,33 +393,33 @@ python scripts/validate_submission.py datasets/grok_submission_2025/
 
 | Benefit | Impact |
 |-------|--------|
-| **Full Method Coverage** | No signal loss from RGB conversion |
-| **Federated & Modular** | Add new method → new sub-model |
-| **Auto-Routing** | Super model knows *how* to process |
-| **Continuous Evolution** | New submissions improve per-method accuracy |
+| **No Clean Bias** | Only relevant models vote |
+| **Specialist Dominance** | `exif` model beats generalists on EXIF |
+| **Fair Aggregation** | 1 EXIF model > 10 RGB models |
+| **Scalable** | Add new method → new sub-ensemble |
 
 ---
 
 ## **7. Future Extensions**
 
-- **Dynamic Method Detection** via metadata
-- **Adversarial Training Loop** using extractors
-- **On-Chain Inference** via WASM/ONNX Runtime
-- **API**: `POST /detect` → returns method + probability + payload
+- **Confidence Calibration** via temperature scaling
+- **Adversarial Voting** (minority report)
+- **On-Chain Proof** of ensemble result
+- **API**: `POST /scan` → returns method, confidence, payload
 
 ---
 
 ## **8. Call to Action**
 
-> **Contribute your method-aware model today!**  
-> Even a single `alpha` or `eoi` detector boosts the super model.
+> **Contribute your specialized model today!**  
+> A single `exif` or `eoi` detector **dominates its domain**.
 
 ```bash
-mkdir -p datasets/grok_submission_2025/model
-cp detector.onnx method_config.json inference.py model_card.md requirements.txt datasets/grok_submission_2025/model/
+mkdir -p datasets/howssatoshi_submission_2025/model
+cp exif_detector.onnx method_config.json inference.py model_card.md requirements.txt datasets/howssatoshi_submission_2025/model/
 ```
 
 ---
 
-**Starlight is now a living, multi-modal steganalysis superintelligence — powered by the community.**  
-Let’s detect and extract *every* hidden message in the blockchain.
+**Starlight is now a fair, method-specialized, superintelligent steganalysis engine — powered by experts, not majority.**  
+**No more clean bias. Every hidden message will be found.****Updated: November 05, 2025**  
