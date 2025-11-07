@@ -6,6 +6,8 @@ export_to_onnx.py - Export trained PyTorch models to ONNX format
 import torch
 import os
 import sys
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Add current directory to import modules
 sys.path.append(".")
