@@ -26,6 +26,8 @@ import json
 from tqdm import tqdm
 import onnx
 import torch.onnx
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 class StegDataset(Dataset):
     """Dataset loader for clean/stego image pairs"""
