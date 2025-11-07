@@ -65,7 +65,7 @@ class ClaudeStegGenerator:
                         int(255 * (x + y) / (width + height)),
                         255  # Fully opaque alpha channel
                     ]
-            return Image.fromarray(img_array, mode='RGBA')
+            return Image.fromarray(img_array)
         
         elif img_type == 'geometric':
             img = Image.new('RGBA', (width, height), color=(255, 255, 255, 255))
