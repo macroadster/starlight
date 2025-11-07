@@ -40,7 +40,6 @@ train_tf = A.Compose(
             min_height=CFG["img_size"],
             min_width=CFG["img_size"],
             border_mode=cv2.BORDER_CONSTANT,
-            fill_value=0,
         ),
         A.RandomCrop(width=CFG["img_size"], height=CFG["img_size"]),
         A.HorizontalFlip(p=0.5),
@@ -56,7 +55,6 @@ val_tf = A.Compose(
             min_height=CFG["img_size"],
             min_width=CFG["img_size"],
             border_mode=cv2.BORDER_CONSTANT,
-            fill_value=0,
         ),
         A.ToFloat(max_value=255),
     ],
@@ -299,6 +297,15 @@ def validate(enc, dec, loader):
 
 # ------------------- MAIN -------------------
 def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Train Grok steganography model')
+    parser.add_argument('--epochs', type=int, default=CFG["epochs"], help='Number of training epochs')
+    args = parser.parse_args()
+    
+    # Update epochs from command line
+    epochs = args.epochs
+    
     train_loader, val_loader = get_loaders()
     enc = Encoder(CFG["msg_len"]).to(CFG["device"])
     dec = Decoder(CFG["msg_len"]).to(CFG["device"])
@@ -312,7 +319,7 @@ def main():
     opt_crit = optim.Adam(crit.parameters(), lr=CFG["lr"], betas=(0.5, 0.999))
 
     best = 1.0
-    for epoch in range(1, CFG["epochs"] + 1):
+    for epoch in range(1, epochs + 1):
         train_one_epoch(enc, dec, crit, train_loader, opt_encdec, opt_crit)
         bit_err, psnr, ssim = validate(enc, dec, val_loader)
         print(
