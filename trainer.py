@@ -628,7 +628,7 @@ def train_model(args):
 
 def orchestrate_training(args):
     datasets_dir = Path(args.datasets_dir)
-    submissions = [d for d in datasets_dir.iterdir() if d.is_dir() and d.name.endswith('_submission_2025') and d.name != 'sample_submission_2025']
+    submissions = [d for d in datasets_dir.iterdir() if d.is_dir() and d.name.endswith('_submission_2025') and d.name not in ['sample_submission_2025', 'maya_submission_2025']]
 
     for submission in submissions:
         print(f"[ORCHESTRATE] Processing {submission.name}")
