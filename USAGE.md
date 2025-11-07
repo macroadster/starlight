@@ -45,9 +45,9 @@ Train individual steganalysis models for each contributor submission.
 
 ---
 
-## 4. Creating the Aggregated Ensemble Model
+## 4. Creating Method-Specialized Ensemble Model
 
-Combine multiple trained models into a powerful ensemble using the aggregation script.
+Combine multiple trained models into a powerful method-specialized ensemble that only uses models supporting the detected steganography method.
 
 * **Action:** Run the ensemble aggregation from the project root.
 * **Command:**
@@ -56,8 +56,11 @@ Combine multiple trained models into a powerful ensemble using the aggregation s
     ```
 * **Output:** 
   - Ensemble configuration and weights saved to `model/ensemble_results.json`
-  - Combines ChatGPT, Grok, and other contributor models
-  - Applies weighted voting based on model performance metrics
+  - Combines ChatGPT, Grok, Claude, and Gemini models
+  - **Method-specialized voting**: Only models supporting detected method vote
+  - **Specialist bonuses**: Models supporting 1-2 methods get 1.5× weight
+  - **Performance-based weights**: Higher AUC-ROC models get higher weights
+  - Eliminates "clean bias" by filtering eligible models per method
 
 ---
 
@@ -65,21 +68,30 @@ Combine multiple trained models into a powerful ensemble using the aggregation s
 
 Use the aggregated ensemble model (default) or single models to scan for steganography.
 
-### 5.1 Using the Ensemble Model (Recommended)
+### 5.1 Using Method-Specialized Ensemble Model (Recommended)
 
-* **Action:** Run the scanner with the default ensemble mode.
+* **Action:** Run scanner with default ensemble mode.
 * **Command:**
     ```bash
-    # Scan single file
+    # Scan single file (with extraction by default)
     python3 scanner.py /path/to/image.png --detail
     
-    # Scan directory
+    # Scan directory (quick mode by default)
     python3 scanner.py /path/to/images/ --detail --output results.json
+    
+    # Force quick mode for single file
+    python3 scanner.py /path/to/image.png --quick
+    
+    # Force extraction for directory
+    python3 scanner.py /path/to/images/ --workers 4 --detail
     ```
 * **Features:**
-  - Combines multiple detection methods (neural, LSB, EXIF)
-  - Weighted voting from ChatGPT + Grok models
-  - Enhanced accuracy and stego type classification
+  - **Method-specialized voting**: Only models supporting detected method vote
+  - **Smart defaults**: Single files extract messages, directories use quick scan
+  - **Parallel processing**: Multi-threaded scanning with `--workers` option
+  - **Cached ensemble**: One-time model loading for performance
+  - **Specialist bonuses**: Method specialists get higher voting weight
+  - **All steganography methods**: Alpha, LSB, EXIF, EOI, Palette support
 
 ### 5.2 Using Single Model (Legacy)
 
@@ -95,9 +107,14 @@ Use the aggregated ensemble model (default) or single models to scan for stegano
 |--------|-------------|
 | `--detail` | Show detailed detection results |
 | `--output FILE` | Save results to JSON file |
-| `--no-extract` | Only detect, don't extract messages |
+| `--quick` | Quick scan: skip extraction (default for directories) |
+| `--workers N` | Number of parallel workers (default: 4) |
 | `--recursive` | Scan subdirectories (default) |
 | `--single-model` | Use single model instead of ensemble |
+
+**Smart Defaults:**
+- **Single files**: Extract messages by default (use `--quick` to skip)
+- **Directories**: Quick scan by default (use `--detail` to extract)
 
 ---
 
@@ -156,31 +173,41 @@ datasets/<contributor>_submission_<year>/
 
 ### 7.1 Custom Ensemble Configuration
 
-Modify `aggregate_models.py` to:
-- Adjust model weights
-- Add new detection methods
-- Change voting strategies
+Modify `scripts/aggregate_models.py` to:
+- Adjust specialist weight bonuses (1.5× for 1-2 methods, 1.2× for 3 methods)
+- Add new detection methods by updating method mapping
+- Change performance-based weight calculations
+- Modify method-specialized voting logic
 
 ### 7.2 Performance Monitoring
 
 Check ensemble performance:
 ```bash
-# View latest ensemble results
+# View latest ensemble results and method weights
 cat model/ensemble_results.json
 
-# Test on validation set
-python3 scanner.py val/ --output validation_results.json
+# View method routing configuration
+cat model/method_router.json
+
+# Test on validation set with parallel processing
+python3 scanner.py val/ --workers 4 --output validation_results.json
+
+# Performance benchmark on large dataset
+time python3 scanner.py datasets/ --quick --workers 2
 ```
 
 ### 7.3 Model Comparison
 
-Compare ensemble vs single model:
+Compare method-specialized ensemble vs single model:
 ```bash
-# Ensemble detection
+# Method-specialized ensemble detection (with extraction)
 python3 scanner.py test_image.png --detail
 
-# Single model detection  
-python3 scanner.py test_image.png --single-model --model models/starlight.pth
+# Quick ensemble scan (no extraction)
+python3 scanner.py test_images/ --quick --workers 4
+
+# Compare method-specific performance
+python3 scanner.py test_images/ --detail | grep "Method:"
 ```
 
 ---
@@ -189,13 +216,17 @@ python3 scanner.py test_image.png --single-model --model models/starlight.pth
 
 ### Common Issues
 
-1. **Model loading errors**: Ensure ONNX files exist in `model/` directories
-2. **Import errors**: Check `requirements.txt` in each submission
-3. **Low accuracy**: Verify training data quality and model card metrics
-4. **Ensemble weights**: Models with higher AUC-ROC get higher weights
+1. **Model loading errors**: Ensure ONNX files exist in each submission's `model/` directory
+2. **Method compatibility**: Check `method_config.json` for supported steganography methods
+3. **Import errors**: Check `requirements.txt` in each submission directory
+4. **Low accuracy**: Verify training data quality and model card metrics
+5. **Performance issues**: Use `--quick` mode for large directories, adjust `--workers`
+6. **Ensemble weights**: Models with higher AUC-ROC get higher weights, specialists get bonuses
 
 ### Getting Help
 
-- Check `model/ensemble_results.json` for ensemble status
-- Review individual model cards for performance metrics
-- Use `--detail` flag for verbose detection output
+- Check `model/ensemble_results.json` for ensemble status and weights
+- Review `model/method_router.json` for method-to-model mapping
+- Check individual model cards for performance metrics and method support
+- Use `--detail` flag for verbose detection output with voter counts
+- For method-specific errors, verify `method_config.json` in each model directory

@@ -49,7 +49,7 @@ GeminiModel = load_model_from_path(
 
 class SuperStarlightDetector:
     """
-    Ensemble detector that combines multiple steganography detection methods
+    Method-specialized ensemble detector that only uses models supporting the detected method
     """
 
     def __init__(self, model_configs: List[Dict]):
@@ -61,14 +61,45 @@ class SuperStarlightDetector:
         """
         self.model_configs = model_configs
         self.weights = [config.get("weight", 1.0) for config in model_configs]
+        
+        # Build method-specialized model mapping
+        self.method_models = self._build_method_mapping()
 
-        # Normalize weights
-        total_weight = sum(self.weights)
-        self.weights = [w / total_weight for w in self.weights]
+    def _build_method_mapping(self) -> Dict[str, List[Dict]]:
+        """Build mapping of methods to models that support them"""
+        method_mapping = {}
+        
+        for config in self.model_configs:
+            source = config.get("source", "unknown")
+            
+            # Load method_config.json for this model to see what methods it supports
+            try:
+                config_path = os.path.join(
+                    os.path.dirname(__file__), '..', 'datasets', 
+                    f'{source}_submission_2025', 'model', 'method_config.json'
+                )
+                if os.path.exists(config_path):
+                    with open(config_path) as f:
+                        method_config = json.load(f)
+                    
+                    # Add this model to each method it supports
+                    for method in method_config.keys():
+                        if method not in method_mapping:
+                            method_mapping[method] = []
+                        method_mapping[method].append(config)
+            except Exception as e:
+                print(f"Warning: Could not load method config for {source}: {e}")
+                # Add to default lsb method as fallback
+                if "lsb" not in method_mapping:
+                    method_mapping["lsb"] = []
+                method_mapping["lsb"].append(config)
+        
+        return method_mapping
 
     def predict(self, img_path: str) -> Dict:
         """
-        Make ensemble prediction
+        Make method-specialized ensemble prediction
+        Only models that support the detected method get to vote
 
         Args:
             img_path: Path to image file
@@ -79,10 +110,26 @@ class SuperStarlightDetector:
         if not os.path.exists(img_path):
             return {"error": "Image file not found"}
 
+        # Detect method from filename
+        detected_method = self._detect_method_from_filename(img_path)
+        
+        # Get only models that support this method
+        eligible_models = self.method_models.get(detected_method, [])
+        
+        if not eligible_models:
+            return {
+                "error": f"No model supports method: {detected_method}",
+                "detected_method": detected_method,
+                "available_methods": list(self.method_models.keys())
+            }
+
         individual_results = []
         weighted_probs = []
+        model_weights = []
 
-        for i, config in enumerate(self.model_configs):
+        print(f"Detected method: {detected_method}, using {len(eligible_models)} specialized models")
+
+        for config in eligible_models:
             try:
                 # Choose model based on source
                 source = config.get("source", "grok")
@@ -131,28 +178,18 @@ class SuperStarlightDetector:
                 if not model:
                     result = {"error": f"Model {source} not available"}
                     individual_results.append(result)
-                    weighted_probs.append(0.0)
                     continue
 
-                result = model.predict(img_path)
+                result = model.predict(img_path, method=detected_method)
                 individual_results.append(result)
 
-                # Extract probability based on model method
-                method = config.get("method", "neural")
-                if method == "neural":
-                    prob = result.get("nn_probability", result.get("stego_probability", 0.0))
-                elif method == "lsb":
-                    prob = result.get("lsb_probability", 0.0)
-                elif method == "exif":
-                    prob = result.get("exif_probability", 0.0)
-                elif method == "alpha":
-                    prob = result.get("stego_probability", 0.0)
-                elif method == "eoi":
-                    prob = result.get("stego_probability", 0.0)
-                else:
-                    prob = result.get("stego_probability", 0.0)
-
-                weighted_probs.append(prob * self.weights[i])
+                # Extract stego probability
+                prob = result.get("stego_probability", 0.0)
+                
+                # Apply specialized weight (higher for method specialists)
+                weight = self._calculate_specialized_weight(config, detected_method)
+                model_weights.append(weight)
+                weighted_probs.append(prob * weight)
 
             except Exception as e:
                 # Suppress common mode errors to reduce noise
@@ -161,33 +198,102 @@ class SuperStarlightDetector:
                     # Silent handling for expected errors
                     pass
                 else:
-                    print(f"Error in model {i}: {e}")
+                    print(f"Error in model {config.get('source', 'unknown')}: {e}")
                 individual_results.append({"error": error_msg})
-                weighted_probs.append(0.0)
 
-        # Calculate ensemble probability
-        ensemble_prob = sum(weighted_probs)
+        if not weighted_probs:
+            return {
+                "error": "All eligible models failed",
+                "detected_method": detected_method,
+                "eligible_models": len(eligible_models)
+            }
 
-        # Determine stego type based on strongest signal
-        stego_type = "none"
-        max_signal = 0.0
-
-        for result in individual_results:
-            if "lsb_probability" in result and result["lsb_probability"] > max_signal:
-                max_signal = result["lsb_probability"]
-                stego_type = "lsb"
-            if "exif_probability" in result and result["exif_probability"] > max_signal:
-                max_signal = result["exif_probability"]
-                stego_type = "exif"
+        # Normalize weights and calculate weighted average
+        total_weight = sum(model_weights)
+        normalized_weights = []
+        if total_weight > 0:
+            normalized_weights = [w / total_weight for w in model_weights]
+            ensemble_prob = sum(p * w for p, w in zip(weighted_probs, normalized_weights))
+        else:
+            ensemble_prob = sum(weighted_probs) / len(weighted_probs) if weighted_probs else 0.0
+            normalized_weights = [1.0 / len(weighted_probs)] * len(weighted_probs) if weighted_probs else []
 
         return {
             "image_path": img_path,
+            "detected_method": detected_method,
             "ensemble_probability": ensemble_prob,
             "predicted": ensemble_prob > 0.5,
-            "stego_type": stego_type,
+            "confidence": f"{abs(ensemble_prob - 0.5)*200:.1f}%",
+            "voters": len(weighted_probs),
+            "eligible_models": len(eligible_models),
             "individual_results": individual_results,
-            "model_weights": self.weights,
+            "model_weights": normalized_weights,
         }
+
+    def _detect_method_from_filename(self, img_path: str) -> str:
+        """Detect steganography method from filename pattern"""
+        basename = os.path.basename(img_path)
+        parts = basename.split("_")
+        if len(parts) >= 3:
+            method = parts[-2]  # e.g., alpha, eoi, dct, lsb, exif, palette
+            return method.lower() if method.lower() in ["lsb", "alpha", "dct", "exif", "eoi", "palette"] else "lsb"
+        return "lsb"  # Default fallback
+
+    def _calculate_specialized_weight(self, config: Dict, method: str) -> float:
+        """Calculate specialized weight with bonus for method specialists"""
+        base_weight = config.get("weight", 1.0)
+        
+        # Load model card to check specialization
+        source = config.get("source", "unknown")
+        try:
+            card_path = os.path.join(
+                os.path.dirname(__file__), '..', 'datasets', 
+                f'{source}_submission_2025', 'model', 'model_card.md'
+            )
+            if os.path.exists(card_path):
+                with open(card_path, "r") as f:
+                    content = f.read()
+                
+                # Check if this is a specialized model (supports few methods)
+                method_config_path = os.path.join(
+                    os.path.dirname(__file__), '..', 'datasets', 
+                    f'{source}_submission_2025', 'model', 'method_config.json'
+                )
+                if os.path.exists(method_config_path):
+                    with open(method_config_path) as f:
+                        method_config = json.load(f)
+                    
+                    # Specialist bonus: models supporting 1-2 methods get higher weight
+                    num_methods = len(method_config.keys())
+                    if num_methods <= 2:
+                        base_weight *= 1.5  # Specialist bonus
+                    elif num_methods <= 3:
+                        base_weight *= 1.2  # Semi-specialist bonus
+                    
+                    # If the detected method is explicitly listed, give additional bonus
+                    if method in method_config:
+                        base_weight *= 1.3  # Method-specific bonus
+                
+                # Performance-based bonuses
+                if "AUC-ROC" in content:
+                    for line in content.split("\n"):
+                        if "AUC-ROC" in line and "|" in line:
+                            try:
+                                auc_str = line.split("|")[2].strip()
+                                if "-" in auc_str:
+                                    auc = float(auc_str.split("-")[1].strip())
+                                else:
+                                    auc = float(auc_str)
+                                if auc >= 0.99:
+                                    base_weight *= 1.5
+                                elif auc >= 0.95:
+                                    base_weight *= 1.2
+                            except (ValueError, IndexError):
+                                pass
+        except Exception as e:
+            print(f"Warning: Could not calculate specialized weight for {source}: {e}")
+        
+        return base_weight
 
 
 def calculate_model_weights(model_cards: List[Dict]) -> List[float]:
@@ -456,6 +562,10 @@ def create_ensemble():
         (os.path.join(datasets_path, "claude_submission_2025", "stego", "essence_seed_alpha_000.png"), "Claude Stego Alpha"),
         (os.path.join(datasets_path, "claude_submission_2025", "clean", "essence_seed_palette_000.bmp"), "Claude Clean Palette"),
         (os.path.join(datasets_path, "claude_submission_2025", "stego", "essence_seed_palette_000.bmp"), "Claude Stego Palette"),
+        (os.path.join(datasets_path, "gemini_submission_2025", "clean", "seed1_alpha_000.png"), "Gemini Clean Alpha"),
+        (os.path.join(datasets_path, "gemini_submission_2025", "stego", "seed1_alpha_000.png"), "Gemini Stego Alpha"),
+        (os.path.join(datasets_path, "gemini_submission_2025", "clean", "seed1_eoi_000.jpeg"), "Gemini Clean EOI"),
+        (os.path.join(datasets_path, "gemini_submission_2025", "stego", "seed1_eoi_000.jpeg"), "Gemini Stego EOI"),
     ]
 
     results = []
@@ -468,13 +578,13 @@ def create_ensemble():
                     "path": img_path,
                     "probability": float(result["ensemble_probability"]),
                     "predicted": bool(result["predicted"]),
-                    "type": result["stego_type"],
+                    "type": result.get("detected_method", "unknown"),
                 }
             )
 
             print(
                 f"{label:20s} - Probability: {result['ensemble_probability']:.3f}, "
-                f"Predicted: {result['predicted']}, Type: {result['stego_type']}"
+                f"Predicted: {result['predicted']}, Method: {result.get('detected_method', 'unknown')}"
             )
         else:
             print(f"Image not found: {img_path}")
