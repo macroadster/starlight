@@ -7,12 +7,13 @@ import struct
 import os
 from torch.utils.data import Dataset, DataLoader
 import argparse
+from tqdm import tqdm
 
 class StarlightDetector(nn.Module):
     def __init__(self):
         super().__init__()
         # Pixel backbone (MobileNet-V3-Small)
-        self.pixel_backbone = models.mobilenet_v3_small(pretrained=False).features
+        self.pixel_backbone = models.mobilenet_v3_small(weights=None).features
         # Modify first conv to accept 4 channels (for RGBA)
         self.pixel_backbone[0] = nn.Conv2d(4, 16, kernel_size=3, stride=2, padding=1, bias=False)
         self.pixel_pool = nn.AdaptiveAvgPool2d(1)
@@ -134,7 +135,7 @@ def train_model(clean_dir, stego_dir, epochs=10, batch_size=8, lr=1e-3, out_path
     for epoch in range(epochs):
         model.train()
         total_loss = 0
-        for pixel, meta, stego_labels, method_labels in dataloader:
+        for pixel, meta, stego_labels, method_labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
             pixel, meta = pixel.to(device), meta.to(device)
             stego_labels, method_labels = stego_labels.to(device), method_labels.to(device)
 
