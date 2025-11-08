@@ -270,20 +270,13 @@ def generate_images(num_images=5, formats=["JPEG", "PNG"], payload_size=0.4):
     """
     clean_dir = "./clean"
     stego_dir = "./stego"
-    seed_dir = "./"
+    seed_dir = "./seeds"
     quality = 85  # Fixed: JPEG quality
 
     num_images = int(os.environ.get("NUM_IMAGES", num_images))
 
     os.makedirs(clean_dir, exist_ok=True)
     os.makedirs(stego_dir, exist_ok=True)
-
-    # Validate
-    if "JPEG" in formats and not 75 <= quality <= 95:
-        raise ValueError("JPEG quality must be 75-95.")
-    for fmt in formats:
-        if fmt not in ["JPEG", "PNG"]:
-            raise ValueError("Formats must be 'JPEG' or 'PNG'.")
 
     # Identify all .md seed files
     seed_files = [f for f in os.listdir(seed_dir) if f.endswith(".md")]
