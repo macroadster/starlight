@@ -62,7 +62,7 @@ def ensure_dirs():
 
 
 def find_md_payloads() -> List[Path]:
-    return sorted([p for p in Path(".").glob("*.md") if p.is_file()])
+    return sorted([p for p in Path("seeds").glob("*.md") if p.is_file()])
 
 
 def load_payload(md_path: Path) -> bytes:

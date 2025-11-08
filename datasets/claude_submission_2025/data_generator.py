@@ -36,8 +36,8 @@ class ClaudeStegGenerator:
         self.stego_dir.mkdir(exist_ok=True)
         
     def read_seed_files(self):
-        """Read all .md files in base directory as payloads"""
-        seed_files = list(self.base_dir.glob("*.md"))
+        """Read all .md files in seeds directory as payloads"""
+        seed_files = list((self.base_dir / "seeds").glob("*.md"))
         payloads = {}
         
         for seed_file in seed_files:

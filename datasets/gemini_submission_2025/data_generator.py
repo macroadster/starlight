@@ -33,7 +33,8 @@ def load_all_payloads(submission_dir="."):
     Returns a list of (base_filename, full_byte_payload) tuples.
     """
     all_payload_data = []
-    seed_filenames = [f for f in os.listdir(submission_dir) if f.endswith('.md')]
+    seeds_dir = os.path.join(submission_dir, 'seeds')
+    seed_filenames = [f for f in os.listdir(seeds_dir) if f.endswith('.md')]
 
     if not seed_filenames:
         print("No markdown seed files found. Using random payload as fallback for 1 batch.")
@@ -48,7 +49,7 @@ def load_all_payloads(submission_dir="."):
         base_name = filename.replace('.md', '').replace('.', '_')
         
         try:
-            with open(os.path.join(submission_dir, filename), 'r', encoding='utf-8') as f:
+            with open(os.path.join(seeds_dir, filename), 'r', encoding='utf-8') as f:
                 payload_bytes = f.read().encode('utf-8')
         except Exception as e:
             print(f"Warning: Could not read {filename}. Skipping. Error: {e}")

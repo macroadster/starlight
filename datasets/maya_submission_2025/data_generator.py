@@ -7,7 +7,7 @@ import json
 
 def get_message_from_md():
     """Finds the first .md file and returns its stripped content, raw content, and filename."""
-    md_files = [f for f in os.listdir('.') if f.endswith('.md')]
+    md_files = [f for f in os.listdir('seeds') if f.endswith('.md')]
     if not md_files:
         print("Error: No .md file found in the current directory.")
         return None, None, None
@@ -18,7 +18,7 @@ def get_message_from_md():
     print(f"Using content from: {md_file_path}")
 
     try:
-        with open(md_file_path, 'r', encoding='utf-8') as f:
+        with open(os.path.join('seeds', md_file_path), 'r', encoding='utf-8') as f:
             content_raw = f.read()
         return content_raw.strip(), content_raw, payload_name
     except Exception as e:
