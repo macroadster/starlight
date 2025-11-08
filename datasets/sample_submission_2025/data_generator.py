@@ -334,7 +334,7 @@ def main():
     for (md_file, payload_content), (algo_name, embed_func), clean_path in tqdm(tasks, desc="Generating stego images", unit="image"):
         try:
             payload_name = md_file.stem
-            
+
             # Get and increment index for filename
             index_key = (payload_name, algo_name)
             image_index = image_indices.get(index_key, 0)
@@ -343,10 +343,17 @@ def main():
             if cover_img.mode not in ['RGB', 'RGBA']:
                 cover_img = cover_img.convert('RGB')
 
+            # Skip alpha embedding unless source is PNG with alpha channel
+            if algo_name == 'alpha':
+                if not (clean_path.suffix.lower() == '.png' and cover_img.mode == 'RGBA'):
+                    continue
+
             stego_img = embed_func(cover_img.copy(), payload_content)
 
             # Determine output format
-            if algo_name == 'alpha' or algo_name == 'lsb':
+            if algo_name == 'alpha':
+                output_format = '.png'
+            elif algo_name == 'lsb':
                 # Alternate between png and webp for variety
                 valid_formats = ['.png', '.webp']
                 output_format = valid_formats[image_index % len(valid_formats)]
@@ -395,7 +402,7 @@ def main():
             total_generated_count += 1
 
         except Exception as e:
-            tqdm.write(f"Skipped: {clean_path.name} with {md_file.name} ({algo_name}) - {e}")
+            logging.warning(f"Skipped: {clean_path.name} with {md_file.name} ({algo_name}) - {e}")
 
     logging.info(f"\nGeneration complete. Total stego images created: {total_generated_count}")
 
