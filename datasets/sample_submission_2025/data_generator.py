@@ -311,8 +311,14 @@ def main():
         except Exception as e:
             logging.warning(f"Could not read payload file {md_file.name}, skipping: {e}")
 
-    # Define canonical output formats. LSB/Alpha are handled dynamically.
-    algo_to_format = {"palette": ".bmp", "exif": ".jpg", "eoi": ".jpg"}
+    # Define which algorithms are suitable for which source file extensions
+    algo_to_suitable_exts = {
+        "eoi": {".jpg", ".jpeg"},
+        "exif": {".jpg", ".jpeg"},
+        "alpha": {".png"},
+        "palette": {".gif", ".bmp"},
+        "lsb": {".png", ".webp", ".bmp"}
+    }
 
     # Map algorithm names to functions
     algorithms = {
@@ -333,6 +339,12 @@ def main():
 
     for (md_file, payload_content), (algo_name, embed_func), clean_path in tqdm(tasks, desc="Generating stego images", unit="image"):
         try:
+            # === NEW: Enforce format alignment ===
+            source_ext = clean_path.suffix.lower()
+            suitable_exts = algo_to_suitable_exts.get(algo_name)
+            if suitable_exts and source_ext not in suitable_exts:
+                continue # Skip this combination as it's not format-aligned
+
             payload_name = md_file.stem
 
             # Get and increment index for filename
@@ -340,28 +352,15 @@ def main():
             image_index = image_indices.get(index_key, 0)
 
             cover_img = Image.open(clean_path)
-            if cover_img.mode not in ['RGB', 'RGBA']:
+            
+            # This check is now redundant due to the suitability mapping, but kept for safety
+            if cover_img.mode not in ['RGB', 'RGBA', 'P']:
                 cover_img = cover_img.convert('RGB')
-
-            # Skip alpha embedding unless source is PNG with alpha channel
-            if algo_name == 'alpha':
-                if not (clean_path.suffix.lower() == '.png' and cover_img.mode == 'RGBA'):
-                    continue
 
             stego_img = embed_func(cover_img.copy(), payload_content)
 
-            # Determine output format
-            if algo_name == 'alpha':
-                output_format = '.png'
-            elif algo_name == 'lsb':
-                # Alternate between png and webp for variety
-                valid_formats = ['.png', '.webp']
-                output_format = valid_formats[image_index % len(valid_formats)]
-            elif algo_name == 'palette':
-                valid_formats = ['.bmp', '.gif']
-                output_format = valid_formats[image_index % len(valid_formats)]
-            else:
-                output_format = algo_to_format[algo_name]
+            # === NEW: Preserve the original file format ===
+            output_format = source_ext
 
             # Format output filename
             stego_filename = f"{payload_name}_{algo_name}_{image_index:03d}{output_format}"
