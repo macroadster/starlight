@@ -378,13 +378,20 @@ def extract_palette(image_path):
     SPEC: MSB-first, null-terminated or detectable format
     """
     img = Image.open(image_path)
-    if img.mode != 'P':
+    if img.mode not in ['P', 'L']:
         return None, None
     
     img_array = np.array(img)
     bits = ''.join(str(pixel & 1) for pixel in img_array.flatten())
     
-    return extract_message_msb_first(bits)
+    # Try standard MSB-first extraction first
+    message, remaining = extract_message_msb_first(bits)
+    if message:
+        return message, remaining
+    
+    # Fallback: try best effort extraction
+    message, remaining = extract_message_best_effort(bits, bit_order='msb-first')
+    return message, remaining
 
 
 def extract_exif(image_path):
