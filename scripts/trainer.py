@@ -14,6 +14,7 @@ from collections import Counter
 import copy
 import argparse
 import random
+import glob
 from starlight_utils import extract_post_tail, load_multi_input
 
 class BalancedStegoDataset(Dataset):
@@ -22,68 +23,76 @@ class BalancedStegoDataset(Dataset):
     Creates perfect 1:1 clean:stego ratio by sampling stego images to match clean count.
     """
 
-    def __init__(self, clean_dir, stego_dir, transform=None, balance_strategy='oversample_clean'):
-        self.clean_dir = Path(clean_dir)
-        self.stego_dir = Path(stego_dir)
+    def __init__(self, clean_dir_pattern, stego_dir_pattern, transform=None, balance_strategy='oversample_clean'):
         self.transform = transform
         self.samples = []
-        self.clean_files_used = set()  # Track which clean files are used
+        self.clean_files_used = set()
         self.balance_strategy = balance_strategy
         self.method_labels_list = []
         self.method_map = {"alpha": 0, "palette": 1, "lsb.rgb": 2, "exif": 3, "raw": 4}
 
-        print(f"[BALANCED DATASET] Loading from clean: {clean_dir}, stego: {stego_dir}...")
+        print(f"[BALANCED DATASET] Loading from clean pattern: {clean_dir_pattern}, stego pattern: {stego_dir_pattern}...")
         print(f"[BALANCED DATASET] Balance strategy: {balance_strategy}")
 
-        # First pass: collect all stego samples and their clean counterparts
+        stego_dirs = sorted(glob.glob(stego_dir_pattern))
+        if not stego_dirs:
+            print(f"Warning: No stego directories found for pattern: {stego_dir_pattern}")
+
         all_stego_samples = []
         clean_samples = []
 
-        # Load stego images and their clean counterparts
-        for json_file in self.stego_dir.glob("*.json"):
-            try:
-                with open(json_file, 'r') as f:
-                    metadata = json.load(f)
+        for stego_dir_str in stego_dirs:
+            stego_dir = Path(stego_dir_str)
+            # Derive clean directory from stego directory path
+            clean_dir_str = stego_dir_str.replace('/stego', '/clean').replace('\\stego', '\\clean')
+            clean_dir = Path(clean_dir_str)
 
-                # Get stego technique
-                technique = metadata.get('embedding', {}).get('technique')
-                if technique not in self.method_map:
-                    continue
-
-                # Get clean file from JSON
-                clean_filename = metadata.get('clean_file')
-                if not clean_filename:
-                    continue
-
-                clean_path = self.clean_dir / clean_filename
-                stego_path = json_file.with_suffix('')
-
-                # Verify both files exist
-                if not clean_path.exists() or not stego_path.exists():
-                    continue
-
-                # Add stego sample
-                method_id = self.method_map[technique]
-                all_stego_samples.append({
-                    'path': stego_path,
-                    'stego_label': 1,
-                    'method_label': method_id,
-                    'type': 'stego'
-                })
-
-                # Add clean sample (only once per clean file)
-                if clean_filename not in self.clean_files_used:
-                    clean_samples.append({
-                        'path': clean_path,
-                        'stego_label': 0,
-                        'method_label': -1,
-                        'type': 'clean'
-                    })
-                    self.clean_files_used.add(clean_filename)
-
-            except (json.JSONDecodeError, KeyError):
+            if not clean_dir.exists():
+                print(f"Warning: Corresponding clean directory not found for {stego_dir_str}, expected at {clean_dir_str}")
                 continue
+            
+            print(f"  - Processing stego dir: {stego_dir_str}")
+            print(f"  - Using clean dir: {clean_dir_str}")
 
+            for json_file in stego_dir.glob("*.json"):
+                try:
+                    with open(json_file, 'r') as f:
+                        metadata = json.load(f)
+
+                    technique = metadata.get('embedding', {}).get('technique')
+                    if technique not in self.method_map:
+                        continue
+
+                    clean_filename = metadata.get('clean_file')
+                    if not clean_filename:
+                        continue
+
+                    clean_path = clean_dir / clean_filename
+                    stego_path = json_file.with_suffix('')
+
+                    if not clean_path.exists() or not stego_path.exists():
+                        continue
+
+                    method_id = self.method_map[technique]
+                    all_stego_samples.append({
+                        'path': stego_path,
+                        'stego_label': 1,
+                        'method_label': method_id,
+                        'type': 'stego'
+                    })
+
+                    if clean_filename not in self.clean_files_used:
+                        clean_samples.append({
+                            'path': clean_path,
+                            'stego_label': 0,
+                            'method_label': -1,
+                            'type': 'clean'
+                        })
+                        self.clean_files_used.add(clean_filename)
+
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        
         # Balance the dataset
         if balance_strategy == 'sample_stego':
             # Sample stego images to match clean count
@@ -643,7 +652,6 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
         val_method_total_per_class = Counter()
         id_to_method = {v: k for k, v in val_dataset.method_map.items()}
 
-
         with torch.no_grad():
             for batch in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
                 meta, alpha, lsb, palette, stego_labels, method_labels = batch
@@ -655,7 +663,6 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
                 method_labels = method_labels.long().to(device)
 
                 stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette)
-
                 stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
                 stego_mask = stego_labels > 0.5
                 if stego_mask.sum() > 0:
@@ -664,7 +671,6 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
                     method_loss = torch.tensor(0.0).to(device)
 
                 val_loss += (stego_loss + 0.01 * method_loss).item()
-
                 stego_pred = (torch.sigmoid(stego_logits) > 0.5).float()
                 val_stego_correct += (stego_pred.squeeze() == stego_labels).sum().item()
                 val_stego_total += stego_labels.size(0)
@@ -672,7 +678,7 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
                 if stego_mask.sum() > 0:
                     val_method_correct += (method_ids[stego_mask] == method_labels[stego_mask]).sum().item()
                     val_method_total += stego_mask.sum().item()
-                    
+
                     preds = method_ids[stego_mask]
                     labels = method_labels[stego_mask]
                     for i in range(len(labels)):
@@ -714,6 +720,8 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
                 print(f"No improvement in validation loss for {patience} epochs. Stopping early.")
                 break
 
+
+
     # Export to ONNX
     print("Exporting to ONNX...")
     model.load_state_dict(torch.load(out_path.replace('.onnx', '.pth')))
@@ -752,10 +760,12 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
 
     print(f"Balanced model exported to {out_path}")
 
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train_clean_dir", default="datasets/sample_submission_2025/clean")
-    parser.add_argument("--train_stego_dir", default="datasets/sample_submission_2025/stego")
+    parser.add_argument("--train_clean_dir", default="datasets/*_submission_*/clean")
+    parser.add_argument("--train_stego_dir", default="datasets/*_submission_*/stego")
     parser.add_argument("--val_clean_dir", default="datasets/val/clean")
     parser.add_argument("--val_stego_dir", default="datasets/val/stego")
     parser.add_argument("--epochs", type=int, default=50) # Increased default epochs
@@ -766,3 +776,5 @@ if __name__ == "__main__":
 
     os.makedirs("models", exist_ok=True)
     train_model(args.train_clean_dir, args.train_stego_dir, args.val_clean_dir, args.val_stego_dir, args.epochs, args.batch_size, args.lr, args.out)
+
+
