@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Callable
 
 from PIL import Image
-
+import numpy as np
 
 
 import itertools
@@ -146,7 +146,7 @@ def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
     SPEC: MSB-first, null-terminated. Embeds the provided payload.
     """
     if cover.mode != 'P':
-        img = cover.convert("P", palette=Image.ADAPTIVE, colors=256)
+        img = cover.convert("P", colors=256)
     else:
         img = cover.copy()
 
@@ -315,7 +315,7 @@ def main():
     algo_to_suitable_exts = {
         "eoi": {".jpg", ".jpeg"},
         "exif": {".jpg", ".jpeg"},
-        "alpha": {".png"},
+        "alpha": {".png", ".webp"},
         "palette": {".gif", ".bmp"},
         "lsb": {".png", ".webp", ".bmp"}
     }
@@ -358,6 +358,14 @@ def main():
                 cover_img = cover_img.convert('RGB')
 
             stego_img = embed_func(cover_img.copy(), payload_content)
+
+            # Clamp pixel values to prevent corruption
+            arr = np.array(stego_img)
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+            # Preserve the info dictionary when recreating the image
+            original_info = stego_img.info
+            stego_img = Image.fromarray(arr)
+            stego_img.info = original_info
 
             # === NEW: Preserve the original file format ===
             output_format = source_ext
