@@ -32,7 +32,7 @@ All deliverables target **EOD Friday, Nov 15, 2025**. Progress will be logged da
    - **Actions:**  
      - Fork/clone `https://github.com/macroadster/starlight` into unified structure:  
        ```
-       starlight-core/
+       starlight/
        ├── models/          # ONNX exports (dual.onnx, v3_light.onnx)
        ├── src/             # Core modules (encoder.py, detector.py, preprocess.py)
        ├── scripts/         # Build/export (train_dual.py, hf_export.py)
@@ -102,12 +102,31 @@ All deliverables target **EOD Friday, Nov 15, 2025**. Progress will be logged da
    - **Estimated Effort:** 2 hours.  
    - **Risk:** Auth/setup → Use Project Lead's HF token.  
 
-### 5. **Integration Test Suite Expansion** (Low Priority — Quality Gate)  
-   - **Goal:** ≥0.99 recall on 100k synthetic v2.0 samples (encode→transmit→detect).  
-   - **Actions:** Add multi-format tests (JPEG/PNG/GIF) + EOI generalization.  
-     - Use `pytest` in `tests/integration/`: Cover all 5 methods + clean baselines.  
-   - **Output:** `tests/integration_test_suite.py` (90% coverage).  
-   - **Estimated Effort:** 2 hours.  
+### 5. **Move Trainer and Scanner Logic to Top Level** (High Priority — Unification)
+    - **Goal:** Relocate trainer.py, scanner.py, light_scanner.py, starlight_extractor.py from datasets/sample_submission_2025/ to top-level scripts/ directory for unified access.
+    - **Actions:**
+      - Copy and adapt files to scripts/, ensuring compatibility with ensemble model.
+      - Update imports and paths in moved files.
+      - Remove originals from sample_submission_2025/ after verification.
+    - **Output:** Top-level scripts/ with unified trainer and scanner logic.
+    - **Estimated Effort:** 2 hours.
+
+### 6. **Integrate LSB Detection from Grok Submission** (High Priority — Model Improvement)
+    - **Goal:** Enhance sample submission's LSB detection by integrating lsb_steganography.py and model components from datasets/grok_submission_2025/.
+    - **Actions:**
+      - Copy lsb_steganography.py to datasets/sample_submission_2025/ or top-level src/.
+      - Integrate Grok's model/inference.py logic for better LSB handling.
+      - Update sample's trainer.py and scanner.py to use improved LSB detection.
+      - Test on LSB stego samples to ensure AUC ≥0.98.
+    - **Output:** Updated sample submission with robust LSB detection.
+    - **Estimated Effort:** 3 hours.
+
+### 7. **Integration Test Suite Expansion** (Low Priority — Quality Gate)
+    - **Goal:** ≥0.99 recall on 100k synthetic v2.0 samples (encode→transmit→detect).
+    - **Actions:** Add multi-format tests (JPEG/PNG/GIF) + EOI generalization.
+      - Use `pytest` in `tests/integration/`: Cover all 5 methods + clean baselines.
+    - **Output:** `tests/integration_test_suite.py` (90% coverage).
+    - **Estimated Effort:** 2 hours.
 
 ---
 
