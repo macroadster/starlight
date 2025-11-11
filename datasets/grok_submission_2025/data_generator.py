@@ -459,41 +459,43 @@ def generate_images(num_images=5, methods=["exif", "lsb", "eoi"], payload_size=0
                     generate_clean_image(
                      clean_path, seed=i, format=format, pattern_type=pattern
                     )
-                     if method == "lsb":
-                     embed_lsb(
-                         clean_path,
-                         stego_path,
-                         payload=seed_payload,
-                         payload_size=payload_size,
-                     )
-                     stego_paths.append(stego_path)
-
-                     # --- Create JSON Sidecar ---
-                     json_path = stego_path + ".json"
-                     embedding_data = {
-                         "category": "pixel",
-                         "technique": "lsb.rgb",
-                         "ai42": False,
-                         "bit_order": "lsb-first",
-                     }
-                     sidecar_content = {
-                         "embedding": embedding_data,
-                         "clean_file": os.path.basename(clean_path),
-                     }
-                     with open(json_path, "w") as f:
-                         json.dump(sidecar_content, f, indent=2)
-                     elif method == "exif":
-                     generate_clean_image(
-                         stego_path, seed=i, format=format, pattern_type=pattern
-                     )  # Copy clean to stego
-                     add_exif_metadata(stego_path, seed_payload)
-                     stego_paths.append(stego_path)
-                     elif method == "eoi":
-                     generate_clean_image(
-                         stego_path, seed=i, format=format, pattern_type=pattern
-                     )  # Copy clean to stego
-                     embed_eoi(stego_path, seed_payload)
-                     stego_paths.append(stego_path)
+                    if method == "lsb":
+                        embed_lsb(
+                            clean_path,
+                            stego_path,
+                            payload=seed_payload,
+                            payload_size=payload_size,
+                        )
+                        stego_paths.append(stego_path)
+                        technique = "lsb.rgb"
+                    elif method == "exif":
+                        generate_clean_image(
+                            stego_path, seed=i, format=format, pattern_type=pattern
+                        )  # Copy clean to stego
+                        add_exif_metadata(stego_path, seed_payload)
+                        stego_paths.append(stego_path)
+                        technique = "exif"
+                    elif method == "eoi":
+                        generate_clean_image(
+                            stego_path, seed=i, format=format, pattern_type=pattern
+                        )  # Copy clean to stego
+                        embed_eoi(stego_path, seed_payload)
+                        stego_paths.append(stego_path)
+                        technique = "raw"
+                    # --- Create JSON Sidecar ---
+                    json_path = stego_path + ".json"
+                    embedding_data = {
+                        "category": method,
+                        "technique": technique,
+                        "ai42": False,
+                        "bit_order": "lsb-first",
+                    }
+                    sidecar_content = {
+                        "embedding": embedding_data,
+                        "clean_file": os.path.basename(clean_path),
+                    }
+                    with open(json_path, "w") as f:
+                        json.dump(sidecar_content, f, indent=2)
                 verify_images(
                     seed_file, stego_paths, seed_payload, format, payload_size
                 )
