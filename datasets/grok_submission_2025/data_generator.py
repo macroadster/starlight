@@ -6,6 +6,7 @@ import piexif  # For EXIF metadata; pip install piexif
 import argparse  # For command-line arguments
 import logging  # For logging outputs to file
 import json
+from pathlib import Path
 
 
 def generate_clean_image(
@@ -85,9 +86,9 @@ def generate_clean_image(
 
 def add_exif_metadata(img_path, payload):
     """
-    Add payload to JPEG EXIF UserComment field.
+    Add payload to EXIF UserComment field for JPEG, PNG, WebP.
     Args:
-        img_path (str): Path to JPEG image.
+        img_path (str): Path to image (JPEG, PNG, WebP).
         payload (str): Markdown text to store (up to ~65 KB).
     """
     try:
@@ -95,15 +96,69 @@ def add_exif_metadata(img_path, payload):
         exif_dict = {
             "Exif": {
                 piexif.ExifIFD.UserComment: b"ASCII\0\0\0"
-                + payload.encode("ascii")[:65527]
+                + payload.encode("ascii", errors="ignore")[:65527]
             }
         }
         exif_bytes = piexif.dump(exif_dict)
         img = Image.open(img_path)
-        img.save(img_path, "JPEG", quality=85, exif=exif_bytes)
+        ext = Path(img_path).suffix.lower()
+        if ext == ".webp":
+            img.save(img_path, format="WEBP", lossless=True, exif=exif_bytes)
+        elif ext == ".png":
+            img.save(img_path, format="PNG", exif=exif_bytes)
+        elif ext in [".jpg", ".jpeg"]:
+            img.save(img_path, format="JPEG", quality=85, exif=exif_bytes)
+        else:
+            # Fallback
+            img.save(img_path, exif=exif_bytes)
         logging.info(f"Added EXIF UserComment to {img_path} ({len(payload)} chars)")
     except Exception as e:
         logging.error(f"Error adding EXIF metadata to {img_path}: {str(e)}")
+
+def embed_eoi(img_path, payload):
+    """
+    Embed payload by appending after the image data (EOI method).
+    Supports JPEG, PNG, GIF, WebP.
+    Args:
+        img_path (str): Path to image.
+        payload (str): Text to append.
+    """
+    try:
+        with open(img_path, 'rb') as f:
+            raw = f.read()
+        payload_bytes = payload.encode('ascii', errors='ignore')
+
+        # Detect format and find insertion point
+        if raw.startswith(b'\xFF\xD8'):  # JPEG
+            eoi_pos = raw.rfind(b'\xFF\xD9')
+            if eoi_pos == -1:
+                raise ValueError("No EOI marker found in JPEG")
+            insert_pos = eoi_pos + 2
+        elif raw.startswith(b'\x89PNG'):  # PNG
+            iend_pos = raw.rfind(b'IEND')
+            if iend_pos == -1:
+                raise ValueError("No IEND found in PNG")
+            insert_pos = iend_pos + 12  # After IEND chunk
+        elif raw.startswith(b'GIF8'):  # GIF
+            term_pos = raw.rfind(b';')
+            if term_pos == -1:
+                raise ValueError("No terminator found in GIF")
+            insert_pos = term_pos + 1
+        elif raw.startswith(b'RIFF') and raw[8:12] == b'WEBP':  # WebP
+            vp8x_pos = raw.rfind(b'VP8X')
+            if vp8x_pos == -1:
+                raise ValueError("No VP8X found in WebP")
+            insert_pos = vp8x_pos + 10
+        else:
+            raise ValueError("Unsupported format for EOI embedding")
+
+        # Append payload
+        new_raw = raw[:insert_pos] + payload_bytes
+        with open(img_path, 'wb') as f:
+            f.write(new_raw)
+        logging.info(f"Embedded EOI payload to {img_path} ({len(payload)} chars)")
+    except Exception as e:
+        logging.error(f"Error embedding EOI to {img_path}: {str(e)}")
 
 
 def embed_lsb(clean_img_path, stego_img_path, payload, payload_size=0.4):
@@ -210,23 +265,75 @@ def verify_exif_metadata(img_path, expected_payload):
     except Exception as e:
         logging.error(f"Error verifying EXIF metadata for {img_path}: {str(e)}")
 
+def verify_eoi(img_path, expected_payload):
+    """
+    Verify that appended EOI tail matches the expected payload.
+    Args:
+        img_path (str): Path to stego image.
+        expected_payload (str): Original markdown content.
+    """
+    try:
+        with open(img_path, 'rb') as f:
+            raw = f.read()
+        expected_bytes = expected_payload.encode('ascii')
 
-def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.4):
+        # Detect format and extract tail
+        if raw.startswith(b'\xFF\xD8'):  # JPEG
+            eoi_pos = raw.rfind(b'\xFF\xD9')
+            if eoi_pos != -1:
+                extracted = raw[eoi_pos + 2:]
+            else:
+                extracted = b""
+        elif raw.startswith(b'\x89PNG'):  # PNG
+            iend_pos = raw.rfind(b'IEND')
+            if iend_pos != -1:
+                extracted = raw[iend_pos + 12:]
+            else:
+                extracted = b""
+        elif raw.startswith(b'GIF8'):  # GIF
+            term_pos = raw.rfind(b';')
+            if term_pos != -1:
+                extracted = raw[term_pos + 1:]
+            else:
+                extracted = b""
+        elif raw.startswith(b'RIFF') and raw[8:12] == b'WEBP':  # WebP
+            vp8x_pos = raw.rfind(b'VP8X')
+            if vp8x_pos != -1:
+                extracted = raw[vp8x_pos + 10:]
+            else:
+                extracted = b""
+        else:
+            extracted = b""
+
+        if extracted == expected_bytes:
+            logging.info(f"EOI verification passed: {img_path} matches payload.")
+        else:
+            logging.warning(
+                f"EOI verification failed: {img_path} does not match payload."
+            )
+            logging.warning(f"Expected: {expected_payload[:50]}...")
+            logging.warning(f"Extracted: {extracted.decode('ascii', errors='ignore')[:50]}...")
+    except Exception as e:
+        logging.error(f"Error verifying EOI for {img_path}: {str(e)}")
+
+
+def verify_images(seed_file, stego_paths, seed_payload, method, payload_size=0.4):
     """
     Verify that stego images contain the correct payload.
-    - PNG: Verifies LSB-extracted payload (truncated to ~13 KB at 0.4 bpp).
-    - JPEG: Verifies EXIF UserComment (up to ~65 KB).
+    - lsb: Verifies LSB-extracted payload (truncated to ~13 KB at 0.4 bpp).
+    - exif: Verifies EXIF UserComment (up to ~65 KB).
+    - eoi: Verifies appended tail.
     Args:
         seed_file (str): Name of the seed file (e.g., 'sample_seed.md').
         stego_paths (list): List of stego image paths to verify.
         seed_payload (str): Original markdown content.
-        format (str): 'JPEG' (EXIF) or 'PNG' (LSB).
+        method (str): 'lsb', 'exif', 'eoi'.
         payload_size (float): Bits per pixel for LSB (default: 0.4).
     """
-    logging.info(f"Verifying {format} stego images for {seed_file}...")
-    for _ in tqdm(range(len(stego_paths)), desc=f"Verifying ({seed_file}, {format})"):
+    logging.info(f"Verifying {method} stego images for {seed_file}...")
+    for _ in tqdm(range(len(stego_paths)), desc=f"Verifying ({seed_file}, {method})"):
         stego_path = stego_paths[_]  # Use index from tqdm
-        if format == "PNG":
+        if method == "lsb":
             max_chars = int(payload_size * 512 * 512 * 3 / 8)  # Updated capacity
             extracted = extract_lsb(stego_path, payload_size)
             seed_truncated = seed_payload[:max_chars]
@@ -240,11 +347,13 @@ def verify_images(seed_file, stego_paths, seed_payload, format, payload_size=0.4
                 )
                 logging.warning(f"Expected (truncated): {seed_truncated[:50]}...")
                 logging.warning(f"Extracted: {extracted[:50]}...")
-        else:  # JPEG
+        elif method == "exif":
             verify_exif_metadata(stego_path, seed_payload)
+        elif method == "eoi":
+            verify_eoi(stego_path, seed_payload)
 
 
-def generate_images(num_images=5, formats=["JPEG", "PNG"], payload_size=0.4):
+def generate_images(num_images=5, methods=["exif", "lsb", "eoi"], payload_size=0.4):
     """
     Generate clean and stego images for Project Starlight (Option 3).
     Increased default num_images to 5 for more data pairs.
@@ -252,20 +361,20 @@ def generate_images(num_images=5, formats=["JPEG", "PNG"], payload_size=0.4):
         - Clean images: ./clean/
         - Stego images: ./stego/
         - Markdown seeds: ./ (all .md files)
-        - Payload size: Default 0.4 bpnzAC for PNG LSB (configurable; higher for easier detection)
+        - Payload size: Default 0.4 bpp for PNG LSB (configurable; higher for easier detection)
         - JPEG quality: 85 (fixed; within 75-95)
-        - Formats: List of 'JPEG' (EXIF metadata) or 'PNG' (LSB)
-        - Stego key: None (keyless LSB/EXIF)
+        - Methods: List of 'exif' (JPEG), 'lsb' (PNG), 'eoi' (JPEG)
+        - Stego key: None (keyless)
     Behavior:
-        - Iterates over each .md file, generating a batch of num_images clean + stego pairs per format.
+        - Iterates over each .md file, generating a batch of num_images clean + stego pairs per method.
         - Randomizes pattern_type ('linear' or 'radial') for diversity.
-        - Labels images with seed basename and algorithm (e.g., sample_seed_exif_001.jpeg).
+        - Labels images with seed basename and algorithm (e.g., sample_seed_eoi_001.jpeg).
         - If no seeds, generates a random batch labeled 'random' (no payload for verification).
-        - Verifies payloads: PNG (LSB extraction), JPEG (EXIF UserComment).
+        - Verifies payloads: LSB extraction, EXIF UserComment, EOI tail.
         - Uses tqdm for progress feedback.
     Args:
         num_images (int): Pairs per seed batch (default: 5; override via --limit or NUM_IMAGES env var).
-        formats (list): List of formats to generate: 'JPEG' (EXIF metadata) or 'PNG' (LSB).
+        methods (list): List of methods to generate: 'exif', 'lsb', 'eoi'.
         payload_size (float): Bits per pixel for LSB (default: 0.4).
     """
     clean_dir = "./clean"
@@ -283,12 +392,20 @@ def generate_images(num_images=5, formats=["JPEG", "PNG"], payload_size=0.4):
     if not seed_files:
         print("No .md seeds found; generating random batch.")
         seed_basename = "random"
-        for format in formats:
-            algorithm = (
-                "exif" if format == "JPEG" else "lsb"
-            )  # Algorithm name for filename
+        for method in methods:
+            if method == "exif":
+                format = "JPEG"
+                algorithm = "exif"
+            elif method == "lsb":
+                format = "PNG"
+                algorithm = "lsb"
+            elif method == "eoi":
+                format = "JPEG"
+                algorithm = "eoi"
+            else:
+                continue
             stego_paths = []
-            for i in tqdm(range(num_images), desc=f"Batch (random, {format})"):
+            for i in tqdm(range(num_images), desc=f"Batch (random, {method})"):
                 img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
                 clean_path = os.path.join(clean_dir, img_name)
                 stego_path = os.path.join(stego_dir, img_name)
@@ -296,77 +413,87 @@ def generate_images(num_images=5, formats=["JPEG", "PNG"], payload_size=0.4):
                 generate_clean_image(
                     clean_path, seed=i, format=format, pattern_type=pattern
                 )
-                if format == "PNG":
+                if method == "lsb":
                     embed_lsb(
-                        clean_path, stego_path, payload=None, payload_size=payload_size
+                     clean_path, stego_path, payload=None, payload_size=payload_size
                     )
                     stego_paths.append(stego_path)
-                else:  # JPEG
+                elif method == "exif":
                     generate_clean_image(
-                        stego_path, seed=i, format=format, pattern_type=pattern
+                     stego_path, seed=i, format=format, pattern_type=pattern
                     )  # Copy clean to stego
                     add_exif_metadata(stego_path, "")
                     stego_paths.append(stego_path)
-            verify_images("random", stego_paths, "", format, payload_size)
+                elif method == "eoi":
+                    generate_clean_image(
+                     stego_path, seed=i, format=format, pattern_type=pattern
+                    )  # Copy clean to stego
+                    embed_eoi(stego_path, "")
+                    stego_paths.append(stego_path)
+            verify_images("random", stego_paths, "", method, payload_size)
     else:
         for seed_file in seed_files:
             seed_basename = os.path.splitext(seed_file)[0]
             with open(os.path.join(seed_dir, seed_file), "r", encoding="utf-8") as f:
                 seed_payload = f.read()
-            for format in formats:
-                algorithm = (
-                    "exif" if format == "JPEG" else "lsb"
-                )  # Algorithm name for filename
+            for method in methods:
+                if method == "exif":
+                    format = "PNG"  # Support PNG for EXIF
+                    algorithm = "exif"
+                elif method == "lsb":
+                    format = "PNG"
+                    algorithm = "lsb"
+                elif method == "eoi":
+                    format = "JPEG"
+                    algorithm = "eoi"
+                else:
+                    continue
                 stego_paths = []
                 for i in tqdm(
-                    range(num_images), desc=f"Batch ({seed_basename}, {format})"
+                    range(num_images), desc=f"Batch ({seed_basename}, {method})"
                 ):
                     img_name = f"{seed_basename}_{algorithm}_{i:03d}.{format.lower()}"
                     clean_path = os.path.join(clean_dir, img_name)
                     stego_path = os.path.join(stego_dir, img_name)
                     pattern = np.random.choice(["linear", "radial"])
                     generate_clean_image(
-                        clean_path, seed=i, format=format, pattern_type=pattern
+                     clean_path, seed=i, format=format, pattern_type=pattern
                     )
-                    if format == "PNG":
-                        embed_lsb(
-                            clean_path,
-                            stego_path,
-                            payload=seed_payload,
-                            payload_size=payload_size,
-                        )
-                        stego_paths.append(stego_path)
-                    else:  # JPEG
-                        generate_clean_image(
-                            stego_path, seed=i, format=format, pattern_type=pattern
-                        )  # Copy clean to stego
-                        add_exif_metadata(stego_path, seed_payload)
-                        stego_paths.append(stego_path)
+                     if method == "lsb":
+                     embed_lsb(
+                         clean_path,
+                         stego_path,
+                         payload=seed_payload,
+                         payload_size=payload_size,
+                     )
+                     stego_paths.append(stego_path)
 
-                    # --- Create JSON Sidecar ---
-                    json_path = stego_path + ".json"
-                    embedding_data = {}
-                    if algorithm == "lsb":
-                        embedding_data = {
-                            "category": "pixel",
-                            "technique": "lsb.rgb",
-                            "ai42": False,
-                            "bit_order": "lsb-first",
-                        }
-                    elif algorithm == "exif":
-                        embedding_data = {
-                            "category": "metadata",
-                            "technique": "exif",
-                            "ai42": False,
-                        }
-
-                    if embedding_data:
-                        sidecar_content = {
-                            "embedding": embedding_data,
-                            "clean_file": os.path.basename(clean_path),
-                        }
-                        with open(json_path, "w") as f:
-                            json.dump(sidecar_content, f, indent=2)
+                     # --- Create JSON Sidecar ---
+                     json_path = stego_path + ".json"
+                     embedding_data = {
+                         "category": "pixel",
+                         "technique": "lsb.rgb",
+                         "ai42": False,
+                         "bit_order": "lsb-first",
+                     }
+                     sidecar_content = {
+                         "embedding": embedding_data,
+                         "clean_file": os.path.basename(clean_path),
+                     }
+                     with open(json_path, "w") as f:
+                         json.dump(sidecar_content, f, indent=2)
+                     elif method == "exif":
+                     generate_clean_image(
+                         stego_path, seed=i, format=format, pattern_type=pattern
+                     )  # Copy clean to stego
+                     add_exif_metadata(stego_path, seed_payload)
+                     stego_paths.append(stego_path)
+                     elif method == "eoi":
+                     generate_clean_image(
+                         stego_path, seed=i, format=format, pattern_type=pattern
+                     )  # Copy clean to stego
+                     embed_eoi(stego_path, seed_payload)
+                     stego_paths.append(stego_path)
                 verify_images(
                     seed_file, stego_paths, seed_payload, format, payload_size
                 )
@@ -383,10 +510,10 @@ if __name__ == "__main__":
         help="Number of images to generate per payload per algorithm (overrides NUM_IMAGES env var).",
     )
     parser.add_argument(
-        "--formats",
+        "--methods",
         type=str,
-        default="JPEG,PNG",
-        help="Comma-separated formats to use: JPEG (exif), PNG (lsb).",
+        default="exif,lsb,eoi",
+        help="Comma-separated methods to use: exif (JPEG), lsb (PNG), eoi (JPEG/PNG).",
     )
     parser.add_argument(
         "--payload_size",
@@ -396,17 +523,17 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    formats = [f.strip().upper() for f in args.formats.split(",")]
+    methods = [m.strip().lower() for m in args.methods.split(",")]
 
     logging.basicConfig(
-        filename="generation.log",
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler("generation.log")],
     )
 
     try:
         generate_images(
-            num_images=args.limit, formats=formats, payload_size=args.payload_size
+            num_images=args.limit, methods=methods, payload_size=args.payload_size
         )
         print("Image generation completed. Check generation.log for details.")
     except Exception as e:
@@ -418,9 +545,10 @@ if __name__ == "__main__":
 # - Increased default LSB payload_size to 0.4 bpp (~13 KB capacity) for more obvious changes, improving detection confidence.
 # - Default num_images=5 to generate more pairs (~4x data if rerun).
 # - For even easier training, try --payload_size 0.6 or integrate real images (e.g., via external download to seed_dir).
-# - JPEG: Stores payload in EXIF UserComment (~65 KB capacity, keyless).
-# - PNG: Embeds payload via LSB (configurable bpp, ~13 KB at 0.4 for 512x512, keyless).
-# - Verification: PNG (LSB extraction), JPEG (EXIF UserComment).
-# - Override: python data_generator.py --limit 10 --formats PNG --payload_size 0.5
+# - exif: Stores payload in JPEG EXIF UserComment (~65 KB capacity, keyless).
+# - lsb: Embeds payload via PNG LSB (configurable bpp, ~13 KB at 0.4 for 512x512, keyless).
+# - eoi: Appends payload after image data (supports JPEG, PNG, GIF, WebP).
+# - Verification: LSB extraction, EXIF UserComment, EOI tail.
+# - Override: python data_generator.py --limit 10 --methods lsb,eoi --payload_size 0.5
 # - Dependencies: pip install piexif Pillow numpy tqdm
 # - Ensure Python 3.8+ for compatibility.

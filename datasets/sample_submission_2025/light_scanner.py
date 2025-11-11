@@ -3,6 +3,7 @@ import torch
 from PIL import Image
 import numpy as np
 import struct
+import onnxruntime as ort
 
 def load_dual_input(path):
     # --- Pixel path ---

@@ -135,20 +135,36 @@ class StarlightModel:
     def _preprocess_eoi(self, img_path):
         """Preprocess EOI (End of Image) steganography by reading tail bytes"""
         with open(img_path, 'rb') as f:
-            f.seek(0, 2)  # Go to the end of file
-            file_size = f.tell()
-            
-            read_size = min(file_size, 1024)
-            f.seek(-read_size, 2)
-            tail = f.read(read_size)
-            
-        eoi_pos = tail.find(b'\xFF\xD9')
-        
-        if eoi_pos != -1:
-            appended = tail[eoi_pos + 2:]
+            raw = f.read()
+
+        # Detect format
+        if raw.startswith(b'\xFF\xD8'):
+            format_hint = 'jpeg'
+        elif raw.startswith(b'\x89PNG'):
+            format_hint = 'png'
+        elif raw.startswith(b'GIF8'):
+            format_hint = 'gif'
+        elif raw.startswith(b'RIFF') and raw[8:12] == b'WEBP':
+            format_hint = 'webp'
         else:
-            appended = b''  # If EOI marker not found, assume no appended data
-            
+            format_hint = 'unknown'
+
+        # Extract post-tail
+        if format_hint == 'jpeg':
+            eoi_pos = raw.rfind(b'\xFF\xD9')
+            appended = raw[eoi_pos + 2:] if eoi_pos != -1 else b""
+        elif format_hint == 'png':
+            iend_pos = raw.rfind(b'IEND')
+            appended = raw[iend_pos + 12:] if iend_pos != -1 else b""  # After IEND chunk
+        elif format_hint == 'gif':
+            term_pos = raw.rfind(b';')
+            appended = raw[term_pos + 1:] if term_pos != -1 else b""
+        elif format_hint == 'webp':
+            vp8x_pos = raw.rfind(b'VP8X')
+            appended = raw[vp8x_pos + 10:] if vp8x_pos != -1 else b""
+        else:
+            appended = b""
+
         data = np.frombuffer(appended, dtype=np.uint8)[:1024]
         padded = np.zeros(1024, dtype=np.float32)
         padded[:len(data)] = data.astype(np.float32) / 255.0
