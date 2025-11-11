@@ -9,53 +9,6 @@ from torch.utils.data import Dataset, DataLoader
 import argparse
 from tqdm import tqdm
 
-class StarlightDetector(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Pixel backbone (MobileNet-V3-Small)
-        self.pixel_backbone = models.mobilenet_v3_small(weights=None).features
-        # Modify first conv to accept 4 channels (for RGBA)
-        self.pixel_backbone[0] = nn.Conv2d(4, 16, kernel_size=3, stride=2, padding=1, bias=False)
-        self.pixel_pool = nn.AdaptiveAvgPool2d(1)
-
-        # Metadata MLP
-        self.meta_mlp = nn.Sequential(
-            nn.Linear(1024, 256), nn.ReLU(),
-            nn.Linear(256, 64)
-        )
-
-        # Method classifier (5 methods)
-        self.method_head = nn.Sequential(
-            nn.Linear(576 + 64, 128), nn.ReLU(),
-            nn.Linear(128, 5)
-        )
-
-        # Final stego head
-        self.stego_head = nn.Sequential(
-            nn.Linear(576 + 64, 64), nn.ReLU(),
-            nn.Linear(64, 1)
-        )
-
-    def forward(self, pixel, metadata):
-        # Pixel path
-        p = self.pixel_pool(self.pixel_backbone(pixel)).flatten(1)  # (B,576)
-
-        # Metadata path
-        m = self.meta_mlp(metadata)  # (B,64)
-
-        # Fuse
-        fused = torch.cat([p, m], dim=1)  # (B,640)
-
-        method_logits = self.method_head(fused)
-        method_probs = torch.softmax(method_logits, dim=1)
-        stego_prob = torch.sigmoid(self.stego_head(fused)).squeeze(1)
-
-        return {
-            "stego_prob": stego_prob,
-            "method_id": method_probs.argmax(1),
-            "method_probs": method_probs
-        }
-
 def load_dual_input(path):
     # --- Pixel path ---
     img = Image.open(path)

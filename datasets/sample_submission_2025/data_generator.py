@@ -24,6 +24,8 @@ import argparse
 
 import json
 
+import warnings
+
 from pathlib import Path
 
 from typing import Callable
@@ -33,6 +35,8 @@ import numpy as np
 
 
 import itertools
+
+warnings.filterwarnings('ignore')
 
 
 
@@ -198,17 +202,18 @@ def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
         "1st": {},
         "thumbnail": None
     }
-    
-    img.info["exif_bytes"] = piexif.dump(exif_dict)
+
+    exif_bytes = piexif.dump(exif_dict)
+    img.info["exif"] = exif_bytes
     return img
 
 
 def embed_eoi(cover: Image.Image, payload: bytes) -> Image.Image:
     """
-    Embed after JPEG EOI marker.
-    SPEC: Raw append after EOI marker (may have hint prefix). Embeds the provided payload.
+    Embed by appending after the image file data.
+    SPEC: Raw append after image end (may have hint prefix). Works for JPEG, PNG, GIF, WebP.
     """
-    img = cover.convert("RGB")
+    img = cover.copy()  # Don't convert to RGB, preserve format
     
     img.info["eoi_append"] = payload
     return img
@@ -219,51 +224,80 @@ def embed_eoi(cover: Image.Image, payload: bytes) -> Image.Image:
 def save_image(img: Image.Image, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     ext = path.suffix.lower()
+    exif_bytes = img.info.get("exif")
     if ext == ".webp":
-        img.save(path, format="WEBP", lossless=True)
+        img.save(path, format="WEBP", lossless=True, exif=exif_bytes)
     elif ext == ".png":
         if img.mode == "P":
             img = img.convert("RGBA")
-        img.save(path, format="PNG")
+        img.save(path, format="PNG", exif=exif_bytes)
     elif ext == ".gif":
         img.save(path, format="GIF", save_all=True)
     elif ext in [".jpg", ".jpeg"]:
-        img.convert("RGB").save(path, format="JPEG", quality=95)
+        img.convert("RGB").save(path, format="JPEG", quality=95, exif=exif_bytes)
     elif ext == ".bmp":
         img.save(path, format="BMP")
     else:
         img.save(path)
 
 
-def save_jpeg_with_exif(img, path, exif_bytes, quality=95):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(path, "JPEG", exif=exif_bytes, quality=quality)
 
 
-def save_jpeg_with_eoi_append(img, path, append_bytes, quality=95):
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=quality)
-    data = buf.getvalue()
-    if b'\xff\xd9' not in data:
-        raise RuntimeError("JPEG EOI marker not found.")
-    new_data = data + append_bytes
+
+def save_with_eoi_append(img, path, append_bytes, quality=95):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(new_data)
+    ext = path.suffix.lower()
+    if ext in [".jpg", ".jpeg"]:
+        # For JPEG, append after EOI marker
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality)
+        data = buf.getvalue()
+        if b'\xff\xd9' not in data:
+            raise RuntimeError("JPEG EOI marker not found.")
+        new_data = data + append_bytes
+        path.write_bytes(new_data)
+    else:
+        # For other formats, save normally then append
+        if ext == ".webp":
+            img.save(path, format="WEBP", lossless=True)
+        elif ext == ".png":
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            img.save(path, format="PNG")
+        elif ext == ".gif":
+            img.save(path, format="GIF", save_all=True)
+        elif ext == ".bmp":
+            img.save(path, format="BMP")
+        else:
+            img.save(path)
+        # Append bytes to the file
+        with open(path, 'ab') as f:
+            f.write(append_bytes)
 
 
 # === MAIN SCRIPT ===
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler("generation.log")],
+    )
+
     parser = argparse.ArgumentParser(
         description="Generate stego validation set based on markdown payloads."
     )
     parser.add_argument("--clean_source", type=str, default="clean",
-                        help="Directory of clean source images.")
+                         help="Directory of clean source images.")
     parser.add_argument("--output_stego", type=str, default="stego",
-                        help="Directory to save generated stego images.")
+                         help="Directory to save generated stego images.")
     parser.add_argument("--limit", type=int, default=10,
-                        help="Limit the number of clean images to use for generation.")
+                         help="Limit the number of clean images to use for generation.")
+    parser.add_argument("--methods", type=str, default="exif,lsb,eoi,alpha,palette",
+                         help="Comma-separated methods to use: exif, lsb, eoi, alpha, palette.")
     args = parser.parse_args()
+
+    methods = [m.strip().lower() for m in args.methods.split(",")]
 
     source_dir = Path(args.clean_source)
     stego_dir = Path(args.output_stego)
@@ -313,18 +347,19 @@ def main():
 
     # Define which algorithms are suitable for which source file extensions
     algo_to_suitable_exts = {
-        "eoi": {".jpg", ".jpeg"},
-        "exif": {".jpg", ".jpeg"},
+        "eoi": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"},
+        "exif": {".jpg", ".jpeg", ".png", ".webp"},
         "alpha": {".png", ".webp"},
         "palette": {".gif", ".bmp"},
         "lsb": {".png", ".webp", ".bmp"}
     }
 
     # Map algorithm names to functions
-    algorithms = {
+    all_algorithms = {
         "lsb": embed_lsb, "alpha": embed_alpha, "palette": embed_palette,
         "exif": embed_exif, "eoi": embed_eoi
     }
+    algorithms = {k: v for k, v in all_algorithms.items() if k in methods}
 
     # Create a list of all generation tasks
     tasks = list(itertools.product(payloads.items(), algorithms.items(), source_images))
@@ -375,10 +410,8 @@ def main():
             stego_path = stego_dir / stego_filename
 
             # Save the stego image
-            if algo_name == "exif":
-                save_jpeg_with_exif(stego_img, stego_path, stego_img.info.get("exif_bytes"))
-            elif algo_name == "eoi":
-                save_jpeg_with_eoi_append(stego_img, stego_path, stego_img.info.get("eoi_append", b""))
+            if algo_name == "eoi":
+                save_with_eoi_append(stego_img, stego_path, stego_img.info.get("eoi_append", b""))
             else:
                 save_image(stego_img, stego_path)
 
