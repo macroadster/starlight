@@ -1,84 +1,96 @@
-📅 Gemini-CLI (Starlight Project) Next-Week Plan
+# Project Starlight - Gemini CLI Session Summary
 
-Week of November 10–14, 2025
-Primary Focus: Implementation Support and Documentation for V3 Hybrid Input Pipeline.
+## Date: Sunday, November 9, 2025
 
-🎯 Goal: V3 Integration Readiness
+## Overall Goal
+The primary objective is to build a robust and high-performance steganography detection pipeline. This involves training a model with a low false-positive rate on clean images and accurate classification of various steganography methods.
 
-Ensure the Gemini agent's generative and analytical functions are fully updated to support the new two-tensor (pixel + metadata) input architecture proposed in the V3 specification. This addresses the critical blind spot for EXIF and EOI payloads and enables the necessary refactoring for lightweight model export.
+## Current State
 
-🚀 Key Deliverables
+### Problem Identification
+The previous dual-stream model (Pixel + Metadata) exhibited a high false-positive rate (~58%) on clean images, predominantly misclassifying them as `lsb.rgb`. While it achieved 100% recall on stego images and accurately classified metadata-based methods (`exif`, `raw`/EOI), it struggled to differentiate between various pixel-based steganography techniques (alpha, palette, LSB) and benign image artifacts. The core issue was identified as the model overfitting on subtle pixel-level noise rather than learning distinct features for each stego method.
 
-1. V3 Data Preprocessing Script
+### Architectural Evolution: Multi-Stream Model (Implemented)
+To address the limitations of the previous model, we refactored the system to implement a new **multi-stream architecture**. This design aims to provide specialized processing for different types of image data, allowing the model to learn more distinct and robust features.
 
-Develop a runnable Python script (scripts/v3_preprocess_data.py) that correctly separates and serializes image files into the two required inputs for the V3 model:
+**Key Changes Implemented:**
+*   **`scripts/trainer.py`:**
+    *   **`StarlightDetector` (V4):** The model architecture has been completely overhauled. It now features four distinct input streams, each with its own specialized backbone:
+        1.  **Metadata Stream (MLP):** Processes EXIF and EOI data.
+        2.  **Alpha Stream (CNN):** A small Convolutional Neural Network (CNN) dedicated to analyzing the alpha channel of images.
+        3.  **LSB Stream (CNN):** A small CNN focused on detecting patterns in the Least Significant Bits (LSB) of the RGB channels.
+        4.  **Palette Stream (MLP):** A small Multi-Layer Perceptron (MLP) designed to process the color palette information.
+    *   **`load_multi_input` function:** A new data loading utility has been created (and moved to `scripts/starlight_utils.py`) to extract these four distinct data types from an image file. It handles padding with zeros for streams where the corresponding feature is not present.
+    *   **Training Loop:** Updated to feed the four input streams into the new `StarlightDetector`.
+    *   **ONNX Export:** Modified to correctly export the new multi-input model.
 
-pixel_tensor: The decoded image array (as done previously).
+*   **`scripts/scanner.py`:**
+    *   Updated to utilize the new `load_multi_input` function from `scripts/starlight_utils.py`.
+    *   Modified to correctly provide all four data streams as inputs to the ONNX model.
+    *   Adjusted to correctly unpack the model's 4-item output tuple.
+    *   Refactored to use `ProcessPoolExecutor` with an `initializer` to handle non-pickleable ONNX sessions in multiprocessing.
+    *   Fixed scan time calculation.
 
-metadata_tensor: A tensor representation of the extracted EXIF blob and EOI tail/payload data (as proposed in chatgpt_proposal.md).
+### Evaluation of Multi-Stream Model
+The multi-stream model has been successfully trained and exported.
 
-Constraint: Must handle various formats (JPEG, PNG) and gracefully create an empty metadata tensor if no relevant data is found.
+*   **Stego Dataset Performance:**
+    *   **100% Recall:** All 136 steganographic images were correctly detected.
+    *   **Perfect Method Classification:** The model achieved 100% accuracy in classifying the specific steganography method for each detected stego image (exif, raw/EOI, palette, alpha, lsb.rgb). This is a significant improvement over previous models.
 
-2. V3-Spec-Readiness.md Documentation
+*   **Clean Dataset Performance:**
+    *   **High False-Positive Rate:** The false-positive rate on the clean dataset remains high, with 230 out of 393 clean images (58.5%) being incorrectly classified as steganographic.
+    *   **Specific False Positives:** Crucially, these false positives are now being classified into specific pixel-based steganography methods:
+        *   `alpha`: 59 false positives
+        *   `palette`: 73 false positives
+        *   `lsb.rgb`: 98 false positives
+    This indicates that benign, naturally occurring artifacts in clean images (e.g., dithering in GIFs, semi-transparent pixels in PNGs) are being strongly correlated with the features of actual steganography methods by the model.
 
-Create a new comprehensive Markdown document detailing the implementation changes for V3. This will serve as the official reference for the gemini-cli agent and a resource for other agents (like Claude).
+## Next Steps: Implementing Triplet Loss
 
-Content Sections:
+The current model architecture has successfully enabled the model to *differentiate* between various steganography methods. However, it still struggles to *distinguish* between benign image artifacts and actual steganography.
 
-Architecture Overview: Diagram/description of the Dual Stream Input.
+To address the persistent high false-positive rate, the next step is to implement a **Triplet Loss** function during training. This approach will:
 
-Data Structure: Precise definition of the metadata_tensor format (size, encoding, padding).
+1.  **Train on Triplets:** Instead of individual images, the model will be fed triplets: an **Anchor** (stego image), a **Positive** (another stego image of the same method), and a **Negative** (a clean image).
+2.  **Metric Learning:** The Triplet Loss will encourage the model to:
+    *   Minimize the distance between the Anchor and the Positive in the embedding space.
+    *   Maximize the distance between the Anchor and the Negative in the embedding space.
+3.  **Robust Feature Learning:** This will force the model to learn more robust and discriminative features that specifically identify steganography, effectively teaching it to ignore benign noise that might resemble steganographic patterns.
 
-Code Snippets: Example usage of the new v3_preprocess_data.py script.
+This is a fundamental change to the training objective and is expected to significantly reduce the false-positive rate while maintaining high detection and classification accuracy.
 
-3. Review of dual_stream_train.py (Hypothetical)
+## Date: Monday, November 10, 2025
 
-Assume that Grok/ChatGPT are developing the core V3 training script (dual_stream_train.py). Commit to a full technical review of this file (once available) to confirm:
+## Session Summary: Refactoring, Cleanup, and Test Suite Modernization
 
-Correct loading and alignment of the two input tensors.
+Following the architectural evolution to a multi-stream model, this session focused on significant code cleanup, refactoring, and modernization of the testing suite to improve maintainability and usability.
 
-Validation against the Steganography Format Specification v2.0 (and V3 changes).
+### Core Script Cleanup and Refactoring
 
-Performance benchmarking logic is correctly implemented.
+*   **`scanner.py` Refinements:**
+    *   Removed all temporary debugging code and local function copies.
+    *   Message extraction is now performed only when scanning a single file, not for directory scans, improving performance for bulk analysis.
+    *   Suppressed informational print statements when `--json` output is requested, ensuring clean JSON output.
+*   **`starlight_extractor.py` Enhancements:**
+    *   The `extract_palette` function was improved to correctly handle grayscale ('L' mode) images and to attempt both MSB-first and LSB-first bit order extractions, resolving issues with palette-based steganography in various image formats (e.g., GIFs, BMPs).
+*   **Obsolete Code Removal:**
+    *   Removed several legacy trainer scripts (`balanced_trainer.py`, `enhanced_trainer.py`, `fixed_trainer.py`) that were no longer on the critical path.
+    *   Removed associated test scripts that depended on the obsolete trainers, further cleaning the codebase.
+    *   **Removed all "WOW" algorithm implementations and associated test files** from the data generators and datasets, as the approach was deemed impractical for real-world scenarios.
+*   **`trainer.py` Glob Support:**
+    *   The main `trainer.py` script was enhanced to accept glob patterns (e.g., `datasets/*_submission_*/clean`) for dataset directories. This allows for flexible training across multiple submission datasets simultaneously.
+*   **File Structure Reorganization:**
+    *   The primary user-facing scripts, `trainer.py` and `scanner.py`, were moved from the `scripts/` directory to the top-level project directory for easier access.
+    *   Import paths were updated to reflect this change.
 
-🚧 Project Starlight Integration Tasks
+### Test Suite Modernization and Bug Fixes
 
-Task
+*   **`test_starlight.py` Update:**
+    *   The test script was completely overhauled to work with the modern `scanner.py`.
+    *   It now invokes the scanner with the `--json` flag and parses the structured JSON output instead of relying on brittle string matching of human-readable output.
+    *   **Fixed `NameError: name 'json' is not defined`** by adding `import json`.
+    *   **Corrected EOI test failures** by mapping the model's `raw` prediction to the expected `eoi` algorithm in the test logic.
+    *   These changes make the test suite more robust and less prone to breaking when scanner output formatting changes.
 
-Status/Priority
 
-Output File
-
-Dependency
-
-01. Implement V3 Preprocessing
-
-High
-
-scripts/v3_preprocess_data.py
-
-None
-
-02. Write V3 Architecture Docs
-
-High
-
-docs/V3-Spec-Readiness.md
-
-Completion of Task 01
-
-03. Draft V3 Project Update (for user)
-
-Medium
-
-project_update_draft.md
-
-Survey & Proposal review
-
-💡 Gemini Self-Correction
-
-Issue: Previous Gemini response assumed "Fully aligned" and "fully synced" in the survey.
-
-Mitigation: The V3-Spec-Readiness.md will serve as the persistent, local copy of V3 spec alignment, overcoming the non-persistent memory issue highlighted in the consolidated survey.
-
-Commitment: I will strictly adhere to the new V3 architecture and use the new preprocessor script for all future Starlight-related data generation tasks.
