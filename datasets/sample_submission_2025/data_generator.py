@@ -226,15 +226,24 @@ def save_image(img: Image.Image, path: Path):
     ext = path.suffix.lower()
     exif_bytes = img.info.get("exif")
     if ext == ".webp":
-        img.save(path, format="WEBP", lossless=True, exif=exif_bytes)
+        if exif_bytes is not None:
+            img.save(path, format="WEBP", lossless=True, exif=exif_bytes)
+        else:
+            img.save(path, format="WEBP", lossless=True)
     elif ext == ".png":
         if img.mode == "P":
             img = img.convert("RGBA")
-        img.save(path, format="PNG", exif=exif_bytes)
+        if exif_bytes is not None:
+            img.save(path, format="PNG", exif=exif_bytes)
+        else:
+            img.save(path, format="PNG")
     elif ext == ".gif":
         img.save(path, format="GIF", save_all=True)
     elif ext in [".jpg", ".jpeg"]:
-        img.convert("RGB").save(path, format="JPEG", quality=95, exif=exif_bytes)
+        if exif_bytes is not None:
+            img.convert("RGB").save(path, format="JPEG", quality=95, exif=exif_bytes)
+        else:
+            img.convert("RGB").save(path, format="JPEG", quality=95)
     elif ext == ".bmp":
         img.save(path, format="BMP")
     else:
