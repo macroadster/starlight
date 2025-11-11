@@ -4,6 +4,7 @@ import glob
 import re
 import subprocess
 import argparse
+import json
 from collections import defaultdict
 from tqdm import tqdm # Import tqdm for progress bar
 import random # Import random for sampling
@@ -70,17 +71,16 @@ def run_extraction_test(image_path, algorithm, payload_path=None):
     Returns a tuple: (result_status, failure_details)
     """
     
-    # Read expected payload for comparison
     expected_content = read_expected_payload(payload_path)
     if expected_content.startswith("ERROR_READING_PAYLOAD"):
         return "ERROR", expected_content
     
     try:
-        # --- Run scanner.py (detection and extraction are automatic) ---
         command = [
             'python3', 
             EXTRACTOR_SCRIPT, 
-            image_path
+            image_path,
+            '--json'  # Use JSON output for robust parsing
         ]
         
         result = subprocess.run(
@@ -88,46 +88,39 @@ def run_extraction_test(image_path, algorithm, payload_path=None):
             capture_output=True,
             text=True,
             check=False,
-            timeout=30 # Add a timeout in case the script hangs
+            timeout=30
         )
         
-        stdout_lines = result.stdout.split('\n')
-        
-        # --- Parse detection results ---
-        predicted_class = "unknown"
-        confidence = 0.0
-        
-        # Regex to find "Predicted: {class} (confidence: {confidence:.2%})"
-        prediction_regex = re.compile(r"Predicted: (\w+) \(confidence: ([\d.]+)%\)")
-        
-        for line in stdout_lines:
-            match = prediction_regex.search(line)
-            if match:
-                predicted_class = match.group(1).lower()
-                confidence = float(match.group(2)) / 100.0 # Convert percentage to float
-                break
-        
+        try:
+            scan_results = json.loads(result.stdout)
+            if not scan_results:
+                return "ERROR", "Scanner returned empty JSON."
+            
+            scan_result = scan_results[0] # We are scanning a single file
+            
+            if scan_result.get("error"):
+                return "ERROR", f"Scanner returned an error: {scan_result['error']}"
+
+            is_stego = scan_result.get("is_stego", False)
+            predicted_class = scan_result.get("stego_type", "clean").lower()
+            confidence = scan_result.get("confidence", 0.0)
+            extracted_text = scan_result.get("extracted_message", "")
+
+        except (json.JSONDecodeError, IndexError) as e:
+            return "ERROR", f"Failed to parse scanner JSON output: {e}\nOutput was:\n{result.stdout}"
+
         # --- Evaluate Detection Result ---
-        if predicted_class == 'clean':
-            # If a stego image is detected as clean, it's a failure
-            return "FAILURE", f"Detected as clean (confidence: {confidence:.2%}) but expected {algorithm}."
+        if not is_stego:
+            return "FAILURE", f"Detected as clean but expected {algorithm}."
+        
+        # The scanner uses 'lsb.rgb' or 'raw', but the test might expect 'lsb' or 'eoi'
+        if (algorithm == 'lsb' and predicted_class == 'lsb.rgb') or \
+           (algorithm == 'eoi' and predicted_class == 'raw'):
+            pass # This is a valid mapping
         elif predicted_class != algorithm:
-            # If a stego image is detected as a wrong stego type, it's a failure
             return "FAILURE", f"Detected as {predicted_class} (confidence: {confidence:.2%}) but expected {algorithm}."
         
-        # --- Parse extraction results ---
-        start_tag = "Extracted Message:"
-        # The end of the message is not clearly delimited, so we'll have to parse differently.
-        # The message seems to be the last part of the output.
-        
-        extracted_text = ""
-        try:
-            start_index = result.stdout.index(start_tag) + len(start_tag)
-            extracted_text = result.stdout[start_index:].strip()
-        except ValueError:
-            # If start_tag is not found, it means no message was extracted.
-            pass
-
+        # --- Evaluate Extraction Result ---
         if expected_content:
             normalized_expected = normalize_text(expected_content)
             expected_len = len(normalized_expected)
@@ -136,31 +129,32 @@ def run_extraction_test(image_path, algorithm, payload_path=None):
                 normalized_extracted = normalize_text(extracted_text)
                 extracted_len = len(normalized_extracted)
                 
-                # Success criterion: Extracted length must be within 20% tolerance of expected length (100%).
+                # Success criterion: Extracted length must be within 20% tolerance of expected length.
                 min_len = expected_len * 0.80
                 max_len = expected_len * 1.20
 
-                if extracted_len > 0 and min_len <= extracted_len <= max_len:
-                    return "SUCCESS", f"Detected {predicted_class} (conf: {confidence:.2%}) and extracted content length (normalized) is similar to expected payload."
+                if min_len <= extracted_len <= max_len:
+                    return "SUCCESS", f"Detected {predicted_class} (conf: {confidence:.2%}) and extracted content length is similar."
                 else:
-                    details = (f"Detected {predicted_class} (conf: {confidence:.2%}) but extracted content length validation failed (Normalized Comparison). "
+                    details = (f"Detected {predicted_class} (conf: {confidence:.2%}) but content length validation failed. "
                                f"Expected range: [{min_len:.0f} - {max_len:.0f}] chars. "
                                f"Actual: {extracted_len} chars. Expected: {expected_len} chars.")
                     return "FAILURE", details
             else:
-                return "FAILURE", f"Detected {predicted_class} (conf: {confidence:.2%}) but no extraction block found."
+                return "FAILURE", f"Detected {predicted_class} (conf: {confidence:.2%}) but no message was extracted."
         else:
+            # No ground truth payload, so success if extraction happened
             if extracted_text:
-                return "SUCCESS", f"Detected {predicted_class} (conf: {confidence:.2%}) and extraction performed (no ground truth payload for comparison)."
+                return "SUCCESS", f"Detected {predicted_class} (conf: {confidence:.2%}) and extraction performed (no ground truth)."
             else:
-                return "FAILURE", f"Detected {predicted_class} (conf: {confidence:.2%}) but no extraction block found."
+                return "FAILURE", f"Detected {predicted_class} (conf: {confidence:.2%}) but no message was extracted."
 
     except FileNotFoundError:
         return "ERROR", f"Could not find {EXTRACTOR_SCRIPT}."
     except subprocess.TimeoutExpired:
         return "ERROR", f"Process timed out after 30 seconds."
     except Exception as e:
-        return "ERROR", f"An unexpected error occurred during execution: {e}"
+        return "ERROR", f"An unexpected error occurred: {e}"
 
 def main():
     """Main function to discover and run all tests."""

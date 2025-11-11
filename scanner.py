@@ -1,293 +1,339 @@
-#!/usr/bin/env python3
-"""
-Fast Steganography Scanner - Optimized for speed
-
-Key optimizations:
-1. Cached ensemble model (singleton)
-2. Parallel processing with ThreadPoolExecutor
-3. Quick scan mode (detection only)
-4. Batch result processing
-"""
-
-import os
-import sys
-import argparse
-from pathlib import Path
-from PIL import Image
+import onnxruntime
 import numpy as np
+from PIL import Image
+import argparse
 from tqdm import tqdm
-import json
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
+import struct
+import torch
+import torchvision.transforms as transforms
 import time
-import threading
+import json
+from scripts.starlight_utils import load_multi_input
+from scripts.starlight_extractor import extraction_functions
 
-# Import extraction functions
-from starlight_extractor import (
-    extract_alpha, extract_palette, 
-    extract_lsb, extract_exif, extract_eoi
-)
+def extract_enhanced_metadata_features(image_path):
+    """Extract enhanced metadata features for better EXIF detection"""
 
-# Import updated ensemble model
-sys.path.append(os.path.join(os.path.dirname(__file__), 'scripts'))
-try:
-    from aggregate_models import SuperStarlightDetector, create_ensemble as create_aggregate_ensemble
-except ImportError as e:
-    print(f"Warning: Could not import ensemble model: {e}")
-    create_aggregate_ensemble = None
+    with open(image_path, 'rb') as f:
+        raw = f.read()
 
-# --- GLOBAL ENSEMBLE CACHE ---
-_ensemble_instance = None
-_ensemble_lock = threading.Lock()
+    # Basic features (1024 bytes as before)
+    exif = b""
+    pos = raw.find(b'\xFF\xE1')
+    if pos != -1:
+        length = struct.unpack('>H', raw[pos+2:pos+4])[0]
+        exif = raw[pos+4:pos+4+length-2]
 
-def get_ensemble_instance():
-    """Get or create cached ensemble instance (thread-safe singleton)"""
-    global _ensemble_instance
-    if _ensemble_instance is None:
-        with _ensemble_lock:
-            if _ensemble_instance is None:
-                if create_aggregate_ensemble is None:
-                    raise RuntimeError("Ensemble model not available")
-                print("[INIT] Creating cached ensemble model (one-time initialization)")
-                _ensemble_instance = create_aggregate_ensemble()
-            else:
-                print("[INIT] Using cached ensemble model")
+    # Find format and extract tail
+    format_hint = 'jpeg' if raw.startswith(b'\xFF\xD8') else 'auto'
+    if format_hint == 'jpeg':
+        tail = raw[raw.rfind(b'\xFF\xD9') + 2:] if raw.rfind(b'\xFF\xD9') != -1 else b""
     else:
-        print("[INIT] Using cached ensemble model")
-    return _ensemble_instance
+        tail = b""
 
-# --- FAST SCANNER ---
-class FastStegoScanner:
-    def __init__(self, quick_mode=False, max_workers=4):
-        self.quick_mode = quick_mode
-        self.max_workers = max_workers
-        print(f"[INIT] Fast scanner initialized (quick_mode={quick_mode}, workers={max_workers})")
-        self.detector = get_ensemble_instance()
-        
-    def detect_single(self, img_path):
-        """Fast detection for a single image"""
+    # Enhanced features (next 1024 bytes)
+    enhanced_features = np.zeros(1024, dtype=np.uint8)
+
+    # EXIF position and size features
+    exif_positions = []
+    pos = 0
+    while True:
+        pos = raw.find(b'\xFF\xE1', pos)
+        if pos == -1:
+            break
+        exif_positions.append(pos)
+        pos += 2
+
+    if exif_positions:
+        # Store EXIF positions (first 10 positions, 4 bytes each)
+        for i, pos in enumerate(exif_positions[:10]):
+            if i * 4 + 3 < len(enhanced_features):
+                # Convert to unsigned 32-bit
+                unsigned_pos = pos & 0xFFFFFFFF
+                enhanced_features[i*4:i*4+4] = np.frombuffer(struct.pack('>I', unsigned_pos), dtype=np.uint8)
+
+        # Store EXIF sizes (first 10 sizes, 2 bytes each)
+        exif_sizes = []
+        for pos in exif_positions[:10]:
+            if pos + 4 <= len(raw):
+                length = struct.unpack('>H', raw[pos+2:pos+4])[0]
+                exif_sizes.append(length)
+
+        for i, size in enumerate(exif_sizes[:10]):
+            if i * 2 + 40 < len(enhanced_features):
+                # Convert to unsigned 16-bit
+                unsigned_size = size & 0xFFFF
+                enhanced_features[40+i*2:40+i*2+2] = np.frombuffer(struct.pack('>H', unsigned_size), dtype=np.uint8)
+
+    # JPEG marker analysis (next 100 bytes)
+    jpeg_markers = []
+    for i in range(0, min(len(raw) - 1, 10000), 2):  # Check first 10KB
+        if raw[i] == 0xFF and i + 1 < len(raw):
+            marker = raw[i+1]
+            if marker != 0x00:
+                jpeg_markers.append(marker)
+
+    # Store marker histogram (50 bytes)
+    marker_hist = np.zeros(50, dtype=np.uint8)
+    for marker in jpeg_markers[:100]:  # First 100 markers
+        idx = marker % 50
+        if idx < 50:
+            marker_hist[idx] = min(marker_hist[idx] + 1, 255)
+
+    enhanced_features[60:110] = marker_hist
+
+    # Tail analysis (next 100 bytes)
+    if len(tail) > 0:
+        hist = np.histogram(bytearray(tail[:1000]), bins=256)[0]
+        tail_entropy = -np.sum(hist * np.log2(hist + 1e-10))
+        enhanced_features[110] = min(max(int(tail_entropy), 0), 255)  # Clamp to 0-255
+        enhanced_features[111] = min(len(tail), 255)
+
+        # Store first 88 bytes of tail data
+        tail_bytes = np.frombuffer(tail[:88], dtype=np.uint8)
+        enhanced_features[112:112+len(tail_bytes)] = tail_bytes
+
+    # Combine basic and enhanced features
+    basic_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:1024]
+    basic_bytes = np.pad(basic_bytes, (0, 1024 - len(basic_bytes)), 'constant')
+
+    # Return both basic and enhanced features
+    return basic_bytes.astype(np.float32) / 255.0, enhanced_features.astype(np.float32) / 255.0
+
+def load_enhanced_multi_input(path, transform=None):
+    """Enhanced version of load_multi_input with better metadata features"""
+    img = Image.open(path)
+
+    # Augmentation
+    rgb_img = img.convert('RGB')
+    if transform:
+        aug_img = transform(rgb_img)
+    else:
+        crop = transforms.CenterCrop((256, 256))
+        aug_img = crop(rgb_img)
+
+    # Enhanced metadata features
+    basic_meta, enhanced_meta = extract_enhanced_metadata_features(path)
+
+    # Combine metadata features (basic + enhanced)
+    meta = torch.cat([torch.from_numpy(basic_meta), torch.from_numpy(enhanced_meta)])
+
+    # Alpha path
+    if img.mode == 'RGBA':
+        alpha_plane = np.array(img.split()[-1]).astype(np.float32) / 255.0
+        alpha = torch.from_numpy(alpha_plane).unsqueeze(0)
+    else:
+        alpha = torch.zeros(1, img.height, img.width)
+    alpha = transforms.CenterCrop((256, 256))(alpha)
+
+    # LSB path
+    lsb_r = (np.array(aug_img)[:, :, 0] & 1).astype(np.float32)
+    lsb_g = (np.array(aug_img)[:, :, 1] & 1).astype(np.float32)
+    lsb_b = (np.array(aug_img)[:, :, 2] & 1).astype(np.float32)
+    lsb = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
+
+    # Palette path
+    if img.mode == 'P':
+        palette_bytes = np.array(img.getpalette(), dtype=np.uint8)
+        palette_bytes = np.pad(palette_bytes, (0, 768 - len(palette_bytes)), 'constant')
+    else:
+        palette_bytes = np.zeros(768, dtype=np.uint8)
+    palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
+
+    return meta, alpha, lsb, palette
+
+# --- Worker-specific globals ---
+SESSION = None
+METHOD_MAP = {0: "alpha", 1: "palette", 2: "lsb.rgb", 3: "exif", 4: "raw"}
+
+def init_worker(model_path):
+    """Initializer for each worker process."""
+    global SESSION
+    SESSION = onnxruntime.InferenceSession(model_path)
+
+def _scan_logic(image_path, session, extract_message=False):
+    """The actual scanning logic, independent of the execution context."""
+    global METHOD_MAP
+    try:
+        meta, alpha, lsb, palette = load_enhanced_multi_input(image_path)
+
+        # Add batch dimension for ONNX model
+        meta = meta.unsqueeze(0)
+        alpha = alpha.unsqueeze(0)
+        lsb = lsb.unsqueeze(0)
+        palette = palette.unsqueeze(0)
+
+        # Run inference
+        input_feed = {
+            'meta': meta.numpy(),
+            'alpha': alpha.numpy(),
+            'lsb': lsb.numpy(),
+            'palette': palette.numpy()
+        }
+        stego_logits, _, method_id, method_probs, _ = session.run(None, input_feed)
+
+        # Process results
+        stego_prob = 1 / (1 + np.exp(-stego_logits[0][0]))
+
+        # Check for EXIF content to correct misclassification
+        has_exif = False
         try:
-            result = self.detector.predict(img_path)
-            if 'error' in result:
-                return {
-                    'file': str(img_path),
-                    'status': 'error',
-                    'error': result['error']
-                }
-                
-            return {
-                'file': str(img_path),
-                'timestamp': datetime.now().isoformat(),
-                'status': 'success',
-                'predicted_class': 'stego' if result['predicted'] else 'clean',
-                'confidence': abs(result['ensemble_probability'] - 0.5) * 2,
-                'ensemble_probability': result['ensemble_probability'],
-                'stego_type': result.get('detected_method', 'unknown'),
-                'is_stego': result['predicted'],
-                'voters': result.get('voters', 0),
-                'eligible_models': result.get('eligible_models', 0)
-            }
-        except Exception as e:
-            return {
-                'file': str(img_path),
-                'status': 'error',
-                'error': str(e)
-            }
-    
-    def extract_single(self, img_path, result):
-        """Extract messages from a detected stego image"""
-        if not result.get('is_stego', False) or self.quick_mode:
-            return result
-        
-        try:
-            img_path_str = str(img_path)
-            extraction_map = {
-                'alpha': lambda: extract_alpha(img_path_str),
-                'palette': lambda: extract_palette(img_path_str),
-                'lsb': lambda: extract_lsb(img_path_str),
-                'exif': lambda: extract_exif(img_path_str),
-                'eoi': lambda: extract_eoi(img_path_str)
-            }
-            
-            extracted_messages = {}
-            for algo, extractor_func in extraction_map.items():
-                try:
-                    message, _ = extractor_func()
-                    if message:
-                        extracted_messages[algo] = str(message)[:200] + '...' if len(str(message)) > 200 else str(message)
-                except Exception:
-                    pass
-            
-            result['extracted_message'] = extracted_messages
-        except Exception as e:
-            result['extraction_error'] = str(e)
-        
+            with open(image_path, 'rb') as f:
+                raw = f.read()
+            if b'\xFF\xE1' in raw:
+                pos = raw.find(b'\xFF\xE1')
+                if pos != -1:
+                    length = struct.unpack('>H', raw[pos+2:pos+4])[0]
+                    exif_data = raw[pos+4:pos+4+length-2]
+                    if len(exif_data) > 10:  # Has meaningful EXIF
+                        has_exif = True
+        except:
+            pass
+
+        # If model predicted raw/EOI but has EXIF and likely stego, correct to exif
+        if method_id[0] == 4 and has_exif and stego_prob > 0.5:
+            method_id[0] = 3
+
+        # Method-specific thresholds to improve detection
+        thresholds = {0: 0.559, 1: 0.486, 2: 0.724, 3: 0.5, 4: 0.652}  # Optimized for F1 score
+        threshold = thresholds.get(method_id[0], 0.8)
+        is_stego = stego_prob > threshold
+
+        result = {
+            "file_path": str(image_path),
+            "is_stego": bool(is_stego),
+            "stego_probability": float(stego_prob),
+            "method_id": int(method_id[0]),
+        }
+
+        if is_stego:
+            stego_type = METHOD_MAP.get(method_id[0], "unknown")
+            result["stego_type"] = stego_type
+            result["confidence"] = float(np.max(method_probs))
+
+            if extract_message:
+                # Handle method name mapping for extractor
+                extractor_method_name = stego_type
+                if stego_type == "lsb.rgb":
+                    extractor_method_name = "lsb"
+                elif stego_type == "raw":
+                    extractor_method_name = "eoi"
+
+                if extractor_method_name in extraction_functions:
+                    try:
+                        extractor = extraction_functions[extractor_method_name]
+                        message, _ = extractor(image_path)
+                        if message:
+                            result["extracted_message"] = message
+                    except Exception as e:
+                        result["extraction_error"] = str(e)
+
         return result
-    
-    def scan_file(self, img_path, extract_messages=True):
-        """Scan a single file with optional extraction"""
-        result = self.detect_single(img_path)
-        if result['status'] == 'success':
-            if extract_messages:
-                result = self.extract_single(img_path, result)
-        return result
-    
-    def scan_directory(self, directory, recursive=True, output_file=None, detail=False):
-        """Fast directory scan with parallel processing"""
-        directory = Path(directory)
-        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tiff', '.tif'}
+    except Exception as e:
+        error_message = f"Could not process {image_path}: {e}"
+        return {"file_path": str(image_path), "error": error_message}
+
+def scan_image_worker(image_path):
+    """The actual scanning logic that runs in each worker process."""
+    global SESSION
+    # Extraction is disabled for directory scans for performance
+    return _scan_logic(image_path, SESSION, extract_message=False)
+
+class StarlightScanner:
+    def __init__(self, model_path, num_workers=4, quiet=False):
+        self.model_path = model_path
+        self.num_workers = num_workers
+        if not quiet:
+            print(f"[INIT] Model path set to: {model_path}")
+            print(f"[INIT] Fast scanner configured (workers={num_workers})")
+
+    def scan_file(self, file_path):
+        """Scans a single image file."""
+        session = onnxruntime.InferenceSession(self.model_path)
+        # Extraction is enabled for single file scans
+        return _scan_logic(file_path, session, extract_message=True)
+
+    def scan_directory(self, path, quiet=False):
+        image_paths = [os.path.join(root, file) for root, _, files in os.walk(path) for file in files if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'))]
         
-        # Find all image files
-        if recursive:
-            image_files = [f for f in directory.rglob('*') if f.suffix.lower() in image_extensions]
-        else:
-            image_files = [f for f in directory.glob('*') if f.suffix.lower() in image_extensions]
-        
-        print(f"\n[SCANNER] Found {len(image_files)} images to scan")
-        print(f"[SCANNER] Using {self.max_workers} parallel workers")
-        
+        if not quiet:
+            print(f"\n[SCANNER] Found {len(image_paths)} images to scan")
+            print(f"[SCANNER] Initializing {self.num_workers} parallel workers...")
+
         results = []
-        stego_detections = []
-        
-        # Parallel processing
-        start_time = time.time()
-        
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all tasks
-            future_to_path = {executor.submit(self.scan_file, img_path): img_path 
-                           for img_path in image_files}
-            
-            # Process completed tasks with progress bar
-            for future in tqdm(as_completed(future_to_path), total=len(image_files), 
-                             desc="Scanning images"):
-                result = future.result()
-                results.append(result)
-                
-                if result.get('is_stego', False):
-                    stego_detections.append((Path(result['file']), result))
-        
-        scan_time = time.time() - start_time
-        
-        # Display results
-        if detail and stego_detections:
-            print(f"\n{'='*60}")
-            print(f"DETECTIONS FOUND")
-            print(f"{'='*60}")
-            for img_path, result in stego_detections:
-                print(f"\n[FOUND] {img_path.name}")
-                print(f"  Path: {img_path}")
-                print(f"  Type: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
-                print(f"  Method: {result['stego_type']}")
-                print(f"  Voters: {result['voters']}/{result['eligible_models']}")
-                if result.get('extracted_message'):
-                    for algo, msg in result['extracted_message'].items():
-                        print(f"  Message ({algo}): {msg}")
-        
-        # Summary
-        print(f"\n{'='*60}")
-        print(f"SCAN COMPLETE")
-        print(f"{'='*60}")
-        print(f"Total images scanned: {len(image_files)}")
-        print(f"Steganography detected: {len(stego_detections)}")
-        print(f"Clean images: {len(image_files) - len(stego_detections)}")
-        print(f"Scan time: {scan_time:.2f} seconds ({len(image_files)/scan_time:.1f} images/sec)")
-        
-        # Type breakdown
-        type_counts = {}
-        for result in results:
-            if result.get('is_stego', False):
-                stego_type = result.get('stego_type', 'unknown')
-                type_counts[stego_type] = type_counts.get(stego_type, 0) + 1
-        
-        if type_counts:
-            print(f"\nSteganography types found:")
-            for stego_type, count in sorted(type_counts.items(), key=lambda x: x[1], reverse=True):
-                print(f"  {stego_type}: {count}")
-        
-        # Save results
-        if output_file:
-            with open(output_file, 'w') as f:
-                json.dump(results, f, indent=2)
-            print(f"\nResults saved to: {output_file}")
-        
+        with ProcessPoolExecutor(max_workers=self.num_workers, initializer=init_worker, initargs=(self.model_path,)) as executor:
+            progress_bar = tqdm(total=len(image_paths), desc="Scanning images", disable=quiet)
+            with progress_bar:
+                futures = [executor.submit(scan_image_worker, path) for path in image_paths]
+                for future in as_completed(futures):
+                    res = future.result()
+                    if 'error' in res and not quiet:
+                        # Print errors from the main process to ensure they are visible
+                        print(f"Warning: {res['error']}")
+                    results.append(res)
+                    progress_bar.update(1)
         return results
 
 def main():
-    parser = argparse.ArgumentParser(description="Fast Steganography Scanner")
-    parser.add_argument('target', help='Image file or directory to scan')
-    parser.add_argument('--quick', action='store_true', 
-                       help='Quick scan: skip extraction (default for directories)')
-    parser.add_argument('--workers', type=int, default=4,
-                       help='Number of parallel workers (default: 4)')
-    parser.add_argument('--recursive', action='store_true', default=True,
-                       help='Recursively scan subdirectories')
-    parser.add_argument('--output', help='Output JSON file for results')
-    parser.add_argument('--detail', action='store_true',
-                       help='Display detailed detection results')
-
+    parser = argparse.ArgumentParser(description="Scan a directory or a single file for steganography.")
+    parser.add_argument("path", help="The directory or file to scan.")
+    parser.add_argument("--model", default="models/detector_balanced.onnx", help="Path to the ONNX model file.")
+    parser.add_argument("--workers", type=int, default=os.cpu_count(), help="Number of parallel workers for scanning.")
+    parser.add_argument("--json", action="store_true", help="Output results as JSON.")
     args = parser.parse_args()
+
+    scanner = StarlightScanner(args.model, num_workers=args.workers, quiet=args.json)
+    start_time = time.time()
     
-    # Check if target exists
-    if not os.path.exists(args.target):
-        print(f"Error: Target not found: {args.target}")
-        sys.exit(1)
-    
-    scanner = FastStegoScanner(
-        quick_mode=args.quick,
-        max_workers=args.workers
-    )
-    
-    target_path = Path(args.target)
-    
-    if target_path.is_file():
-        # Single file scan
-        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tiff', '.tif'}
-        if target_path.suffix.lower() not in image_extensions:
-            print(f"Error: Not an image file: {args.target}")
-            sys.exit(1)
-        
-        print(f"\n[SCANNING] Single file: {args.target}")
-        # For single files, perform extraction by default (unless --quick specified)
-        extract_by_default = not args.quick
-        result = scanner.scan_file(target_path, extract_messages=extract_by_default)
-        
-        print(f"\n{'='*60}")
-        print(f"RESULTS")
-        print(f"{'='*60}")
-        print(f"File: {result['file']}")
-        if result['status'] == 'success':
-            print(f"Predicted: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
-            print(f"Method: {result['stego_type']}")
-            print(f"Voters: {result['voters']}/{result['eligible_models']}")
-            print(f"Is Stego: {result['is_stego']}")
-            if result.get('extracted_message'):
-                extracted = result['extracted_message']
-                if isinstance(extracted, dict):
-                    for algo_name, msg_content in extracted.items():
-                        print(f"  Message ({algo_name}): {msg_content}")
-                else:
-                    print(f"  Message: {extracted}")
-        else:
-            print(f"Error: {result.get('error', 'Unknown error')}")
-        
-        if args.output:
-            with open(args.output, 'w') as f:
-                json.dump(result, f, indent=2)
-            print(f"\nResults saved to: {args.output}")
-    
-    elif target_path.is_dir():
-        print(f"\n[SCANNING] Directory: {args.target}")
-        # For directory scans, use quick mode by default (no extraction)
-        results = scanner.scan_directory(
-            args.target,
-            recursive=args.recursive,
-            output_file=args.output,
-            detail=args.detail
-        )
-    
+    if os.path.isfile(args.path):
+        results = [scanner.scan_file(args.path)]
     else:
-        print(f"Error: Invalid target (not a file or directory)")
-        sys.exit(1)
+        results = scanner.scan_directory(args.path, quiet=args.json)
+        
+    end_time = time.time()
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+        return
+
+    detected_files = [r for r in results if r.get("is_stego")]
+    clean_files = [r for r in results if not r.get("is_stego") and "error" not in r]
+    errors = [r for r in results if "error" in r]
+
+    print("\n" + "="*60)
+    print("SCAN COMPLETE")
+    print("="*60)
+    total_scanned = len(results) - len(errors)
+    print(f"Total images scanned: {total_scanned}")
+    print(f"Steganography detected: {len(detected_files)}")
+
+    if detected_files:
+        print("\nDetected files:")
+        for i, r in enumerate(detected_files):
+            if i < 20:
+                message_info = f", Message: '{r['extracted_message'][:50]}...'" if r.get('extracted_message') else ""
+                print(f"  - {os.path.basename(r['file_path'])} (Predicted: {r['stego_type']}, Confidence: {r.get('confidence', 0):.1%}{message_info})")
+        if len(detected_files) > 20:
+            print(f"  ... and {len(detected_files) - 20} more.")
+
+    print(f"\nClean images: {len(clean_files)}")
+    if errors:
+        print(f"Errors on {len(errors)} images.")
+
+    elapsed_time = end_time - start_time
+    images_per_sec = total_scanned / elapsed_time if elapsed_time > 0 else 0
+    print(f"Scan time: {elapsed_time:.2f} seconds ({images_per_sec:.1f} images/sec)")
+
+    if detected_files:
+        print("\nSteganography types found:")
+        type_counts = {}
+        for r in detected_files:
+            stype = r['stego_type']
+            type_counts[stype] = type_counts.get(stype, 0) + 1
+        for stype, count in type_counts.items():
+            print(f"  {stype}: {count}")
 
 if __name__ == "__main__":
     main()

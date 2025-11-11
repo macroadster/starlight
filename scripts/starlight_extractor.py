@@ -375,11 +375,11 @@ def calculate_message_confidence(message):
 def extract_palette(image_path):
     """
     Extract palette-based steganography.
-    SPEC: MSB-first, null-terminated or detectable format
+    SPEC: Can be MSB-first or LSB-first, null-terminated or detectable format
     """
     img = Image.open(image_path)
-    if img.mode not in ['P', 'L']:
-        return None, None
+    if img.mode != 'P':
+        img = img.convert('L') # Convert to grayscale if not in palette mode
     
     img_array = np.array(img)
     bits = ''.join(str(pixel & 1) for pixel in img_array.flatten())
@@ -389,8 +389,13 @@ def extract_palette(image_path):
     if message:
         return message, remaining
     
-    # Fallback: try best effort extraction
+    # Fallback: try best effort extraction (MSB)
     message, remaining = extract_message_best_effort(bits, bit_order='msb-first')
+    if message:
+        return message, remaining
+    
+    # Fallback: try best effort extraction (LSB)
+    message, remaining = extract_message_best_effort(bits, bit_order='lsb-first')
     return message, remaining
 
 
