@@ -401,7 +401,7 @@ def extract_exif(image_path):
             exif_dict = piexif.load(image_path)
             user_comment = exif_dict.get("Exif", {}).get(piexif.ExifIFD.UserComment)
             
-            if user_comment and isinstance(user_comment, bytes):
+            if user_comment is not None and isinstance(user_comment, bytes):
                 # Handle encoding headers as per spec
                 if user_comment.startswith(b'ASCII\x00\x00\x00'):
                     message = user_comment[8:].decode('ascii', errors='ignore').strip()
@@ -448,7 +448,7 @@ def extract_exif(image_path):
         exif = img.getexif()
         if exif:
             user_comment = exif.get(37510)  # UserComment tag
-            if user_comment:
+            if user_comment is not None:
                 if isinstance(user_comment, bytes):
                     if user_comment.startswith(b'ASCII\x00\x00\x00'):
                         message = user_comment[8:].decode('ascii', errors='ignore').strip()
