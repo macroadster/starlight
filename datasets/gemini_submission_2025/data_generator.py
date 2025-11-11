@@ -4,6 +4,8 @@ import json
 import numpy as np
 from PIL import Image
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # --- CONFIGURATION ---
 # Note: This is now the DEFAULT, but it will be overridden if --limit is used.
 NUM_IMAGES_PER_PAYLOAD = 5      # Default number of image pairs to generate for each .md file
@@ -27,7 +29,7 @@ EOI_MARKER = b'\xFF\xD9'         # JPEG End of Image (EOI) marker
 
 # --- PAYLOAD LOADING ---
 
-def load_all_payloads(submission_dir="."):
+def load_all_payloads(submission_dir=SCRIPT_DIR):
     """
     Identifies all markdown seed files and loads their content.
     Returns a list of (base_filename, full_byte_payload) tuples.
@@ -119,7 +121,7 @@ def extract_lsb(stego_img_path, num_bits):
     extracted_bits = [(alpha_val & 0x01) for alpha_val in alpha_channel[:num_bits]]
     return extracted_bits
 
-def test_lsb_steganography_on_image(stego_path_target, expected_byte_payload):
+def test_lsb_steganography_on_image(stego_path_target, expected_byte_payload, clean_path=None):
     """Verifies LSB embedding."""
     expected_bits = get_payload_bits(expected_byte_payload)
     num_test_bits = len(expected_bits)
@@ -186,7 +188,7 @@ def extract_eoi_append(stego_img_path):
     
     return appended_data
 
-def test_eoi_append_steganography_on_image(stego_path_target, expected_byte_payload):
+def test_eoi_append_steganography_on_image(stego_path_target, expected_byte_payload, clean_path=None):
     """Verifies EOI Append embedding."""
     
     extracted_bytes = extract_eoi_append(stego_path_target)
@@ -201,7 +203,7 @@ def test_eoi_append_steganography_on_image(stego_path_target, expected_byte_payl
 # --- MAIN GENERATION LOOP ---
 
 def generate_images(limit=None, resolution=RESOLUTION):
-    """Generates clean/stego pairs for both PNG (LSB) and JPEG (EOI Append)."""
+    """Generates clean/stego pairs for PNG (LSB) and JPEG (EOI Append)."""
     
     # MODIFIED LOGIC: Use limit if provided, otherwise fall back to the default constant.
     if limit is None:
@@ -211,8 +213,8 @@ def generate_images(limit=None, resolution=RESOLUTION):
         
     print(f"Generating exactly {images_to_generate} image pairs per payload file.")
 
-    clean_dir = "clean"
-    stego_dir = "stego"
+    clean_dir = os.path.join(SCRIPT_DIR, "clean")
+    stego_dir = os.path.join(SCRIPT_DIR, "stego")
     
     os.makedirs(clean_dir, exist_ok=True)
     os.makedirs(stego_dir, exist_ok=True)
@@ -225,7 +227,7 @@ def generate_images(limit=None, resolution=RESOLUTION):
     total_images_generated = 0
     total_verifications_failed = 0
     
-    # Iterate over both formats for diversity.
+    # Iterate over all formats for diversity.
     for current_format, algorithm_name, quality, embed_func, test_func in [
         (PNG_FORMAT, PNG_ALGORITHM, None, embed_stego_lsb, test_lsb_steganography_on_image),
         (JPEG_FORMAT, JPEG_ALGORITHM, JPEG_QUALITY, embed_stego_eoi_append, test_eoi_append_steganography_on_image)
@@ -283,7 +285,7 @@ def generate_images(limit=None, resolution=RESOLUTION):
                             json.dump(sidecar_content, f, indent=2)
 
                     # 4. Perform verification
-                    verification_success = test_func(stego_path, full_byte_payload)
+                    verification_success = test_func(stego_path, full_byte_payload, clean_path=clean_path)
                     
                     if verification_success:
                         print(f" [✔] {current_format} SUCCESS: {filename}")

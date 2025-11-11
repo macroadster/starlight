@@ -1,664 +1,780 @@
-#!/usr/bin/env python3
-"""
-Universal 6-class Stego Detector - Fixed Siamese Training
-
-Key Fixes:
-1. Properly combines contrastive loss with classification loss
-2. Improved LSBDetector with residual normalization
-3. Balanced class weights (can be adjusted)
-4. Complete validation metrics for both contrastive and classification
-5. Better monitoring of per-class accuracy
-"""
-
-import os
-import argparse
+import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
-import json
-from torch.utils.data import Dataset, DataLoader, default_collate
+from torch.utils.data import Dataset, DataLoader, random_split
+from torchvision import transforms
 from PIL import Image
 import numpy as np
+import struct
+import os
 from pathlib import Path
 from tqdm import tqdm
-from torchvision import transforms
+from collections import Counter
+import copy
+import argparse
 import random
+import glob
+from scripts.starlight_utils import extract_post_tail, load_multi_input
 
-try:
-    import piexif
-except ImportError:
-    piexif = None
+class BalancedStegoDataset(Dataset):
+    """
+    Dataset that uses stego JSON files to find matching clean images.
+    Creates perfect 1:1 clean:stego ratio by sampling stego images to match clean count.
+    """
 
-# --- CONFIGURATION ---
-# Prioritize CUDA > MPS > CPU for best performance
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-    print(f"[DEVICE] Using CUDA: {torch.cuda.get_device_name()}")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
-    print("[DEVICE] Using MPS (Apple Silicon)")
-else:
-    device = torch.device("cpu")
-    print("[DEVICE] Using CPU (no acceleration available)")
+    def __init__(self, clean_dir_pattern, stego_dir_pattern, transform=None, balance_strategy='oversample_clean'):
+        self.transform = transform
+        self.samples = []
+        self.clean_files_used = set()
+        self.balance_strategy = balance_strategy
+        self.method_labels_list = []
+        self.method_map = {"alpha": 0, "palette": 1, "lsb.rgb": 2, "exif": 3, "raw": 4}
 
-ALGO_TO_ID = {
-    "alpha": 0, "palette": 1, "lsb": 2,
-    "exif": 3, "eoi": 4, "clean": 5,
-}
-ID_TO_ALGO = {v: k for k, v in ALGO_TO_ID.items()}
-NUM_CLASSES = 6
+        print(f"[BALANCED DATASET] Loading from clean pattern: {clean_dir_pattern}, stego pattern: {stego_dir_pattern}...")
+        print(f"[BALANCED DATASET] Balance strategy: {balance_strategy}")
 
-# --- METADATA FEATURE EXTRACTORS ---
-def get_eoi_payload_size(filepath):
-    filepath_str = str(filepath)
-    if not filepath_str.lower().endswith(('.jpg', '.jpeg')):
-        return 0
-    try:
-        with open(filepath_str, 'rb') as f:
-            data = f.read()
-        eoi_pos = data.rfind(b'\xff\xd9')
-        if eoi_pos > 0:
-            return len(data) - (eoi_pos + 2)
-    except Exception:
-        return 0
-    return 0
+        stego_dirs = sorted(glob.glob(stego_dir_pattern))
+        if not stego_dirs:
+            print(f"Warning: No stego directories found for pattern: {stego_dir_pattern}")
 
-def get_exif_features(img, filepath):
-    exif_present = 0.0
-    exif_len = 0.0
-    filepath_str = str(filepath)
-    exif_bytes = img.info.get('exif')
-    if exif_bytes:
-        exif_present = 1.0
-        exif_len = len(exif_bytes)
-    elif piexif and filepath_str.lower().endswith(('.jpg', '.jpeg')):
-        try:
-            exif_dict = piexif.load(filepath_str)
-            if exif_dict and any(val for val in exif_dict.values() if val):
-                exif_present = 1.0
-                exif_len = len(piexif.dump(exif_dict))
-        except Exception:
-            pass
-    return torch.tensor([exif_present, exif_len / 1000.0], dtype=torch.float)
+        all_stego_samples = []
+        clean_samples = []
 
-# --- DETECTOR MODULES ---
-class LSBDetector(nn.Module):
-    def __init__(self, dim=32):
-        super().__init__()
-        self.trainable_conv = nn.Sequential(
-            nn.Conv2d(3, dim, 3, 1, 1), # Input is 3-channel RGB
-            nn.BatchNorm2d(dim), 
-            nn.ReLU(),
-            nn.Conv2d(dim, dim, 3, 1, 1), 
-            nn.BatchNorm2d(dim), 
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1)
-        )
+        for stego_dir_str in stego_dirs:
+            stego_dir = Path(stego_dir_str)
+            # Derive clean directory from stego directory path
+            clean_dir_str = stego_dir_str.replace('/stego', '/clean').replace('\\stego', '\\clean')
+            clean_dir = Path(clean_dir_str)
 
-    def forward(self, rgb):
-        # Pass the raw (cropped) RGB tensor directly
-        return self.trainable_conv(rgb).flatten(1)
-
-class PaletteIndexDetector(nn.Module):
-    def __init__(self, dim=32):
-        super().__init__()
-        # Enhanced network to better detect LSB patterns in palette indices
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, dim*2, 3, 1, 1), 
-            nn.BatchNorm2d(dim*2), 
-            nn.ReLU(),
-            nn.Conv2d(dim*2, dim, 3, 1, 1), 
-            nn.BatchNorm2d(dim), 
-            nn.ReLU(),
-            nn.Conv2d(dim, dim, 3, 1, 1),
-            nn.BatchNorm2d(dim),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1)
-        )
-        
-    def forward(self, indices):
-        # Extract LSB from palette indices
-        indices_255 = (indices * 255).long()
-        lsb = (indices_255 & 1).float()
-        
-        # Also compute statistics of LSB distribution
-        # Random LSB should be ~50% ones, stego LSB will have different statistics
-        lsb_mean = lsb.mean(dim=[2, 3], keepdim=True)
-        lsb_centered = lsb - lsb_mean
-        
-        return self.conv(lsb_centered).flatten(1)
-
-class AlphaDetector(nn.Module):
-    def __init__(self, dim=32):
-        super().__init__()
-        self.alpha_conv = nn.Sequential(
-            nn.Conv2d(1, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
-            nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1)
-        )
-    
-    def forward(self, alpha):
-        alpha_lsb = (alpha * 255).long() & 1
-        
-        # Detect AI42 marker (MSB-first: 01000001 01001001 00110100 00110010)
-        batch_size, _, h, w = alpha.shape
-        marker_feature = torch.zeros(batch_size, 1).to(alpha.device)
-        
-        if h >= 4 and w >= 8:
-            alpha_int = (alpha[:, 0, :4, :8] * 255).long()
-            bits = alpha_int & 1
-            # Check for AI42: A=65, I=73, 4=52, 2=50 in MSB-first order
-            byte0 = (bits[:, 0, 0] << 7) | (bits[:, 0, 1] << 6) | (bits[:, 0, 2] << 5) | (bits[:, 0, 3] << 4) | \
-                    (bits[:, 0, 4] << 3) | (bits[:, 0, 5] << 2) | (bits[:, 0, 6] << 1) | bits[:, 0, 7]
-            byte1 = (bits[:, 1, 0] << 7) | (bits[:, 1, 1] << 6) | (bits[:, 1, 2] << 5) | (bits[:, 1, 3] << 4) | \
-                    (bits[:, 1, 4] << 3) | (bits[:, 1, 5] << 2) | (bits[:, 1, 6] << 1) | bits[:, 1, 7]
-            byte2 = (bits[:, 2, 0] << 7) | (bits[:, 2, 1] << 6) | (bits[:, 2, 2] << 5) | (bits[:, 2, 3] << 4) | \
-                    (bits[:, 2, 4] << 3) | (bits[:, 2, 5] << 2) | (bits[:, 2, 6] << 1) | bits[:, 2, 7]
-            byte3 = (bits[:, 3, 0] << 7) | (bits[:, 3, 1] << 6) | (bits[:, 3, 2] << 5) | (bits[:, 3, 3] << 4) | \
-                    (bits[:, 3, 4] << 3) | (bits[:, 3, 5] << 2) | (bits[:, 3, 6] << 1) | bits[:, 3, 7]
+            if not clean_dir.exists():
+                print(f"Warning: Corresponding clean directory not found for {stego_dir_str}, expected at {clean_dir_str}")
+                continue
             
-            marker_match = (byte0 == 65) & (byte1 == 73) & (byte2 == 52) & (byte3 == 50)
-            marker_feature = marker_match.float().unsqueeze(1)
-        
-        conv_features = self.alpha_conv(alpha_lsb.float()).flatten(1)
-        return torch.cat([conv_features, marker_feature], dim=1)
+            print(f"  - Processing stego dir: {stego_dir_str}")
+            print(f"  - Using clean dir: {clean_dir_str}")
 
-class PaletteDetector(nn.Module):
-    def __init__(self, dim=32):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv1d(3, dim, 3, 1, 1), nn.BatchNorm1d(dim), nn.ReLU(),
-            nn.Conv1d(dim, dim, 3, 1, 1), nn.BatchNorm1d(dim), nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1)
-        )
-    def forward(self, palette):
-        x = palette.permute(0, 2, 1)  # (batch, 3, 256)
-        return self.conv(x).flatten(1)
+            for json_file in stego_dir.glob("*.json"):
+                try:
+                    with open(json_file, 'r') as f:
+                        metadata = json.load(f)
 
-class ExifEoiDetector(nn.Module):
-    def __init__(self, dim=32):
-        super().__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(3, dim), nn.ReLU(),
-            nn.Linear(dim, dim), nn.ReLU()
-        )
-    def forward(self, exif, eoi):
-        return self.fc(torch.cat([exif, eoi], dim=1))
-
-# --- MAIN MODEL ---
-class UniversalStegoDetector(nn.Module):
-    def __init__(self, num_classes=NUM_CLASSES, dim=64):
-        super().__init__()
-        self.lsb = LSBDetector(dim)
-        self.alpha = AlphaDetector(dim)
-        self.meta = ExifEoiDetector(dim)
-        self.palette = PaletteDetector(dim)
-        self.palette_index = PaletteIndexDetector(dim)
-        # self.rgb_base = nn.Sequential(
-        #     nn.Conv2d(3, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
-        #     nn.Conv2d(dim, dim, 3, 1, 1), nn.BatchNorm2d(dim), nn.ReLU(),
-        #     nn.AdaptiveAvgPool2d(1)
-        # )
-
-        fusion_dim = dim + (dim + 1) + dim + dim + dim # No f_rgb
-        
-        self.feature_fusion = nn.Sequential(
-            nn.Linear(fusion_dim, 256),
-            nn.ReLU(), nn.Dropout(0.5),
-            nn.Linear(256, 128),
-        )
-        self.classifier = nn.Linear(128, num_classes)
-
-    def forward_features(self, rgb, alpha, exif, eoi, palette, indices):
-        f_lsb = self.lsb(rgb)
-        f_alpha = self.alpha(alpha)
-        f_meta = self.meta(exif, eoi)
-        f_palette = self.palette(palette)
-        # f_rgb = self.rgb_base(rgb).flatten(1)
-        f_palette_index = self.palette_index(indices)
-        
-        combined_features = torch.cat([f_lsb, f_alpha, f_meta, f_palette, f_palette_index], dim=1)
-        return self.feature_fusion(combined_features)
-
-    def forward(self, rgb, alpha, exif, eoi, palette, indices):
-        features = self.forward_features(rgb, alpha, exif, eoi, palette, indices)
-        return self.classifier(features)
-
-
-class ContrastiveLoss(nn.Module):
-    """Contrastive loss function."""
-    def __init__(self, margin=2.0):
-        super(ContrastiveLoss, self).__init__()
-        self.margin = margin
-
-    def forward(self, distance, label):
-        # label=1 for different (stego vs clean), label=0 for same (clean vs clean)
-        loss_different = label * torch.pow(torch.clamp(self.margin - distance, min=0.0), 2)
-        loss_same = (1 - label) * torch.pow(distance, 2)
-        return torch.mean(loss_different + loss_same)
-
-
-class FocalLoss(nn.Module):
-    """Focal Loss to handle class imbalance by down-weighting easy examples."""
-    def __init__(self, alpha=None, gamma=2.0):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha  # Class weights
-        self.gamma = gamma  # Focusing parameter
-    
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
-        pt = torch.exp(-ce_loss)
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-        return focal_loss.mean()
-
-
-class PairedStegoDataset(Dataset):
-    def __init__(self, base_dir, subdirs=None):
-        self.base_dir = Path(base_dir)
-        self.stego_pairs = []
-        self.clean_files = []
-
-        if subdirs is None: subdirs = ["*"]
-        print(f"[DATASET] Searching for pairs in {subdirs}...")
-
-        for subdir_pattern in subdirs:
-            for matched_dir in self.base_dir.glob(subdir_pattern):
-                clean_folder = matched_dir / "clean"
-                stego_folder = matched_dir / "stego"
-
-                if not (clean_folder.exists() and stego_folder.exists()):
-                    continue
-
-                for ext in ['*.png', '*.bmp', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.tiff', '*.tif']:
-                    self.clean_files.extend(clean_folder.glob(ext))
-
-                for stego_file in stego_folder.glob("*.json"):
-                    try:
-                        with open(stego_file, 'r') as f:
-                            metadata = json.load(f)
-                        
-                        clean_filename = metadata.get('clean_file')
-                        if not clean_filename:
-                            continue
-
-                        actual_stego_file = stego_file.with_suffix('')
-                        clean_file_path = clean_folder / clean_filename
-                        
-                        if actual_stego_file.exists() and clean_file_path.exists():
-                            self.stego_pairs.append({'stego': actual_stego_file, 'clean': clean_file_path})
-                    except (json.JSONDecodeError, KeyError):
+                    technique = metadata.get('embedding', {}).get('technique')
+                    if technique not in self.method_map:
                         continue
+
+                    clean_filename = metadata.get('clean_file')
+                    if not clean_filename:
+                        continue
+
+                    clean_path = clean_dir / clean_filename
+                    stego_path = json_file.with_suffix('')
+
+                    if not clean_path.exists() or not stego_path.exists():
+                        continue
+
+                    method_id = self.method_map[technique]
+                    all_stego_samples.append({
+                        'path': stego_path,
+                        'stego_label': 1,
+                        'method_label': method_id,
+                        'type': 'stego'
+                    })
+
+                    if clean_filename not in self.clean_files_used:
+                        clean_samples.append({
+                            'path': clean_path,
+                            'stego_label': 0,
+                            'method_label': -1,
+                            'type': 'clean'
+                        })
+                        self.clean_files_used.add(clean_filename)
+
+                except (json.JSONDecodeError, KeyError):
+                    continue
         
-        print(f"[DATASET] Found {len(self.stego_pairs)} stego/clean pairs via JSON metadata.")
-        print(f"[DATASET] Found {len(self.clean_files)} total clean files for negative pairing.")
+        # Balance the dataset
+        if balance_strategy == 'sample_stego':
+            # Sample stego images to match clean count
+            clean_count = len(clean_samples)
+            if len(all_stego_samples) > clean_count:
+                # Randomly sample stego images to match clean count
+                random.shuffle(all_stego_samples)
+                sampled_stego = all_stego_samples[:clean_count]
+                self.samples = clean_samples + sampled_stego
+            else:
+                # Use all stego and sample clean to match
+                random.shuffle(clean_samples)
+                sampled_clean = clean_samples[:len(all_stego_samples)]
+                self.samples = sampled_clean + all_stego_samples
+
+        elif balance_strategy == 'oversample_clean':
+            # Oversample clean images to match stego count
+            stego_count = len(all_stego_samples)
+            if len(clean_samples) > 0:
+                clean_multiplier = stego_count // len(clean_samples) + 1
+                oversampled_clean = clean_samples * clean_multiplier
+                # Trim to exact match
+                oversampled_clean = oversampled_clean[:stego_count]
+                self.samples = oversampled_clean + all_stego_samples
+            else: # Handle case with no clean samples
+                self.samples = all_stego_samples
+
+
+        # Collect method labels for class weights
+        for sample in self.samples:
+            if sample['type'] == 'stego':
+                self.method_labels_list.append(sample['method_label'])
+
+        print(f"[BALANCED DATASET] Loaded {len(self.samples)} total samples")
+        print(f"[BALANCED DATASET] Available: {len(clean_samples)} clean, {len(all_stego_samples)} stego")
+
+        # Print class distribution
+        class_counts = {}
+        type_counts = {'clean': 0, 'stego': 0}
+        for sample in self.samples:
+            if sample['type'] == 'stego':
+                technique = list(self.method_map.keys())[list(self.method_map.values()).index(sample['method_label'])]
+                class_counts[technique] = class_counts.get(technique, 0) + 1
+            type_counts[sample['type']] += 1
+
+        print(f"[BALANCED DATASET] Final class distribution: {class_counts}")
+        print(f"[BALANCED DATASET] Final type distribution: {type_counts}")
+
+        # Verify balance
+        clean_count = type_counts['clean']
+        stego_count = type_counts['stego']
+        if clean_count == stego_count:
+            print(f"[BALANCED DATASET] ✅ Perfect balance: {clean_count} clean, {stego_count} stego")
+        else:
+            print(f"[BALANCED DATASET] ⚠️  Imbalance: {clean_count} clean, {stego_count} stego")
 
     def __len__(self):
-        return len(self.stego_pairs) * 2
-
-    def preprocess_image(self, img_path):
-        img = Image.open(img_path)
-        exif_features = get_exif_features(img, img_path)
-        eoi_features = torch.tensor([1.0 if get_eoi_payload_size(img_path) > 0 else 0.0], dtype=torch.float)
-
-        crop_transform = transforms.RandomCrop((224, 224))
-        tensor_transform = transforms.ToTensor()
-
-        rgb_tensor = torch.zeros(3, 224, 224)
-        alpha_tensor = torch.zeros(1, 224, 224)
-        palette_tensor = torch.zeros(256, 3)
-        indices_tensor = torch.zeros(1, 224, 224)
-
-        def process_and_crop(img_pil, crop_transform, tensor_transform):
-            if img_pil.size[0] < 224 or img_pil.size[1] < 224:
-                padding_x = max(0, 224 - img_pil.size[0])
-                padding_y = max(0, 224 - img_pil.size[1])
-                img_pil = transforms.functional.pad(img_pil, (padding_x // 2, padding_y // 2, padding_x - padding_x // 2, padding_y - padding_y // 2))
-            return tensor_transform(crop_transform(img_pil))
-
-        if img.mode == 'P':
-            palette_data = img.getpalette()
-            if palette_data:
-                palette_padded = (palette_data + [0] * (768 - len(palette_data)))[:768]
-                palette_array = np.array(palette_padded).reshape(256, 3) / 255.0
-                palette_tensor = torch.from_numpy(palette_array).float()
-            
-            indices_img = Image.fromarray(np.array(img))
-            indices_tensor = process_and_crop(indices_img, crop_transform, tensor_transform)
-
-        elif img.mode == 'RGBA':
-            rgb_pil = img.convert('RGB')
-            rgb_tensor = process_and_crop(rgb_pil, crop_transform, tensor_transform)
-            
-            alpha_np = np.array(img)[:, :, 3]
-            alpha_img = Image.fromarray(alpha_np)
-            alpha_tensor = process_and_crop(alpha_img, crop_transform, tensor_transform)
-
-        else:
-            rgb_pil = img.convert('RGB')
-            rgb_tensor = process_and_crop(rgb_pil, crop_transform, tensor_transform)
-        
-        return rgb_tensor, alpha_tensor, exif_features, eoi_features, palette_tensor, indices_tensor
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        actual_idx = idx % len(self.stego_pairs)
-
-        if idx < len(self.stego_pairs):
-            pair = self.stego_pairs[actual_idx]
-            img1_path, img2_path = pair['clean'], pair['stego']
-            label_pair = torch.tensor(1.0, dtype=torch.float32)
-            label1 = ALGO_TO_ID['clean']
-            
-            json_path = img2_path.with_suffix(img2_path.suffix + '.json')
-            try:
-                with open(json_path, 'r') as f:
-                    metadata = json.load(f)
-                technique = metadata['embedding']['technique']
-                if technique == 'alpha': label2 = ALGO_TO_ID['alpha']
-                elif technique == 'palette': label2 = ALGO_TO_ID['palette']
-                elif technique == 'lsb.rgb': label2 = ALGO_TO_ID['lsb']
-                elif technique == 'exif': label2 = ALGO_TO_ID['exif']
-                elif technique == 'raw': label2 = ALGO_TO_ID['eoi']
-                else: label2 = ALGO_TO_ID['clean']
-            except:
-                label2 = ALGO_TO_ID['clean']
-        else:
-            img1_path = self.clean_files[actual_idx % len(self.clean_files)]
-            img2_path = random.choice(self.clean_files)
-            label_pair = torch.tensor(0.0, dtype=torch.float32)
-            label1 = ALGO_TO_ID['clean']
-            label2 = ALGO_TO_ID['clean']
+        sample = self.samples[idx]
+        img_path = sample['path']
 
         try:
-            tensors1 = self.preprocess_image(img1_path)
-            tensors2 = self.preprocess_image(img2_path)
-            return tensors1, tensors2, label_pair, label1, label2
+            meta, alpha, lsb, palette = load_enhanced_multi_input(str(img_path), self.transform)
+            return meta, alpha, lsb, palette, sample['stego_label'], sample['method_label']
         except Exception as e:
-            print(f"ERROR loading pair for {img1_path} or {img2_path}: {e}")
-            return None, None, None, None, None
+            print(f"Error loading {img_path}: {e}")
+            # Return dummy data
+            dummy_meta = torch.zeros(2048)
+            dummy_alpha = torch.zeros(1, 256, 256)
+            dummy_lsb = torch.zeros(3, 256, 256)
+            dummy_palette = torch.zeros(768)
+            return dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, 0, -1
 
+def extract_enhanced_metadata_features(image_path):
+    """Extract enhanced metadata features for better EXIF detection"""
 
-class SiameseStegoNet(nn.Module):
-    def __init__(self, base_model):
-        super(SiameseStegoNet, self).__init__()
-        self.base_model = base_model
+    with open(image_path, 'rb') as f:
+        raw = f.read()
 
-    def forward_one(self, tensors):
-        return self.base_model.forward_features(*tensors)
+    # Basic features (1024 bytes as before)
+    exif = b""
+    pos = raw.find(b'\xFF\xE1')
+    if pos != -1:
+        length = struct.unpack('>H', raw[pos+2:pos+4])[0]
+        exif = raw[pos+4:pos+4+length-2]
 
-    def forward(self, tensors1, tensors2):
-        features1 = self.forward_one(tensors1)
-        features2 = self.forward_one(tensors2)
-        distance = F.pairwise_distance(features1, features2)
-        return distance, features1, features2
-
-# --- TRAINING & UTILS ---
-def collate_pairs(batch):
-    batch = list(filter(lambda x: x[0] is not None, batch))
-    if not batch: return None, None, None, None, None
-    return default_collate(batch)
-
-class EarlyStopping:
-    def __init__(self, patience=7, min_delta=0.001, verbose=True, monitor='acc'):
-        self.patience, self.min_delta, self.verbose, self.monitor = patience, min_delta, verbose, monitor
-        self.counter, self.best_value, self.early_stop = 0, -np.inf if monitor == 'acc' else np.inf, False
-        self.best_model_state = None
-
-    def __call__(self, value, model=None):
-        improved = False
-        if self.monitor == 'acc':
-            if value - self.best_value > self.min_delta:
-                self.best_value = value
-                improved = True
-        else:
-            if self.best_value - value > self.min_delta:
-                self.best_value = value
-                improved = True
-
-        if improved:
-            self.counter = 0
-            if model is not None:
-                self.best_model_state = model.state_dict().copy()
-            return True
-        else:
-            self.counter += 1
-            if self.verbose: print(f"EarlyStopping: {self.counter}/{self.patience}")
-            if self.counter >= self.patience: self.early_stop = True
-            return False
-
-def train_model(args):
-    train_subdirs = args.train_subdirs.split(',') if args.train_subdirs else ["sample"]
-    val_subdirs = args.val_subdirs.split(',') if args.val_subdirs else ["val"]
-    
-    train_ds = PairedStegoDataset(args.datasets_dir, subdirs=train_subdirs)
-    val_ds = PairedStegoDataset(args.datasets_dir, subdirs=val_subdirs)
-
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, collate_fn=collate_pairs, pin_memory=False)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, collate_fn=collate_pairs, pin_memory=False)
-
-    base_model = UniversalStegoDetector().to(device)
-    model = SiameseStegoNet(base_model).to(device)
-    
-    # Allow custom class weights via command line
-    if args.class_weights:
-        weights = [float(w) for w in args.class_weights.split(',')]
-        if len(weights) != 6:
-            raise ValueError("class_weights must have 6 values: alpha,palette,lsb,exif,eoi,clean")
-        class_weights = torch.tensor(weights).to(device)
-        print(f"[TRAINING] Using CUSTOM class weights: {class_weights.tolist()}")
+    # Find format and extract tail
+    format_hint = 'jpeg' if raw.startswith(b'\xFF\xD8') else 'auto'
+    if format_hint == 'jpeg':
+        tail = raw[raw.rfind(b'\xFF\xD9') + 2:] if raw.rfind(b'\xFF\xD9') != -1 else b""
     else:
-        # BALANCED DEFAULT: Moderate weights that don't completely ignore clean
-        class_weights = torch.tensor([2.0, 3.0, 3.0, 2.0, 2.0, 0.5]).to(device)
-        #                              alpha palette lsb  exif  eoi  clean
-        # Palette/LSB get 3.0x (hard classes), clean gets 0.5x (abundant class)
-        print(f"[TRAINING] Using DEFAULT class weights: {class_weights.tolist()}")
+        tail = b""
 
-    if args.resume:
-        try:
-            model.load_state_dict(torch.load(args.model))
-            print(f"[RESUME] Loaded Siamese model from {args.model}")
-        except RuntimeError:
-            base_model.load_state_dict(torch.load(args.model))
-            print(f"[RESUME] Loaded base model weights into Siamese network from {args.model}")
+    # Enhanced features (next 1024 bytes)
+    enhanced_features = np.zeros(1024, dtype=np.float32)
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    contrastive_criterion = ContrastiveLoss(margin=args.margin)
-    
-    # CRITICAL: Use Focal Loss instead of standard cross-entropy for better class imbalance handling
-    if args.use_focal_loss:
-        classification_criterion = FocalLoss(alpha=class_weights, gamma=args.focal_loss_gamma)
-        print("[TRAINING] Using Focal Loss for classification")
+    # EXIF position and size features
+    exif_positions = []
+    pos = 0
+    while True:
+        pos = raw.find(b'\xFF\xE1', pos)
+        if pos == -1:
+            break
+        exif_positions.append(pos)
+        pos += 2
+
+    if exif_positions:
+        # Store EXIF positions (first 10 positions, 4 bytes each)
+        for i, pos in enumerate(exif_positions[:10]):
+            if i * 4 + 3 < len(enhanced_features):
+                # Convert to unsigned 32-bit
+                unsigned_pos = pos & 0xFFFFFFFF
+                enhanced_features[i*4:i*4+4] = np.frombuffer(struct.pack('>I', unsigned_pos), dtype=np.uint8)
+
+        # Store EXIF sizes (first 10 sizes, 2 bytes each)
+        exif_sizes = []
+        for pos in exif_positions[:10]:
+            if pos + 4 <= len(raw):
+                length = struct.unpack('>H', raw[pos+2:pos+4])[0]
+                exif_sizes.append(length)
+
+        for i, size in enumerate(exif_sizes[:10]):
+            if i * 2 + 40 < len(enhanced_features):
+                # Convert to unsigned 16-bit
+                unsigned_size = size & 0xFFFF
+                enhanced_features[40+i*2:40+i*2+2] = np.frombuffer(struct.pack('>H', unsigned_size), dtype=np.uint8)
+
+    # JPEG marker analysis (next 100 bytes)
+    jpeg_markers = []
+    for i in range(0, min(len(raw) - 1, 10000), 2):  # Check first 10KB
+        if raw[i] == 0xFF and i + 1 < len(raw):
+            marker = raw[i+1]
+            if marker != 0x00:
+                jpeg_markers.append(marker)
+
+    # Store marker histogram (50 bytes)
+    marker_hist = np.zeros(50, dtype=np.float32)
+    for marker in jpeg_markers[:100]:  # First 100 markers
+        idx = marker % 50
+        if idx < 50:
+            marker_hist[idx] = marker_hist[idx] + 1
+
+    enhanced_features[60:110] = marker_hist
+
+    # Tail analysis (next 100 bytes)
+    if len(tail) > 0:
+        hist = np.histogram(bytearray(tail[:1000]), bins=256)[0]
+        tail_entropy = -np.sum(hist * np.log2(hist + 1e-10))
+        enhanced_features[110] = tail_entropy
+        enhanced_features[111] = len(tail)
+
+        # Store first 88 bytes of tail data
+        tail_bytes = np.frombuffer(tail[:88], dtype=np.uint8).astype(np.float32)
+        enhanced_features[112:112+len(tail_bytes)] = tail_bytes
+
+    # EXIF content analysis (next 200 bytes)
+    exif_content_features = np.zeros(200, dtype=np.float32)
+    if exif:
+        # EXIF header check (first 6 bytes should be "Exif\x00\x00")
+        if len(exif) >= 6:
+            exif_header = exif[:6]
+            exif_content_features[0:6] = np.frombuffer(exif_header, dtype=np.uint8).astype(np.float32)
+
+        # EXIF data entropy
+        if len(exif) > 6:
+            exif_data = exif[6:]
+            hist = np.histogram(bytearray(exif_data), bins=256)[0]
+            exif_entropy = -np.sum(hist * np.log2(hist + 1e-10))
+            exif_content_features[6] = exif_entropy
+
+        # EXIF length ratio (relative to total file)
+        exif_ratio = len(exif) / len(raw) if len(raw) > 0 else 0
+        exif_content_features[7] = exif_ratio * 255
+
+        # Distance from SOI to EXIF start
+        soi_pos = raw.find(b'\xFF\xD8')
+        if soi_pos != -1 and exif_positions:
+            distance_to_exif = exif_positions[0] - soi_pos
+            # Store as 4 bytes
+            unsigned_dist = distance_to_exif & 0xFFFFFFFF
+            exif_content_features[8:12] = np.frombuffer(struct.pack('>I', unsigned_dist), dtype=np.uint8).astype(np.float32)
+
+        # Check for valid TIFF header in EXIF (big-endian or little-endian)
+        if len(exif) >= 12:
+            tiff_header = exif[6:12]
+            # "II" (little-endian) or "MM" (big-endian)
+            if tiff_header[:2] in [b'II', b'MM']:
+                exif_content_features[12] = 1  # Valid TIFF header
+            else:
+                exif_content_features[12] = 0  # Invalid
+
+        # EXIF tag count approximation (rough estimate)
+        if len(exif) > 12:
+            # Look for IFD entries (each 12 bytes)
+            exif_data = exif[6:]
+            tag_count = 0
+            if len(exif_data) >= 2:
+                num_tags = struct.unpack('<H' if exif_data[:2] == b'II' else '>H', exif_data[:2])[0]
+                tag_count = num_tags
+            exif_content_features[13] = tag_count
+
+    enhanced_features[200:400] = exif_content_features
+
+    # Location-based features (next 50 bytes)
+    location_features = np.zeros(50, dtype=np.float32)
+    if exif_positions:
+        # EXIF position relative to file size
+        rel_pos = exif_positions[0] / len(raw)
+        location_features[0] = rel_pos * 255
+
+        # Is EXIF in first half of file?
+        location_features[1] = 1 if rel_pos < 0.5 else 0
+
+    # Tail position relative to file size
+    if len(tail) > 0:
+        tail_start_pos = len(raw) - len(tail)
+        rel_tail_pos = tail_start_pos / len(raw)
+        location_features[2] = rel_tail_pos * 255
+
+        # Is tail in last quarter of file?
+        location_features[3] = 1 if rel_tail_pos > 0.75 else 0
+
+    # JPEG structure analysis
+    soi_pos = raw.find(b'\xFF\xD8')
+    eoi_pos = raw.rfind(b'\xFF\xD9')
+    if soi_pos != -1 and eoi_pos != -1:
+        # Distance between SOI and EOI
+        image_size = eoi_pos - soi_pos + 2
+        rel_image_size = image_size / len(raw)
+        location_features[4] = rel_image_size * 255
+
+        # Data after EOI (tail) ratio
+        tail_ratio = len(tail) / len(raw)
+        location_features[5] = tail_ratio * 255
+
+    enhanced_features[400:450] = location_features
+
+    # Combine basic and enhanced features
+    basic_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:1024]
+    basic_bytes = np.pad(basic_bytes, (0, 1024 - len(basic_bytes)), 'constant')
+
+    # Clip enhanced features to 0-255 and normalize
+    enhanced_features = np.clip(enhanced_features, 0, 255) / 255.0
+
+    # Return both basic and enhanced features
+    return basic_bytes.astype(np.float32) / 255.0, enhanced_features
+
+def load_enhanced_multi_input(path, transform=None):
+    """Enhanced version of load_multi_input with better metadata features"""
+    img = Image.open(path)
+
+    # Augmentation
+    rgb_img = img.convert('RGB')
+    aug_img = transform(rgb_img) if transform else rgb_img
+
+    # Enhanced metadata features
+    basic_meta, enhanced_meta = extract_enhanced_metadata_features(path)
+
+    # Combine metadata features (basic + enhanced)
+    meta = torch.cat([torch.from_numpy(basic_meta), torch.from_numpy(enhanced_meta)])
+
+    # Alpha path
+    if img.mode == 'RGBA':
+        alpha_pil = Image.fromarray(np.array(img.split()[-1]))
+        alpha_aug = transform(alpha_pil) if transform else alpha_pil
+        alpha = torch.from_numpy(np.array(alpha_aug).astype(np.float32) / 255.0).unsqueeze(0)
     else:
-        classification_criterion = lambda logits, labels: F.cross_entropy(logits, labels, weight=class_weights)
-        print("[TRAINING] Using weighted Cross-Entropy for classification")
-    
-    early_stopper = EarlyStopping(patience=args.patience, monitor='acc')
-    
-    model_path = Path(args.model)
-    model_path.parent.mkdir(parents=True, exist_ok=True)
+        alpha = torch.zeros(1, aug_img.height, aug_img.width)
 
-    for epoch in range(args.epochs):
+    # LSB path
+    lsb_r = (np.array(aug_img)[:, :, 0] & 1).astype(np.float32)
+    lsb_g = (np.array(aug_img)[:, :, 1] & 1).astype(np.float32)
+    lsb_b = (np.array(aug_img)[:, :, 2] & 1).astype(np.float32)
+    lsb = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
+
+    # Palette path
+    if img.mode == 'P':
+        palette_bytes = np.array(img.getpalette(), dtype=np.uint8)
+        palette_bytes = np.pad(palette_bytes, (0, 768 - len(palette_bytes)), 'constant')
+    else:
+        palette_bytes = np.zeros(768, dtype=np.uint8)
+    palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
+
+    return meta, alpha, lsb, palette
+
+class BalancedStarlightDetector(nn.Module):
+    """Balanced model with weighted metadata processing to reduce EXIF dominance"""
+
+    def __init__(self, meta_weight=0.3):
+        super(BalancedStarlightDetector, self).__init__()
+
+        self.meta_weight = meta_weight  # Weight to reduce metadata dominance
+
+        # Metadata stream (now 2048 features instead of 1024)
+        self.meta_conv = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=7, stride=2, padding=3),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(16)
+        )
+
+        # Alpha stream
+        self.alpha_conv = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(8)
+        )
+
+        # LSB stream
+        self.lsb_conv = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(8)
+        )
+
+        # Palette stream
+        self.palette_fc = nn.Sequential(
+            nn.Linear(768, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64)
+        )
+
+        # Fusion and classification
+        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64
+        self.fusion = nn.Sequential(
+            nn.Linear(self.fusion_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128 + 64)  # 128 for embedding, 64 for classification
+        )
+
+        # Heads
+        self.stego_head = nn.Linear(64, 1)
+        self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
+        self.embedding_head = nn.Linear(64, 64)
+
+    def forward(self, meta, alpha, lsb, palette):
+        # Metadata stream with weighting
+        meta = meta.unsqueeze(1)  # Add channel dimension
+        meta = self.meta_conv(meta)
+        meta = meta.view(meta.size(0), -1)
+        meta = meta * self.meta_weight  # Apply weighting to reduce dominance
+
+        # Alpha stream
+        alpha = self.alpha_conv(alpha)
+        alpha = alpha.view(alpha.size(0), -1)
+
+        # LSB stream
+        lsb = self.lsb_conv(lsb)
+        lsb = lsb.view(lsb.size(0), -1)
+
+        # Palette stream
+        palette = self.palette_fc(palette)
+
+        # Fusion
+        fused = torch.cat([meta, alpha, lsb, palette], dim=1)
+        fused = self.fusion(fused)
+
+        # Split into embedding and classification features
+        embedding = fused[:, :128]
+        cls_features = fused[:, 128:]
+
+        # Outputs
+        stego_logits = self.stego_head(cls_features)
+        method_logits = self.method_head(cls_features)
+        embedding = self.embedding_head(cls_features)
+
+        # Get method predictions
+        method_probs = F.softmax(method_logits, dim=1)
+        method_id = torch.argmax(method_probs, dim=1)
+
+        return stego_logits, method_logits, method_id, method_probs, embedding
+
+def compute_class_weights(method_labels):
+    """Compute class weights to balance training"""
+    # Count samples per class
+    class_counts = Counter(method_labels)
+    total_samples = len(method_labels)
+
+    # Compute inverse frequency weights
+    class_weights = {}
+    for class_id, count in class_counts.items():
+        weight = total_samples / (len(class_counts) * count)
+        class_weights[class_id] = weight
+
+    # Convert to tensor
+    weights = torch.zeros(5)  # 5 classes
+    for class_id, weight in class_weights.items():
+        weights[class_id] = weight
+
+    return weights
+
+def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_balanced.onnx"):
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    print(f"Using device: {device}")
+
+    # Data augmentation
+    train_transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
+    ])
+
+    val_transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+    ])
+
+    # --- Data Loading and Splitting ---
+    # Combine datasets to prevent overfitting to a specific dataset's artifacts
+    print("Combining and splitting datasets to ensure generalization...")
+
+    # Load samples from both training and validation sources without transforms
+    train_source_dataset = BalancedStegoDataset(train_clean_dir, train_stego_dir, transform=None)
+    val_source_dataset = BalancedStegoDataset(val_clean_dir, val_stego_dir, transform=None)
+
+    # Combine all samples
+    all_samples = train_source_dataset.samples + val_source_dataset.samples
+    random.shuffle(all_samples)
+
+    # Split samples into training and validation sets (80/20 split)
+    split_idx = int(0.8 * len(all_samples))
+    train_samples = all_samples[:split_idx]
+    val_samples = all_samples[split_idx:]
+
+    # Create training dataset with augmentations
+    train_dataset = copy.deepcopy(train_source_dataset)
+    train_dataset.samples = train_samples
+    train_dataset.transform = train_transform
+    train_dataset.method_labels_list = [s['method_label'] for s in train_samples if s['type'] == 'stego']
+
+    # Create validation dataset without augmentations
+    val_dataset = copy.deepcopy(val_source_dataset)
+    val_dataset.samples = val_samples
+    val_dataset.transform = val_transform
+    val_dataset.method_labels_list = [s['method_label'] for s in val_samples if s['type'] == 'stego']
+    
+    method_labels_list = train_dataset.method_labels_list
+
+    print(f"\nDataset split into {len(train_dataset)} training and {len(val_dataset)} validation samples.")
+    print(f"Training method distribution: {Counter(method_labels_list)}")
+    print(f"Validation method distribution: {Counter(val_dataset.method_labels_list)}")
+
+    # --- Dataloaders and Class Weights ---
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    # Compute class weights
+    class_weights = compute_class_weights(method_labels_list)
+    print(f"Class weights: {class_weights}")
+
+    # Model
+    model = BalancedStarlightDetector(meta_weight=0.3).to(device)  # Reduce metadata dominance
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # Loss functions with class weighting
+    stego_criterion = nn.BCEWithLogitsLoss()
+    method_criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+
+    # Training loop
+    print("Starting training...")
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    patience = 10
+
+    for epoch in range(epochs):
         model.train()
-        train_loss = 0
-        train_contrastive_loss = 0
-        train_class_loss = 0
-        
-        for tensors1, tensors2, label_pair, label1, label2 in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}"):
-            if tensors1 is None: continue
+        total_loss = 0
+        stego_correct = 0
+        method_correct = 0
+        stego_total = 0
+        method_total = 0
 
-            tensors1 = tuple(t.to(device) for t in tensors1)
-            tensors2 = tuple(t.to(device) for t in tensors2)
-            label_pair = label_pair.to(device)
-            label1 = label1.to(device)
-            label2 = label2.to(device)
+        for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
+            meta, alpha, lsb, palette, stego_labels, method_labels = batch
+            meta = meta.to(device)
+            alpha = alpha.to(device)
+            lsb = lsb.to(device)
+            palette = palette.to(device)
+            stego_labels = stego_labels.float().to(device)
+            method_labels = method_labels.long().to(device)
 
             optimizer.zero_grad()
-            
-            # FIXED: Get both distance and features
-            distance, features1, features2 = model(tensors1, tensors2)
 
-            # FIXED: Compute BOTH contrastive and classification losses
-            contrastive_loss = contrastive_criterion(distance, label_pair)
-            
-            logits1 = model.base_model.classifier(features1)
-            logits2 = model.base_model.classifier(features2)
-            class_loss1 = classification_criterion(logits1, label1)
-            class_loss2 = classification_criterion(logits2, label2)
-            class_loss = (class_loss1 + class_loss2) / 2
+            # Forward pass
+            stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette)
 
-            # CRITICAL FIX: Reduce contrastive loss weight significantly
-            # The classification task is more important than pair similarity
-            loss = args.contrastive_weight * contrastive_loss + args.classification_weight * class_loss
-            
-            loss.backward()
+            # Compute losses
+            stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
+
+            # Only compute method loss for stego samples
+            stego_mask = stego_labels > 0.5
+            if stego_mask.sum() > 0:
+                method_loss = method_criterion(method_logits[stego_mask], method_labels[stego_mask])
+            else:
+                method_loss = torch.tensor(0.0).to(device)
+
+            # Dynamic loss weighting - reduce method loss importance to avoid overfitting
+            total_loss_batch = stego_loss + 0.01 * method_loss #+ 0.05 * method_loss  # Further reduced
+
+            # Backward pass
+            total_loss_batch.backward()
             optimizer.step()
-            
-            train_loss += loss.item()
-            train_contrastive_loss += contrastive_loss.item()
-            train_class_loss += class_loss.item()
+
+            # Statistics
+            total_loss += total_loss_batch.item()
+            stego_pred = (torch.sigmoid(stego_logits) > 0.5).float()
+            stego_correct += (stego_pred.squeeze() == stego_labels).sum().item()
+            stego_total += stego_labels.size(0)
+
+            if stego_mask.sum() > 0:
+                method_correct += (method_ids[stego_mask] == method_labels[stego_mask]).sum().item()
+                method_total += stego_mask.sum().item()
 
         # Validation
         model.eval()
         val_loss = 0
-        val_contrastive_loss = 0
-        val_class_loss = 0
-        
-        # For contrastive accuracy
-        correct_pairs = 0
-        total_pairs = 0
-        
-        # For classification accuracy
-        all_pred_classes = []
-        all_true_classes = []
-        
-        # Per-class accuracy tracking
-        class_correct = [0] * NUM_CLASSES
-        class_total = [0] * NUM_CLASSES
-        
+        val_stego_correct = 0
+        val_method_correct = 0
+        val_stego_total = 0
+        val_method_total = 0
+        val_method_correct_per_class = Counter()
+        val_method_total_per_class = Counter()
+        id_to_method = {v: k for k, v in val_dataset.method_map.items()}
+
         with torch.no_grad():
-            for tensors1, tensors2, label_pair, label1, label2 in tqdm(val_loader, desc="Validating"):
-                if tensors1 is None: continue
-                
-                tensors1 = tuple(t.to(device) for t in tensors1)
-                tensors2 = tuple(t.to(device) for t in tensors2)
-                label_pair = label_pair.to(device)
-                label1 = label1.to(device)
-                label2 = label2.to(device)
+            for batch in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
+                meta, alpha, lsb, palette, stego_labels, method_labels = batch
+                meta = meta.to(device)
+                alpha = alpha.to(device)
+                lsb = lsb.to(device)
+                palette = palette.to(device)
+                stego_labels = stego_labels.float().to(device)
+                method_labels = method_labels.long().to(device)
 
-                distance, features1, features2 = model(tensors1, tensors2)
+                stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette)
+                stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
+                stego_mask = stego_labels > 0.5
+                if stego_mask.sum() > 0:
+                    method_loss = method_criterion(method_logits[stego_mask], method_labels[stego_mask])
+                else:
+                    method_loss = torch.tensor(0.0).to(device)
 
-                # Contrastive loss
-                contrastive_loss = contrastive_criterion(distance, label_pair)
-                val_contrastive_loss += contrastive_loss.item()
-                
-                # Classification loss
-                logits1 = model.base_model.classifier(features1)
-                logits2 = model.base_model.classifier(features2)
-                class_loss1 = classification_criterion(logits1, label1)
-                class_loss2 = classification_criterion(logits2, label2)
-                class_loss = (class_loss1 + class_loss2) / 2
-                val_class_loss += class_loss.item()
+                val_loss += (stego_loss + 0.01 * method_loss).item()
+                stego_pred = (torch.sigmoid(stego_logits) > 0.5).float()
+                val_stego_correct += (stego_pred.squeeze() == stego_labels).sum().item()
+                val_stego_total += stego_labels.size(0)
 
-                val_loss += (args.contrastive_weight * contrastive_loss + args.classification_weight * class_loss).item()
+                if stego_mask.sum() > 0:
+                    val_method_correct += (method_ids[stego_mask] == method_labels[stego_mask]).sum().item()
+                    val_method_total += stego_mask.sum().item()
 
-                # FIXED: Contrastive accuracy (threshold at margin/2)
-                threshold = args.margin / 2.0
-                pred_different = (distance > threshold).float()
-                correct_pairs += (pred_different == label_pair).sum().item()
-                total_pairs += label_pair.size(0)
+                    preds = method_ids[stego_mask]
+                    labels = method_labels[stego_mask]
+                    for i in range(len(labels)):
+                        label = labels[i].item()
+                        pred = preds[i].item()
+                        val_method_total_per_class[label] += 1
+                        if pred == label:
+                            val_method_correct_per_class[label] += 1
 
-                # Classification accuracy
-                pred1 = torch.argmax(logits1, dim=1)
-                pred2 = torch.argmax(logits2, dim=1)
-                
-                all_pred_classes.extend(pred1.cpu().numpy())
-                all_pred_classes.extend(pred2.cpu().numpy())
-                all_true_classes.extend(label1.cpu().numpy())
-                all_true_classes.extend(label2.cpu().numpy())
-                
-                # Per-class tracking
-                for pred, true in zip(pred1.cpu().numpy(), label1.cpu().numpy()):
-                    class_total[true] += 1
-                    if pred == true:
-                        class_correct[true] += 1
-                for pred, true in zip(pred2.cpu().numpy(), label2.cpu().numpy()):
-                    class_total[true] += 1
-                    if pred == true:
-                        class_correct[true] += 1
+        # Print statistics
+        avg_loss = total_loss / len(train_dataloader)
+        stego_acc = stego_correct / stego_total if stego_total > 0 else 0
+        method_acc = method_correct / method_total if method_total > 0 else 0
 
-        val_loss /= len(val_loader)
-        val_contrastive_loss /= len(val_loader)
-        val_class_loss /= len(val_loader)
+        avg_val_loss = val_loss / len(val_dataloader)
+        val_stego_acc = val_stego_correct / val_stego_total if val_stego_total > 0 else 0
+        val_method_acc = val_method_correct / val_method_total if val_method_total > 0 else 0
 
-        # FIXED: Compute both accuracies
-        contrastive_acc = (correct_pairs / total_pairs * 100) if total_pairs > 0 else 0
-        class_acc = np.mean(np.array(all_pred_classes) == np.array(all_true_classes)) * 100
-        
-        print(f"\nEpoch {epoch+1}/{args.epochs}")
-        print(f"  Train Loss: {train_loss/len(train_loader):.4f} (Contrastive: {train_contrastive_loss/len(train_loader):.4f}, Class: {train_class_loss/len(train_loader):.4f})")
-        print(f"  Val Loss: {val_loss:.4f} (Contrastive: {val_contrastive_loss:.4f}, Class: {val_class_loss:.4f})")
-        print(f"  Contrastive Acc: {contrastive_acc:.2f}% | Classification Acc: {class_acc:.2f}%")
-        
-        # FIXED: Per-class accuracy breakdown
-        print(f"  Per-class accuracy:")
-        for class_id, class_name in ID_TO_ALGO.items():
-            if class_total[class_id] > 0:
-                acc = class_correct[class_id] / class_total[class_id] * 100
-                print(f"    {class_name}: {acc:.2f}% ({class_correct[class_id]}/{class_total[class_id]})")
+        print(f"Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, Stego Acc={stego_acc:.3f}, Method Acc={method_acc:.3f}")
+        print(f"Val Loss={avg_val_loss:.4f}, Val Stego Acc={val_stego_acc:.3f}, Val Method Acc={val_method_acc:.3f}")
 
-        # Use classification accuracy for early stopping
-        improved = early_stopper(class_acc, model)
-        if improved:
-            torch.save(model.base_model.state_dict(), str(model_path))
-            print(f"  [SAVED] Model improved! Base model weights saved to {model_path}")
+        # Print per-class accuracy
+        print("  Validation Method Accuracy per class:")
+        for method_id, total in sorted(val_method_total_per_class.items()):
+            correct = val_method_correct_per_class.get(method_id, 0)
+            acc = correct / total if total > 0 else 0
+            method_name = id_to_method.get(method_id, "Unknown")
+            print(f"    - {method_name}: {acc:.3f} ({correct}/{total})")
 
-        scheduler.step()
-
-        if early_stopper.early_stop:
-            print("Early stopping triggered.")
-            break
-
-    if model_path.exists():
-        print(f"\n[FINAL] Best model saved to {model_path} ({model_path.stat().st_size} bytes)")
-        print(f"[FINAL] Best validation classification accuracy: {early_stopper.best_value:.4f}")
-    else:
-        print(f"[ERROR] Model file was not saved!")
+        # Early stopping and model saving
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), out_path.replace('.onnx', '.pth'))
+            print(f"Validation loss improved. Saved best model to {out_path.replace('.onnx', '.pth')}")
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                print(f"No improvement in validation loss for {patience} epochs. Stopping early.")
+                break
 
 
-def orchestrate_training(args):
-    datasets_dir = Path(args.datasets_dir)
-    submissions = [d for d in datasets_dir.iterdir() if d.is_dir() and d.name.endswith('_submission_2025') and d.name not in ['sample_submission_2025', 'maya_submission_2025']]
 
-    for submission in submissions:
-        print(f"[ORCHESTRATE] Processing {submission.name}")
+    # Export to ONNX
+    print("Exporting to ONNX...")
+    model.load_state_dict(torch.load(out_path.replace('.onnx', '.pth')))
+    model.eval()
 
-        # Clean clean and stego directories
-        clean_dir = submission / "clean"
-        stego_dir = submission / "stego"
-        if clean_dir.exists():
-            import shutil
-            shutil.rmtree(clean_dir)
-        if stego_dir.exists():
-            import shutil
-            shutil.rmtree(stego_dir)
-        print(f"[ORCHESTRATE] Cleaned directories for {submission.name}")
+    # Create dummy input
+    dummy_meta = torch.randn(1, 2048)
+    dummy_alpha = torch.randn(1, 1, 256, 256)
+    dummy_lsb = torch.randn(1, 3, 256, 256)
+    dummy_palette = torch.randn(1, 768)
 
-        # Run data_generator.py --limit
-        cmd_data = f"cd {submission} && python data_generator.py --limit {args.limit}"
-        print(f"[ORCHESTRATE] Running: {cmd_data}")
-        os.system(cmd_data)
+    dummy_meta = dummy_meta.to(device)
+    dummy_alpha = dummy_alpha.to(device)
+    dummy_lsb = dummy_lsb.to(device)
+    dummy_palette = dummy_palette.to(device)
 
-        # Run train.py --epochs
-        cmd_train = f"cd {submission} && python train.py --epochs {args.epoch}"
-        print(f"[ORCHESTRATE] Running: {cmd_train}")
-        os.system(cmd_train)
+    torch.onnx.export(
+        model,
+        (dummy_meta, dummy_alpha, dummy_lsb, dummy_palette),
+        out_path,
+        input_names=['meta', 'alpha', 'lsb', 'palette'],
+        output_names=['stego_logits', 'method_logits', 'method_id', 'method_probs', 'embedding'],
+        dynamic_axes={
+            'meta': {0: 'batch'},
+            'alpha': {0: 'batch'},
+            'lsb': {0: 'batch'},
+            'palette': {0: 'batch'},
+            'stego_logits': {0: 'batch'},
+            'method_logits': {0: 'batch'},
+            'method_id': {0: 'batch'},
+            'method_probs': {0: 'batch'},
+            'embedding': {0: 'batch'}
+        },
+        opset_version=11
+    )
+
+    print(f"Balanced model exported to {out_path}")
+
+
 
 if __name__ == "__main__":
-    print(f"[DEVICE] Using: {device}")
-    parser = argparse.ArgumentParser(description="Starlight Trainer - Orchestrate training for all submissions")
-    parser.add_argument("--datasets_dir", type=str, default="datasets")
-    parser.add_argument("--epoch", type=int, default=10, help="Number of epochs for training")
-    parser.add_argument("--limit", type=int, default=5, help="Limit for data generation")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train_clean_dir", default="datasets/*_submission_*/clean")
+    parser.add_argument("--train_stego_dir", default="datasets/*_submission_*/stego")
+    parser.add_argument("--val_clean_dir", default="datasets/val/clean")
+    parser.add_argument("--val_stego_dir", default="datasets/val/stego")
+    parser.add_argument("--epochs", type=int, default=50) # Increased default epochs
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--out", default="models/detector_balanced.onnx")
     args = parser.parse_args()
-    orchestrate_training(args)
+
+    os.makedirs("models", exist_ok=True)
+    train_model(args.train_clean_dir, args.train_stego_dir, args.val_clean_dir, args.val_stego_dir, args.epochs, args.batch_size, args.lr, args.out)
+
+
