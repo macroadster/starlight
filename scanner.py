@@ -10,139 +10,11 @@ import torch
 import torchvision.transforms as transforms
 import time
 import json
-from scripts.starlight_utils import load_multi_input
 from scripts.starlight_extractor import extraction_functions
+from trainer import load_enhanced_multi_input # Import from trainer.py
 
-def extract_enhanced_metadata_features(image_path):
-    """Extract enhanced metadata features for better EXIF detection"""
 
-    with open(image_path, 'rb') as f:
-        raw = f.read()
 
-    # Basic features (1024 bytes as before)
-    exif = b""
-    pos = raw.find(b'\xFF\xE1')
-    if pos != -1:
-        length = struct.unpack('>H', raw[pos+2:pos+4])[0]
-        exif = raw[pos+4:pos+4+length-2]
-
-    # Find format and extract tail
-    format_hint = 'jpeg' if raw.startswith(b'\xFF\xD8') else 'auto'
-    if format_hint == 'jpeg':
-        tail = raw[raw.rfind(b'\xFF\xD9') + 2:] if raw.rfind(b'\xFF\xD9') != -1 else b""
-    else:
-        tail = b""
-
-    # Enhanced features (next 1024 bytes)
-    enhanced_features = np.zeros(1024, dtype=np.uint8)
-
-    # EXIF position and size features
-    exif_positions = []
-    pos = 0
-    while True:
-        pos = raw.find(b'\xFF\xE1', pos)
-        if pos == -1:
-            break
-        exif_positions.append(pos)
-        pos += 2
-
-    if exif_positions:
-        # Store EXIF positions (first 10 positions, 4 bytes each)
-        for i, pos in enumerate(exif_positions[:10]):
-            if i * 4 + 3 < len(enhanced_features):
-                # Convert to unsigned 32-bit
-                unsigned_pos = pos & 0xFFFFFFFF
-                enhanced_features[i*4:i*4+4] = np.frombuffer(struct.pack('>I', unsigned_pos), dtype=np.uint8)
-
-        # Store EXIF sizes (first 10 sizes, 2 bytes each)
-        exif_sizes = []
-        for pos in exif_positions[:10]:
-            if pos + 4 <= len(raw):
-                length = struct.unpack('>H', raw[pos+2:pos+4])[0]
-                exif_sizes.append(length)
-
-        for i, size in enumerate(exif_sizes[:10]):
-            if i * 2 + 40 < len(enhanced_features):
-                # Convert to unsigned 16-bit
-                unsigned_size = size & 0xFFFF
-                enhanced_features[40+i*2:40+i*2+2] = np.frombuffer(struct.pack('>H', unsigned_size), dtype=np.uint8)
-
-    # JPEG marker analysis (next 100 bytes)
-    jpeg_markers = []
-    for i in range(0, min(len(raw) - 1, 10000), 2):  # Check first 10KB
-        if raw[i] == 0xFF and i + 1 < len(raw):
-            marker = raw[i+1]
-            if marker != 0x00:
-                jpeg_markers.append(marker)
-
-    # Store marker histogram (50 bytes)
-    marker_hist = np.zeros(50, dtype=np.uint8)
-    for marker in jpeg_markers[:100]:  # First 100 markers
-        idx = marker % 50
-        if idx < 50:
-            marker_hist[idx] = min(marker_hist[idx] + 1, 255)
-
-    enhanced_features[60:110] = marker_hist
-
-    # Tail analysis (next 100 bytes)
-    if len(tail) > 0:
-        hist = np.histogram(bytearray(tail[:1000]), bins=256)[0]
-        tail_entropy = -np.sum(hist * np.log2(hist + 1e-10))
-        enhanced_features[110] = min(max(int(tail_entropy), 0), 255)  # Clamp to 0-255
-        enhanced_features[111] = min(len(tail), 255)
-
-        # Store first 88 bytes of tail data
-        tail_bytes = np.frombuffer(tail[:88], dtype=np.uint8)
-        enhanced_features[112:112+len(tail_bytes)] = tail_bytes
-
-    # Combine basic and enhanced features
-    basic_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:1024]
-    basic_bytes = np.pad(basic_bytes, (0, 1024 - len(basic_bytes)), 'constant')
-
-    # Return both basic and enhanced features
-    return basic_bytes.astype(np.float32) / 255.0, enhanced_features.astype(np.float32) / 255.0
-
-def load_enhanced_multi_input(path, transform=None):
-    """Enhanced version of load_multi_input with better metadata features"""
-    img = Image.open(path)
-
-    # Augmentation
-    rgb_img = img.convert('RGB')
-    if transform:
-        aug_img = transform(rgb_img)
-    else:
-        crop = transforms.CenterCrop((256, 256))
-        aug_img = crop(rgb_img)
-
-    # Enhanced metadata features
-    basic_meta, enhanced_meta = extract_enhanced_metadata_features(path)
-
-    # Combine metadata features (basic + enhanced)
-    meta = torch.cat([torch.from_numpy(basic_meta), torch.from_numpy(enhanced_meta)])
-
-    # Alpha path
-    if img.mode == 'RGBA':
-        alpha_plane = np.array(img.split()[-1]).astype(np.float32) / 255.0
-        alpha = torch.from_numpy(alpha_plane).unsqueeze(0)
-    else:
-        alpha = torch.zeros(1, img.height, img.width)
-    alpha = transforms.CenterCrop((256, 256))(alpha)
-
-    # LSB path
-    lsb_r = (np.array(aug_img)[:, :, 0] & 1).astype(np.float32)
-    lsb_g = (np.array(aug_img)[:, :, 1] & 1).astype(np.float32)
-    lsb_b = (np.array(aug_img)[:, :, 2] & 1).astype(np.float32)
-    lsb = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
-
-    # Palette path
-    if img.mode == 'P':
-        palette_bytes = np.array(img.getpalette(), dtype=np.uint8)
-        palette_bytes = np.pad(palette_bytes, (0, 768 - len(palette_bytes)), 'constant')
-    else:
-        palette_bytes = np.zeros(768, dtype=np.uint8)
-    palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
-
-    return meta, alpha, lsb, palette
 
 # --- Worker-specific globals ---
 SESSION = None
@@ -151,12 +23,14 @@ METHOD_MAP = {0: "alpha", 1: "palette", 2: "lsb.rgb", 3: "exif", 4: "raw"}
 def init_worker(model_path):
     """Initializer for each worker process."""
     global SESSION
+    import piexif # Re-import piexif in the worker process
     SESSION = onnxruntime.InferenceSession(model_path)
 
 def _scan_logic(image_path, session, extract_message=False):
     """The actual scanning logic, independent of the execution context."""
     global METHOD_MAP
     try:
+
         meta, alpha, lsb, palette = load_enhanced_multi_input(image_path)
 
         # Add batch dimension for ONNX model
