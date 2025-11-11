@@ -15,7 +15,8 @@ import copy
 import argparse
 import random
 import glob
-from scripts.starlight_utils import extract_post_tail, load_multi_input
+import piexif
+from scripts.starlight_utils import extract_post_tail
 
 class BalancedStegoDataset(Dataset):
     """
@@ -169,75 +170,59 @@ class BalancedStegoDataset(Dataset):
             return dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, 0, -1
 
 def extract_enhanced_metadata_features(image_path):
-    """Extract enhanced metadata features for better EXIF detection"""
+    """Extract enhanced metadata features for better EXIF detection across various formats."""
 
     with open(image_path, 'rb') as f:
         raw = f.read()
 
-    # Basic features (1024 bytes as before)
-    exif = b""
-    pos = raw.find(b'\xFF\xE1')
-    if pos != -1:
-        length = struct.unpack('>H', raw[pos+2:pos+4])[0]
-        exif = raw[pos+4:pos+4+length-2]
+    img = Image.open(image_path)
+    format_hint = img.format.lower() if img.format else 'unknown'
 
-    # Find format and extract tail
-    format_hint = 'jpeg' if raw.startswith(b'\xFF\xD8') else 'auto'
-    if format_hint == 'jpeg':
-        tail = raw[raw.rfind(b'\xFF\xD9') + 2:] if raw.rfind(b'\xFF\xD9') != -1 else b""
-    else:
-        tail = b""
+    # --- EXIF Extraction ---
+    exif_bytes = b""
+    # Prioritize EXIF data stored in img.info (e.g., by data_generator for PNG/WebP)
+    if "exif" in img.info:
+        exif_bytes = img.info["exif"]
+    elif piexif is not None:
+        try:
+            # Try to load EXIF using piexif from raw bytes
+            exif_dict = piexif.load(raw)
+            if exif_dict:
+                # Re-dump to bytes to get a consistent format for feature extraction
+                exif_bytes = piexif.dump(exif_dict)
+        except Exception:
+            pass # Not all image types have EXIF or piexif might fail
+
+    # --- EOI (Tail) Extraction ---
+    tail = extract_post_tail(raw, format_hint)
+
+    # Debug prints
+
 
     # Enhanced features (next 1024 bytes)
     enhanced_features = np.zeros(1024, dtype=np.float32)
 
-    # EXIF position and size features
-    exif_positions = []
-    pos = 0
-    while True:
-        pos = raw.find(b'\xFF\xE1', pos)
-        if pos == -1:
-            break
-        exif_positions.append(pos)
-        pos += 2
+    # EXIF size feature
+    if exif_bytes:
+        enhanced_features[0] = len(exif_bytes) / 65535.0 # Normalize by max EXIF size
 
-    if exif_positions:
-        # Store EXIF positions (first 10 positions, 4 bytes each)
-        for i, pos in enumerate(exif_positions[:10]):
-            if i * 4 + 3 < len(enhanced_features):
-                # Convert to unsigned 32-bit
-                unsigned_pos = pos & 0xFFFFFFFF
-                enhanced_features[i*4:i*4+4] = np.frombuffer(struct.pack('>I', unsigned_pos), dtype=np.uint8)
+    # JPEG marker analysis (next 100 bytes) - only for JPEG images
+    if format_hint == 'jpeg':
+        jpeg_markers = []
+        for i in range(0, min(len(raw) - 1, 10000), 2):  # Check first 10KB
+            if raw[i] == 0xFF and i + 1 < len(raw):
+                marker = raw[i+1]
+                if marker != 0x00:
+                    jpeg_markers.append(marker)
 
-        # Store EXIF sizes (first 10 sizes, 2 bytes each)
-        exif_sizes = []
-        for pos in exif_positions[:10]:
-            if pos + 4 <= len(raw):
-                length = struct.unpack('>H', raw[pos+2:pos+4])[0]
-                exif_sizes.append(length)
+        # Store marker histogram (50 bytes)
+        marker_hist = np.zeros(50, dtype=np.float32)
+        for marker in jpeg_markers[:100]:  # First 100 markers
+            idx = marker % 50
+            if idx < 50:
+                marker_hist[idx] = marker_hist[idx] + 1
 
-        for i, size in enumerate(exif_sizes[:10]):
-            if i * 2 + 40 < len(enhanced_features):
-                # Convert to unsigned 16-bit
-                unsigned_size = size & 0xFFFF
-                enhanced_features[40+i*2:40+i*2+2] = np.frombuffer(struct.pack('>H', unsigned_size), dtype=np.uint8)
-
-    # JPEG marker analysis (next 100 bytes)
-    jpeg_markers = []
-    for i in range(0, min(len(raw) - 1, 10000), 2):  # Check first 10KB
-        if raw[i] == 0xFF and i + 1 < len(raw):
-            marker = raw[i+1]
-            if marker != 0x00:
-                jpeg_markers.append(marker)
-
-    # Store marker histogram (50 bytes)
-    marker_hist = np.zeros(50, dtype=np.float32)
-    for marker in jpeg_markers[:100]:  # First 100 markers
-        idx = marker % 50
-        if idx < 50:
-            marker_hist[idx] = marker_hist[idx] + 1
-
-    enhanced_features[60:110] = marker_hist
+        enhanced_features[60:110] = marker_hist
 
     # Tail analysis (next 100 bytes)
     if len(tail) > 0:
@@ -252,88 +237,66 @@ def extract_enhanced_metadata_features(image_path):
 
     # EXIF content analysis (next 200 bytes)
     exif_content_features = np.zeros(200, dtype=np.float32)
-    if exif:
+    if exif_bytes:
         # EXIF header check (first 6 bytes should be "Exif\x00\x00")
-        if len(exif) >= 6:
-            exif_header = exif[:6]
+        if len(exif_bytes) >= 6:
+            exif_header = exif_bytes[:6]
             exif_content_features[0:6] = np.frombuffer(exif_header, dtype=np.uint8).astype(np.float32)
 
         # EXIF data entropy
-        if len(exif) > 6:
-            exif_data = exif[6:]
+        if len(exif_bytes) > 6:
+            exif_data = exif_bytes[6:]
             hist = np.histogram(bytearray(exif_data), bins=256)[0]
             exif_entropy = -np.sum(hist * np.log2(hist + 1e-10))
             exif_content_features[6] = exif_entropy
 
         # EXIF length ratio (relative to total file)
-        exif_ratio = len(exif) / len(raw) if len(raw) > 0 else 0
+        exif_ratio = len(exif_bytes) / len(raw) if len(raw) > 0 else 0
         exif_content_features[7] = exif_ratio * 255
 
-        # Distance from SOI to EXIF start
-        soi_pos = raw.find(b'\xFF\xD8')
-        if soi_pos != -1 and exif_positions:
-            distance_to_exif = exif_positions[0] - soi_pos
-            # Store as 4 bytes
-            unsigned_dist = distance_to_exif & 0xFFFFFFFF
-            exif_content_features[8:12] = np.frombuffer(struct.pack('>I', unsigned_dist), dtype=np.uint8).astype(np.float32)
-
         # Check for valid TIFF header in EXIF (big-endian or little-endian)
-        if len(exif) >= 12:
-            tiff_header = exif[6:12]
+        if len(exif_bytes) >= 12:
+            tiff_header = exif_bytes[6:12]
             # "II" (little-endian) or "MM" (big-endian)
             if tiff_header[:2] in [b'II', b'MM']:
                 exif_content_features[12] = 1  # Valid TIFF header
             else:
                 exif_content_features[12] = 0  # Invalid
 
-        # EXIF tag count approximation (rough estimate)
-        if len(exif) > 12:
-            # Look for IFD entries (each 12 bytes)
-            exif_data = exif[6:]
-            tag_count = 0
-            if len(exif_data) >= 2:
-                num_tags = struct.unpack('<H' if exif_data[:2] == b'II' else '>H', exif_data[:2])[0]
-                tag_count = num_tags
-            exif_content_features[13] = tag_count
 
     enhanced_features[200:400] = exif_content_features
 
     # Location-based features (next 50 bytes)
     location_features = np.zeros(50, dtype=np.float32)
-    if exif_positions:
-        # EXIF position relative to file size
-        rel_pos = exif_positions[0] / len(raw)
-        location_features[0] = rel_pos * 255
-
-        # Is EXIF in first half of file?
-        location_features[1] = 1 if rel_pos < 0.5 else 0
+    if exif_bytes:
+        # EXIF presence
+        location_features[0] = 1.0
 
     # Tail position relative to file size
     if len(tail) > 0:
         tail_start_pos = len(raw) - len(tail)
         rel_tail_pos = tail_start_pos / len(raw)
-        location_features[2] = rel_tail_pos * 255
+        location_features[1] = rel_tail_pos * 255 # Using index 1 now
+        location_features[2] = 1 if rel_tail_pos > 0.75 else 0 # Using index 2 now
 
-        # Is tail in last quarter of file?
-        location_features[3] = 1 if rel_tail_pos > 0.75 else 0
+    # JPEG structure analysis (only for JPEG images)
+    if format_hint == 'jpeg':
+        soi_pos = raw.find(b'\xFF\xD8')
+        eoi_pos = raw.rfind(b'\xFF\xD9')
+        if soi_pos != -1 and eoi_pos != -1:
+            # Distance between SOI and EOI
+            image_size = eoi_pos - soi_pos + 2
+            rel_image_size = image_size / len(raw)
+            location_features[3] = rel_image_size * 255 # Using index 3 now
 
-    # JPEG structure analysis
-    soi_pos = raw.find(b'\xFF\xD8')
-    eoi_pos = raw.rfind(b'\xFF\xD9')
-    if soi_pos != -1 and eoi_pos != -1:
-        # Distance between SOI and EOI
-        image_size = eoi_pos - soi_pos + 2
-        rel_image_size = image_size / len(raw)
-        location_features[4] = rel_image_size * 255
-
-        # Data after EOI (tail) ratio
-        tail_ratio = len(tail) / len(raw)
-        location_features[5] = tail_ratio * 255
+            # Data after EOI (tail) ratio
+            tail_ratio = len(tail) / len(raw)
+            location_features[4] = tail_ratio * 255 # Using index 4 now
 
     enhanced_features[400:450] = location_features
 
     # Combine basic and enhanced features
-    basic_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:1024]
+    basic_bytes = np.frombuffer(exif_bytes + tail, dtype=np.uint8)[:1024]
     basic_bytes = np.pad(basic_bytes, (0, 1024 - len(basic_bytes)), 'constant')
 
     # Clip enhanced features to 0-255 and normalize
@@ -348,7 +311,13 @@ def load_enhanced_multi_input(path, transform=None):
 
     # Augmentation
     rgb_img = img.convert('RGB')
-    aug_img = transform(rgb_img) if transform else rgb_img
+    if transform:
+        aug_img = transform(rgb_img)
+    else:
+        # Default to CenterCrop if no transform is provided
+        crop = transforms.CenterCrop((256, 256))
+        aug_img = crop(rgb_img)
+
 
     # Enhanced metadata features
     basic_meta, enhanced_meta = extract_enhanced_metadata_features(path)
@@ -359,10 +328,11 @@ def load_enhanced_multi_input(path, transform=None):
     # Alpha path
     if img.mode == 'RGBA':
         alpha_pil = Image.fromarray(np.array(img.split()[-1]))
-        alpha_aug = transform(alpha_pil) if transform else alpha_pil
+        # Apply the same transform/crop to alpha as to RGB
+        alpha_aug = transform(alpha_pil) if transform else crop(alpha_pil)
         alpha = torch.from_numpy(np.array(alpha_aug).astype(np.float32) / 255.0).unsqueeze(0)
     else:
-        alpha = torch.zeros(1, aug_img.height, aug_img.width)
+        alpha = torch.zeros(1, 256, 256) # Ensure it's 256x256
 
     # LSB path
     lsb_r = (np.array(aug_img)[:, :, 0] & 1).astype(np.float32)
