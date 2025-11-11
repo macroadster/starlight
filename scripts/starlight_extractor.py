@@ -484,28 +484,44 @@ def extract_exif(image_path):
 
 def extract_eoi(image_path):
     """
-    Extract data hidden after JPEG End-of-Image marker.
-    SPEC: Appended after EOI marker, may have AI42 hint, may be null-terminated
+    Extract data hidden after image end marker for JPEG, PNG, GIF, WebP.
+    SPEC: Appended after EOI/IEND/etc marker, may have AI42 hint, may be null-terminated
     """
     try:
         img = Image.open(image_path)
-        if img.format != 'JPEG':
-            return None, None
     except Exception:
         return None, None
-    
+
     with open(image_path, 'rb') as f:
         data = f.read()
-    
-    if not data.startswith(b'\xff\xd8'):
+
+    # Detect format and find end position
+    if data.startswith(b'\xff\xd8'):  # JPEG
+        end_pos = data.rfind(b'\xff\xd9')
+        if end_pos >= 0:
+            payload = data[end_pos + 2:]
+        else:
+            return None, None
+    elif data.startswith(b'\x89PNG'):  # PNG
+        end_pos = data.rfind(b'IEND')
+        if end_pos >= 0:
+            payload = data[end_pos + 12:]  # After IEND chunk
+        else:
+            return None, None
+    elif data.startswith(b'GIF8'):  # GIF
+        end_pos = data.rfind(b';')
+        if end_pos >= 0:
+            payload = data[end_pos + 1:]
+        else:
+            return None, None
+    elif data.startswith(b'RIFF') and len(data) > 8 and data[8:12] == b'WEBP':  # WebP
+        vp8x_pos = data.rfind(b'VP8X')
+        if vp8x_pos >= 0:
+            payload = data[vp8x_pos + 10:]
+        else:
+            return None, None
+    else:
         return None, None
-    
-    eoi_pos = data.rfind(b'\xff\xd9')
-    
-    if eoi_pos < 0 or eoi_pos + 2 >= len(data):
-        return None, None
-    
-    payload = data[eoi_pos + 2:]
     
     if len(payload) < 4:
         return None, None
