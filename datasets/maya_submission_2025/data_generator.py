@@ -105,8 +105,8 @@ img_out.save(stego_image_path)
 
 # --- Save JSON Sidecar ---
 json_path = stego_image_path + '.json'
-embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
-sidecar_content = {"embedding": embedding_data}
+embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True, "bit_order": "lsb-first"}
+sidecar_content = {"embedding": embedding_data, "clean_file": COVER_IMAGE_NAME}
 with open(json_path, 'w') as f:
     json.dump(sidecar_content, f, indent=2)
 
