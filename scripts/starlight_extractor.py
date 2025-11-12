@@ -403,16 +403,30 @@ def extract_exif(image_path):
     """
     Extract data hidden in EXIF metadata.
     SPEC: Primarily UserComment with encoding headers (ASCII, UNICODE, JIS)
+    Handles both direct file path (for JPEGs) and PIL info dict (for PNGs).
     """
     img = Image.open(image_path)
     message = None
-    
-    # Method 1: Try piexif first
+    exif_dict = None
+
+    # Method 1: Try to get EXIF data robustly (handles PNGs correctly)
     if piexif:
         try:
-            exif_dict = piexif.load(image_path)
+            # For PNGs/WebP, EXIF is in the 'info' dict after being saved by Pillow
+            if 'exif' in img.info:
+                exif_dict = piexif.load(img.info['exif'])
+            # For JPEGs, load directly from the file path
+            else:
+                exif_dict = piexif.load(image_path)
+        except Exception:
+            # This might happen for images with no EXIF or corrupted data
+            pass
+
+    # Method 2: If piexif found data, parse it
+    if exif_dict:
+        try:
             user_comment = exif_dict.get("Exif", {}).get(piexif.ExifIFD.UserComment)
-            
+
             if user_comment and isinstance(user_comment, bytes):
                 # Handle encoding headers as per spec
                 if user_comment.startswith(b'ASCII\x00\x00\x00'):
@@ -422,15 +436,16 @@ def extract_exif(image_path):
                 elif user_comment.startswith(b'JIS\x00\x00\x00\x00\x00'):
                     message = user_comment[8:].decode('shift_jis', errors='ignore').strip()
                 else:
+                    # Fallback for non-standard or plain UTF-8 comments
                     try:
                         message = user_comment.decode('utf-8', errors='ignore').strip()
                     except:
                         message = user_comment.hex()
-                
+
                 if message:
                     return message, None
-            
-            # Check other EXIF tags (ImageDescription, Make, Software, Artist, Copyright)
+
+            # Check other common tags as a fallback
             common_tags = [
                 ("0th", piexif.ImageIFD.ImageDescription),
                 ("0th", piexif.ImageIFD.Make),
@@ -438,7 +453,7 @@ def extract_exif(image_path):
                 ("0th", piexif.ImageIFD.Artist),
                 ("0th", piexif.ImageIFD.Copyright),
             ]
-            
+
             for ifd_name, tag_id in common_tags:
                 try:
                     value = exif_dict.get(ifd_name, {}).get(tag_id)
@@ -447,38 +462,39 @@ def extract_exif(image_path):
                             message = value.decode('utf-8', errors='ignore').strip()
                         elif isinstance(value, str):
                             message = value.strip()
-                        
+
                         if message and len(message) > 0:
                             return message, None
                 except:
                     continue
         except Exception:
+            pass # Errors during parsing of a specific tag
+
+    # Method 3: Fallback to PIL's getexif() if piexif failed or found nothing
+    if not message:
+        try:
+            pil_exif = img.getexif()
+            if pil_exif:
+                user_comment = pil_exif.get(37510)  # UserComment tag ID
+                if user_comment:
+                    if isinstance(user_comment, bytes):
+                        if user_comment.startswith(b'ASCII\x00\x00\x00'):
+                            message = user_comment[8:].decode('ascii', errors='ignore').strip()
+                        elif user_comment.startswith(b'UNICODE\x00'):
+                            message = user_comment[8:].decode('utf-16', errors='ignore').strip()
+                        else:
+                            try:
+                                message = user_comment.decode('utf-8', errors='ignore').strip()
+                            except:
+                                pass # Keep message as None
+                    elif isinstance(user_comment, str):
+                        message = user_comment.strip()
+
+                    if message:
+                        return message, None
+        except Exception:
             pass
-    
-    # Method 2: Try PIL's getexif()
-    try:
-        exif = img.getexif()
-        if exif:
-            user_comment = exif.get(37510)  # UserComment tag
-            if user_comment:
-                if isinstance(user_comment, bytes):
-                    if user_comment.startswith(b'ASCII\x00\x00\x00'):
-                        message = user_comment[8:].decode('ascii', errors='ignore').strip()
-                    elif user_comment.startswith(b'UNICODE\x00'):
-                        message = user_comment[8:].decode('utf-16', errors='ignore').strip()
-                    else:
-                        try:
-                            message = user_comment.decode('utf-8', errors='ignore').strip()
-                        except:
-                            pass
-                elif isinstance(user_comment, str):
-                    message = user_comment.strip()
-                
-                if message:
-                    return message, None
-    except Exception:
-        pass
-    
+
     return message, None
 
 
