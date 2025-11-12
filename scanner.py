@@ -49,29 +49,16 @@ def _scan_logic(image_path, session, extract_message=False):
         stego_logits, _, method_id, method_probs, _ = session.run(None, input_feed)
 
         # Process results
-        stego_prob = 1 / (1 + np.exp(-stego_logits[0][0]))
-
-        # Check for EXIF content to correct misclassification
-        has_exif = False
-        try:
-            with open(image_path, 'rb') as f:
-                raw = f.read()
-            if b'\xFF\xE1' in raw:
-                pos = raw.find(b'\xFF\xE1')
-                if pos != -1:
-                    length = struct.unpack('>H', raw[pos+2:pos+4])[0]
-                    exif_data = raw[pos+4:pos+4+length-2]
-                    if len(exif_data) > 10:  # Has meaningful EXIF
-                        has_exif = True
-        except:
-            pass
-
-        # If model predicted raw/EOI but has EXIF and likely stego, correct to exif
-        if method_id[0] == 4 and has_exif and stego_prob > 0.5:
-            method_id[0] = 3
+        # Use a numerically stable sigmoid to avoid overflow warnings
+        logit = stego_logits[0][0]
+        if logit >= 0:
+            stego_prob = 1 / (1 + np.exp(-logit))
+        else:
+            # Use the equivalent alternative form to avoid overflow for large negative logits
+            stego_prob = np.exp(logit) / (1 + np.exp(logit))
 
         # Method-specific thresholds to improve detection
-        thresholds = {0: 0.559, 1: 0.486, 2: 0.724, 3: 0.5, 4: 0.652}  # Optimized for F1 score
+        thresholds = {0: 0.559, 1: 0.486, 2: 0.724, 3: 0.5, 4: 0.5}  # Optimized for F1 score
         threshold = thresholds.get(method_id[0], 0.8)
         is_stego = stego_prob > threshold
 
