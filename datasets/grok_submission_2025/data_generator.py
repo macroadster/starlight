@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def generate_clean_image(
-    output_path, size=(512, 512), seed=None, format="JPEG", pattern_type="linear"
+    output_path, size=(256, 256), seed=None, format="JPEG", pattern_type="linear"
 ):
     """
     Generate a 512x512 clean image (JPEG or PNG) with varied patterns for diversity.
