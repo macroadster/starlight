@@ -275,12 +275,12 @@ def generate_images(limit=None, resolution=RESOLUTION):
                     json_path = stego_path + '.json'
                     embedding_data = {}
                     if algorithm_name == PNG_ALGORITHM: # 'alpha'
-                        embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+                        embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True, "bit_order": "lsb-first"}
                     elif algorithm_name == JPEG_ALGORITHM: # 'eoi'
                         embedding_data = {"category": "eoi", "technique": "raw", "ai42": False}
 
                     if embedding_data:
-                        sidecar_content = {"embedding": embedding_data}
+                        sidecar_content = {"embedding": embedding_data, "clean_file": filename}
                         with open(json_path, 'w') as f:
                             json.dump(sidecar_content, f, indent=2)
 
