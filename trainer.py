@@ -309,7 +309,42 @@ def load_enhanced_multi_input(path, transform=None):
     """Enhanced version of load_multi_input with better metadata features"""
     img = Image.open(path)
 
-    # Augmentation
+    # Enhanced metadata features
+    basic_meta, enhanced_meta = extract_enhanced_metadata_features(path)
+
+    # Combine metadata features (basic + enhanced)
+    meta = torch.cat([torch.from_numpy(basic_meta), torch.from_numpy(enhanced_meta)])
+
+    # Alpha path - handle BEFORE any transformations to preserve steganography
+    if img.mode == 'RGBA':
+        alpha_pil = img.split()[-1]  # Extract alpha channel directly
+        # For alpha steganography preservation, use Resize instead of CenterCrop when needed
+        if transform:
+            # Check if transform contains CenterCrop and image is not square
+            if hasattr(transform, 'transforms'):
+                has_center_crop = any(isinstance(t, transforms.CenterCrop) for t in transform.transforms)
+            else:
+                has_center_crop = isinstance(transform, transforms.CenterCrop)
+            
+            if has_center_crop and (img.width != img.height):
+                # Use Resize to preserve alpha steganography for non-square images
+                alpha_aug = transforms.Resize((256, 256))(alpha_pil)
+            else:
+                # Apply same transform to alpha
+                alpha_aug = transform(alpha_pil)
+        else:
+            # Default handling - use Resize instead of CenterCrop for non-square images
+            if img.width != img.height:
+                alpha_aug = transforms.Resize((256, 256))(alpha_pil)
+            else:
+                crop = transforms.CenterCrop((256, 256))
+                alpha_aug = crop(alpha_pil)
+        
+        alpha = torch.from_numpy(np.array(alpha_aug).astype(np.float32) / 255.0).unsqueeze(0)
+    else:
+        alpha = torch.zeros(1, 256, 256) # Ensure it's 256x256
+
+    # Augmentation for RGB channels
     rgb_img = img.convert('RGB')
     if transform:
         aug_img = transform(rgb_img)
@@ -317,22 +352,6 @@ def load_enhanced_multi_input(path, transform=None):
         # Default to CenterCrop if no transform is provided
         crop = transforms.CenterCrop((256, 256))
         aug_img = crop(rgb_img)
-
-
-    # Enhanced metadata features
-    basic_meta, enhanced_meta = extract_enhanced_metadata_features(path)
-
-    # Combine metadata features (basic + enhanced)
-    meta = torch.cat([torch.from_numpy(basic_meta), torch.from_numpy(enhanced_meta)])
-
-    # Alpha path
-    if img.mode == 'RGBA':
-        alpha_pil = Image.fromarray(np.array(img.split()[-1]))
-        # Apply the same transform/crop to alpha as to RGB
-        alpha_aug = transform(alpha_pil) if transform else crop(alpha_pil)
-        alpha = torch.from_numpy(np.array(alpha_aug).astype(np.float32) / 255.0).unsqueeze(0)
-    else:
-        alpha = torch.zeros(1, 256, 256) # Ensure it's 256x256
 
     # LSB path
     lsb_r = (np.array(aug_img)[:, :, 0] & 1).astype(np.float32)
