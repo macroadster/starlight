@@ -437,7 +437,7 @@ class ClaudeStegGenerator:
                     json_path = stego_path.with_suffix(stego_path.suffix + '.json')
                     embedding_data = {}
                     if method_name == 'alpha':
-                        embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+                        embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True, "bit_order": "lsb-first"}
                     elif method_name == 'palette':
                         embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "lsb-first"}
                     
