@@ -39,12 +39,16 @@ def _scan_logic(image_path, session, extract_message=False):
         lsb = lsb.unsqueeze(0)
         palette = palette.unsqueeze(0)
 
+        # Create bit_order feature (default to msb-first for inference)
+        bit_order = torch.tensor([[0.0, 1.0, 0.0]])  # [lsb-first, msb-first, none]
+        
         # Run inference
         input_feed = {
             'meta': meta.numpy(),
             'alpha': alpha.numpy(),
             'lsb': lsb.numpy(),
-            'palette': palette.numpy()
+            'palette': palette.numpy(),
+            'bit_order': bit_order.numpy()
         }
         stego_logits, _, method_id, method_probs, _ = session.run(None, input_feed)
 
@@ -61,6 +65,90 @@ def _scan_logic(image_path, session, extract_message=False):
         thresholds = {0: 0.559, 1: 0.486, 2: 0.724, 3: 0.5, 4: 0.5}  # Optimized for F1 score
         threshold = thresholds.get(method_id[0], 0.8)
         is_stego = stego_prob > threshold
+        
+        # Strong validation for high-confidence LSB predictions to prevent systematic false positives
+        if method_id[0] == 2 and is_stego and stego_prob > 0.9:  # High confidence LSB
+            try:
+                lsb_message, _ = extraction_functions['lsb'](image_path)
+                # If extraction returns None or empty, it's definitely a false positive
+                if not lsb_message:
+                    is_stego = False
+                    stego_prob = 0.1  # Very low confidence
+                else:
+                    # Check for patterns indicating false positive
+                    total_chars = len(lsb_message)
+                    unique_chars = len(set(lsb_message))
+                    
+                    # If message is all hex characters and repetitive pattern, likely false positive
+                    hex_chars = sum(1 for c in lsb_message if c.lower() in '0123456789abcdef')
+                    if hex_chars == total_chars and unique_chars <= 16:
+                        # Check for repetitive hex patterns (like ffffff, 000000)
+                        if 'ffff' in lsb_message or '0000' in lsb_message:
+                            is_stego = False
+                            stego_prob = 0.2
+            except:
+                is_stego = False
+                stego_prob = 0.1
+        
+        # Strong validation for alpha steganography to prevent model errors
+        if method_id[0] == 0 and is_stego:  # Predicted as alpha steganography
+            img = Image.open(image_path)
+            if img.mode == 'RGBA':
+                alpha_channel = img.split()[-1]
+                alpha_data = np.array(alpha_channel)
+                # If alpha is uniform (all 255), it cannot be alpha steganography
+                if alpha_data.std() == 0 or np.sum(alpha_data != 255) == 0:
+                    is_stego = False
+                    stego_prob = min(stego_prob, 0.1)  # Very low confidence
+        
+        # Special case: Override model decision for alpha steganography when clearly present
+        # This fixes the metadata bias issue where PNG files with metadata are incorrectly classified as clean
+        # Also handles cases where alpha steganography signal is weak but contains valid content
+        img = Image.open(image_path)
+        if img.mode == 'RGBA':
+            alpha_channel = img.split()[-1]
+            alpha_data = np.array(alpha_channel)
+            # Only check for alpha steganography if there's actual alpha variation
+            if alpha_data.std() > 0 and np.sum(alpha_data != 255) > 100:
+                # Try to extract and validate alpha content
+                try:
+                    alpha_message, _ = extraction_functions['alpha'](image_path)
+                    # If alpha contains readable text content (not just binary), it's alpha stego
+                    if alpha_message and len(alpha_message) > 10 and any(c.isalpha() and c.islower() for c in alpha_message):
+                        # Override to alpha method if it wasn't detected as alpha
+                        if method_id[0] != 0:
+                            method_id[0] = 0
+                            stego_prob = max(stego_prob, 0.8)
+                except:
+                    pass
+        
+        # Special case: Reduce LSB false positives by validating extracted content
+        if method_id[0] == 2 and is_stego:  # Detected as LSB steganography
+            try:
+                lsb_message, _ = extraction_functions['lsb'](image_path)
+                # If LSB message is mostly repeated characters or meaningless, it's likely false positive
+                if lsb_message:
+                    # Check for patterns indicating false positive
+                    unique_chars = set(lsb_message)
+                    total_chars = len(lsb_message)
+                    
+                    # If message is mostly repeated characters (>80% same char) or very short, likely false positive
+                    if len(unique_chars) <= 2 and total_chars > 20:
+                        # Calculate ratio of most common character
+                        most_common_ratio = max(lsb_message.count(c) for c in unique_chars) / total_chars
+                        if most_common_ratio > 0.8:
+                            is_stego = False
+                            stego_prob = min(stego_prob, 0.4)  # Reduce confidence
+                    # If message is all same character repeated, definitely false positive
+                    elif len(unique_chars) == 1 and total_chars > 10:
+                        is_stego = False
+                        stego_prob = min(stego_prob, 0.2)
+                    # If message is mostly null bytes or control characters, likely false positive
+                    elif sum(1 for c in lsb_message if ord(c) < 32) / total_chars > 0.7:
+                        is_stego = False
+                        stego_prob = min(stego_prob, 0.3)
+            except:
+                pass
 
         result = {
             "file_path": str(image_path),

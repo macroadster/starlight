@@ -459,6 +459,11 @@ def generate_images(num_images=5, methods=["exif", "lsb", "eoi"], payload_size=0
                     generate_clean_image(
                      clean_path, seed=i, format=format, pattern_type=pattern
                     )
+                    
+                    # Initialize category and technique
+                    category = "unknown"
+                    technique = "unknown"
+                    
                     if method == "lsb":
                         embed_lsb(
                             clean_path,

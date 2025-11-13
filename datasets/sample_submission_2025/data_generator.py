@@ -108,19 +108,36 @@ def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
     return out
 
 
-def embed_lsb(cover: Image.Image, payload: bytes) -> Image.Image:
+def embed_lsb(cover: Image.Image, payload: bytes, bit_order: str = "random") -> tuple[Image.Image, str]:
     """
-    Embed in RGB channels using MSB-first bit order.
+    Embed in RGB channels using either MSB-first or LSB-first bit order.
     SPEC: Generic LSB, null-terminated, no hint. Always produces an RGB image.
     Embeds the provided payload.
+    
+    Args:
+        cover: Cover image to embed payload in
+        payload: Payload bytes to embed
+        bit_order: "msb-first", "lsb-first", or "random" to randomly choose
+        
+    Returns:
+        Tuple of (stego_image, actual_bit_order_used)
     """
     img = cover.convert("RGB")  # Always convert to RGB
     pixels = list(img.getdata())
     
     max_lsb_bits = len(pixels) * 3 # Each pixel has 3 RGB bits
     
-    # MSB-first encoding with null terminator
-    bits = "".join(f"{b:08b}" for b in payload) + "00000000"
+    # Choose bit order
+    if bit_order == "random":
+        bit_order = random.choice(["msb-first", "lsb-first"])
+    
+    # Encode bits based on chosen order with null terminator
+    if bit_order == "lsb-first":
+        # LSB-first (byte-reversed) encoding
+        bits = "".join(format(b, "08b")[::-1] for b in payload) + "00000000"
+    else:
+        # MSB-first encoding (default)
+        bits = "".join(f"{b:08b}" for b in payload) + "00000000"
     
     if len(bits) > max_lsb_bits:
         raise ValueError(f"Payload too large for LSB embedding. Needs {len(bits)} bits, has {max_lsb_bits}.")
@@ -142,7 +159,7 @@ def embed_lsb(cover: Image.Image, payload: bytes) -> Image.Image:
     
     out = Image.new("RGB", img.size)
     out.putdata(new_data)
-    return out
+    return out, bit_order
 
 def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
     """
@@ -304,6 +321,8 @@ def main():
                          help="Limit the number of clean images to use for generation.")
     parser.add_argument("--methods", type=str, default="exif,lsb,eoi,alpha,palette",
                          help="Comma-separated methods to use: exif, lsb, eoi, alpha, palette.")
+    parser.add_argument("--seeds_dir", type=str, default="seeds",
+                         help="Directory containing markdown seed files for payloads.")
     args = parser.parse_args()
 
     methods = [m.strip().lower() for m in args.methods.split(",")]
@@ -311,13 +330,14 @@ def main():
     source_dir = Path(args.clean_source)
     stego_dir = Path(args.output_stego)
 
-    # Load markdown payloads from the seeds directory
+    # Load markdown payloads from the specified seeds directory
     script_dir = Path(__file__).parent
-    md_files = sorted(list((script_dir / "seeds").glob("*.md")))
+    seeds_dir = script_dir / args.seeds_dir if not Path(args.seeds_dir).is_absolute() else Path(args.seeds_dir)
+    md_files = sorted(list(seeds_dir.glob("*.md")))
     if not md_files:
-        logging.error(f"No markdown payload files found in {script_dir}")
+        logging.error(f"No markdown payload files found in {seeds_dir}")
         sys.exit(1)
-    logging.info(f"Found {len(md_files)} markdown payloads.")
+    logging.info(f"Found {len(md_files)} markdown payloads in {seeds_dir}.")
 
     if not source_dir.is_dir():
         logging.error(f"Source directory not found: {source_dir}")
@@ -401,7 +421,12 @@ def main():
             if cover_img.mode not in ['RGB', 'RGBA', 'P']:
                 cover_img = cover_img.convert('RGB')
 
-            stego_img = embed_func(cover_img.copy(), payload_content)
+            # Handle LSB function that returns tuple
+            if algo_name == "lsb":
+                stego_img, actual_bit_order = embed_func(cover_img.copy(), payload_content)
+            else:
+                stego_img = embed_func(cover_img.copy(), payload_content)
+                actual_bit_order = None
 
             # Clamp pixel values to prevent corruption
             arr = np.array(stego_img)
@@ -428,12 +453,12 @@ def main():
             json_path = stego_path.with_suffix(stego_path.suffix + '.json')
             embedding_data = {}
             if algo_name == 'alpha':
-                embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+                embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True, "bit_order": "lsb-first"}
             elif algo_name == 'palette':
                 # NOTE: This generator uses MSB-first for palette, contrary to spec v2.0. Documenting actual behavior.
                 embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "msb-first"}
             elif algo_name == 'lsb':
-                embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": "msb-first"}
+                embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": actual_bit_order}
             elif algo_name == 'exif':
                 embedding_data = {"category": "metadata", "technique": "exif", "ai42": False}
             elif algo_name == 'eoi':
