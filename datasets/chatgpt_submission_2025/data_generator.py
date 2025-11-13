@@ -176,7 +176,7 @@ def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
 
 def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
     """Minimal-change palette embedding for GIF."""
-    img = cover.convert("P", palette=Image.ADAPTIVE, colors=256)
+    img = cover.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
     data = list(img.getdata())
     
     # Append the null terminator bit string (8 bits)
@@ -202,7 +202,9 @@ def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
     # The image is guaranteed to have enough capacity now, but keeping the logic clean.
     out = Image.new("P", img.size)
     out.putdata(new_data)
-    out.putpalette(img.getpalette())
+    palette = img.getpalette()
+    if palette is not None:
+        out.putpalette(palette)
     return out
 
 def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
@@ -293,7 +295,7 @@ def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable
                 if algo == 'lsb':
                     embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": "msb-first"}
                 elif algo == 'alpha':
-                    embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True}
+                    embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True, "bit_order": "lsb-first"}
                 elif algo == 'palette':
                     embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "msb-first"}
                 elif algo == 'exif':
@@ -358,8 +360,12 @@ def validate_dataset() -> dict:
 
 def summarize_dataset(validation: dict):
     payloads = {f.stem.split("_")[0] for f in CLEAN_DIR.glob("*") if f.is_file()}
-    algos = {VALID_FILENAME_RE.match(f.name).group(2)
-             for f in CLEAN_DIR.glob("*") if VALID_FILENAME_RE.match(f.name)}
+    algos = set()
+    for f in CLEAN_DIR.glob("*"):
+        if f.is_file():
+            match = VALID_FILENAME_RE.match(f.name)
+            if match:
+                algos.add(match.group(2))
     summary = {
         "payload_count": len(payloads),
         "algorithms_used": sorted(list(algos)),

@@ -1,5 +1,5 @@
 {
-  "payload_count": 7,
+  "payload_count": 6,
   "algorithms_used": [
     "alpha",
     "eoi",
@@ -7,8 +7,8 @@
     "lsb",
     "palette"
   ],
-  "clean_files": 3152,
-  "stego_files": 6304,
+  "clean_files": 2800,
+  "stego_files": 5600,
   "validation_passed": true,
   "errors": [],
   "generated_counts": {

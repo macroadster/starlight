@@ -24,7 +24,7 @@ class BalancedStegoDataset(Dataset):
     Creates perfect 1:1 clean:stego ratio by sampling stego images to match clean count.
     """
 
-    def __init__(self, clean_dir_pattern, stego_dir_pattern, transform=None, balance_strategy='oversample_clean'):
+    def __init__(self, clean_dir_pattern, stego_dir_pattern, transform=None, balance_strategy='sample_stego'):
         self.transform = transform
         self.samples = []
         self.clean_files_used = set()
@@ -75,10 +75,12 @@ class BalancedStegoDataset(Dataset):
                         continue
 
                     method_id = self.method_map[technique]
+                    bit_order = metadata.get('embedding', {}).get('bit_order', 'msb-first')
                     all_stego_samples.append({
                         'path': stego_path,
                         'stego_label': 1,
                         'method_label': method_id,
+                        'bit_order': bit_order,
                         'type': 'stego'
                     })
 
@@ -87,6 +89,7 @@ class BalancedStegoDataset(Dataset):
                             'path': clean_path,
                             'stego_label': 0,
                             'method_label': -1,
+                            'bit_order': 'none',
                             'type': 'clean'
                         })
                         self.clean_files_used.add(clean_filename)
@@ -95,8 +98,8 @@ class BalancedStegoDataset(Dataset):
                     continue
         
         # Balance the dataset
-        if balance_strategy == 'sample_stego':
-            # Sample stego images to match clean count
+        if balance_strategy == 'sample_stego' or balance_strategy == 'undersample_stego':
+            # Sample stego images to match clean count (undersample stego)
             clean_count = len(clean_samples)
             if len(all_stego_samples) > clean_count:
                 # Randomly sample stego images to match clean count
@@ -111,6 +114,18 @@ class BalancedStegoDataset(Dataset):
 
         elif balance_strategy == 'oversample_clean':
             # Oversample clean images to match stego count
+            stego_count = len(all_stego_samples)
+            if len(clean_samples) > 0:
+                clean_multiplier = stego_count // len(clean_samples) + 1
+                oversampled_clean = clean_samples * clean_multiplier
+                # Trim to exact match
+                oversampled_clean = oversampled_clean[:stego_count]
+                self.samples = oversampled_clean + all_stego_samples
+            else: # Handle case with no clean samples
+                self.samples = all_stego_samples
+        
+        elif balance_strategy == 'use_all_stego':
+            # Use all stego images and oversample clean to match
             stego_count = len(all_stego_samples)
             if len(clean_samples) > 0:
                 clean_multiplier = stego_count // len(clean_samples) + 1
@@ -159,7 +174,16 @@ class BalancedStegoDataset(Dataset):
 
         try:
             meta, alpha, lsb, palette = load_enhanced_multi_input(str(img_path), self.transform)
-            return meta, alpha, lsb, palette, sample['stego_label'], sample['method_label']
+            # Add bit_order as one-hot encoding: [lsb-first, msb-first, none]
+            bit_order = sample.get('bit_order', 'msb-first')
+            if bit_order == 'lsb-first':
+                bit_order_feat = torch.tensor([1.0, 0.0, 0.0])
+            elif bit_order == 'msb-first':
+                bit_order_feat = torch.tensor([0.0, 1.0, 0.0])
+            else:  # clean images
+                bit_order_feat = torch.tensor([0.0, 0.0, 1.0])
+            
+            return meta, alpha, lsb, palette, bit_order_feat, sample['stego_label'], sample['method_label']
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
             # Return dummy data
@@ -167,7 +191,8 @@ class BalancedStegoDataset(Dataset):
             dummy_alpha = torch.zeros(1, 256, 256)
             dummy_lsb = torch.zeros(3, 256, 256)
             dummy_palette = torch.zeros(768)
-            return dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, 0, -1
+            dummy_bit_order = torch.tensor([0.0, 0.0, 1.0])  # clean default
+            return dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_bit_order, 0, -1
 
 def extract_enhanced_metadata_features(image_path):
     """Extract enhanced metadata features for better EXIF detection across various formats."""
@@ -372,7 +397,7 @@ def load_enhanced_multi_input(path, transform=None):
 class BalancedStarlightDetector(nn.Module):
     """Balanced model with weighted metadata processing to reduce EXIF dominance"""
 
-    def __init__(self, meta_weight=0.3):
+    def __init__(self, meta_weight=0.1):
         super(BalancedStarlightDetector, self).__init__()
 
         self.meta_weight = meta_weight  # Weight to reduce metadata dominance
@@ -431,7 +456,7 @@ class BalancedStarlightDetector(nn.Module):
         )
 
         # Fusion and classification
-        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64
+        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 3  # +3 for bit_order features
         self.fusion = nn.Sequential(
             nn.Linear(self.fusion_dim, 512),
             nn.ReLU(),
@@ -447,7 +472,7 @@ class BalancedStarlightDetector(nn.Module):
         self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
         self.embedding_head = nn.Linear(64, 64)
 
-    def forward(self, meta, alpha, lsb, palette):
+    def forward(self, meta, alpha, lsb, palette, bit_order):
         # Metadata stream with weighting
         meta = meta.unsqueeze(1)  # Add channel dimension
         meta = self.meta_conv(meta)
@@ -465,8 +490,8 @@ class BalancedStarlightDetector(nn.Module):
         # Palette stream
         palette = self.palette_fc(palette)
 
-        # Fusion
-        fused = torch.cat([meta, alpha, lsb, palette], dim=1)
+        # Fusion with bit_order features
+        fused = torch.cat([meta, alpha, lsb, palette, bit_order], dim=1)
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
@@ -525,33 +550,22 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
     ])
 
     # --- Data Loading and Splitting ---
-    # Combine datasets to prevent overfitting to a specific dataset's artifacts
-    print("Combining and splitting datasets to ensure generalization...")
+    # Use separate datasets: training from submissions, validation from val set
+    print("Loading training data from submissions and validation data from val set...")
 
-    # Load samples from both training and validation sources without transforms
-    train_source_dataset = BalancedStegoDataset(train_clean_dir, train_stego_dir, transform=None)
-    val_source_dataset = BalancedStegoDataset(val_clean_dir, val_stego_dir, transform=None)
-
-    # Combine all samples
-    all_samples = train_source_dataset.samples + val_source_dataset.samples
-    random.shuffle(all_samples)
-
-    # Split samples into training and validation sets (80/20 split)
-    split_idx = int(0.8 * len(all_samples))
-    train_samples = all_samples[:split_idx]
-    val_samples = all_samples[split_idx:]
+    # Load training samples from all submission datasets
+    train_source_dataset = BalancedStegoDataset(train_clean_dir, train_stego_dir, transform=None, balance_strategy='sample_stego')
+    
+    # Load validation samples from val dataset only - use all stego images
+    val_source_dataset = BalancedStegoDataset(val_clean_dir, val_stego_dir, transform=None, balance_strategy='use_all_stego')
 
     # Create training dataset with augmentations
     train_dataset = copy.deepcopy(train_source_dataset)
-    train_dataset.samples = train_samples
     train_dataset.transform = train_transform
-    train_dataset.method_labels_list = [s['method_label'] for s in train_samples if s['type'] == 'stego']
 
     # Create validation dataset without augmentations
     val_dataset = copy.deepcopy(val_source_dataset)
-    val_dataset.samples = val_samples
     val_dataset.transform = val_transform
-    val_dataset.method_labels_list = [s['method_label'] for s in val_samples if s['type'] == 'stego']
     
     method_labels_list = train_dataset.method_labels_list
 
@@ -590,18 +604,19 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
         method_total = 0
 
         for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
-            meta, alpha, lsb, palette, stego_labels, method_labels = batch
+            meta, alpha, lsb, palette, bit_order_feat, stego_labels, method_labels = batch
             meta = meta.to(device)
             alpha = alpha.to(device)
             lsb = lsb.to(device)
             palette = palette.to(device)
+            bit_order_feat = bit_order_feat.to(device)
             stego_labels = stego_labels.float().to(device)
             method_labels = method_labels.long().to(device)
 
             optimizer.zero_grad()
 
             # Forward pass
-            stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette)
+            stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette, bit_order_feat)
 
             # Compute losses
             stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
@@ -643,15 +658,16 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
 
         with torch.no_grad():
             for batch in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
-                meta, alpha, lsb, palette, stego_labels, method_labels = batch
+                meta, alpha, lsb, palette, bit_order_feat, stego_labels, method_labels = batch
                 meta = meta.to(device)
                 alpha = alpha.to(device)
                 lsb = lsb.to(device)
                 palette = palette.to(device)
+                bit_order_feat = bit_order_feat.to(device)
                 stego_labels = stego_labels.float().to(device)
                 method_labels = method_labels.long().to(device)
 
-                stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette)
+                stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette, bit_order_feat)
                 stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
                 stego_mask = stego_labels > 0.5
                 if stego_mask.sum() > 0:
@@ -721,23 +737,26 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
     dummy_alpha = torch.randn(1, 1, 256, 256)
     dummy_lsb = torch.randn(1, 3, 256, 256)
     dummy_palette = torch.randn(1, 768)
+    dummy_bit_order = torch.tensor([[0.0, 1.0, 0.0]])  # msb-first default
 
     dummy_meta = dummy_meta.to(device)
     dummy_alpha = dummy_alpha.to(device)
     dummy_lsb = dummy_lsb.to(device)
     dummy_palette = dummy_palette.to(device)
+    dummy_bit_order = dummy_bit_order.to(device)
 
     torch.onnx.export(
         model,
-        (dummy_meta, dummy_alpha, dummy_lsb, dummy_palette),
+        (dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_bit_order),
         out_path,
-        input_names=['meta', 'alpha', 'lsb', 'palette'],
+        input_names=['meta', 'alpha', 'lsb', 'palette', 'bit_order'],
         output_names=['stego_logits', 'method_logits', 'method_id', 'method_probs', 'embedding'],
         dynamic_axes={
             'meta': {0: 'batch'},
             'alpha': {0: 'batch'},
             'lsb': {0: 'batch'},
             'palette': {0: 'batch'},
+            'bit_order': {0: 'batch'},
             'stego_logits': {0: 'batch'},
             'method_logits': {0: 'batch'},
             'method_id': {0: 'batch'},
