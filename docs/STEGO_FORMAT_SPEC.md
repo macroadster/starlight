@@ -1,7 +1,7 @@
-# Project Starlight Steganography Format Specification (v2.0)
+# Project Starlight Steganography Format Specification (v2.1)
 
-**Version:** 2.0  
-**Last Updated:** 2025-11-04  
+**Version:** 2.1  
+**Last Updated:** 2025-11-13  
 **Status:** Active – Approved for trainer, scanner, and generator use
 
 ---
@@ -102,15 +102,15 @@ embedding_type
 
 - **Image:** Indexed color (GIF, 8-bit PNG)
 - **Embedding:** LSB of **palette indices** (pixel values)
-- **Bit Order:** **LSB-first**
+- **Bit Order:** Can be **LSB-first** or **MSB-first**. Must be specified in sidecar metadata.
 - **Payload Structure:**
   ```
   [payload UTF-8] + [0x00]
   ```
   - **No `AI42` prefix**
-- **Sidecar Example:**
+- **Sidecar Example: (LSB-first):**
   ```json
-  { "embedding": { "category": "pixel", "technique": "palette", "ai42": false } }
+  { "embedding": { "category": "pixel", "technique": "palette", "ai42": false, "bit_order": "lsb-first" } }
   ```
 
 ---
@@ -169,7 +169,7 @@ embedding_type
 
 ### Legacy (Accepted):
 ```
-{payload_hex}_{method}_{index}.{ext}
+{payload}_{method}_{index}.{ext}
 ```
 
 ### Required (New):
@@ -179,18 +179,18 @@ embedding_type
 
 **Example:**
 ```
-48656c6c6f_palette_001.png
-48656c6c6f_palette_001.png.json
+seed_palette_001.png
+seed_palette_001.png.json
 ```
 
 ```json
 {
-  "payload_hex": "48656c6c6f",
   "embedding": {
     "category": "pixel",
     "technique": "palette",
     "ai42": false
-  }
+  },
+  "clean_file": "clean-0123.gif"
 }
 ```
 
@@ -201,12 +201,10 @@ embedding_type
 | Method | Look for `AI42`? | Terminator | Bit Order |
 |-------|------------------|------------|-----------|
 | `alpha` | Yes | `0x00` | LSB-first |
-| `palette` | No | `0x00` | LSB-first |
+| `palette` | No | `0x00` | From metadata (`bit_order`) |
 | `lsb.rgb` | No | `0x00` | From metadata (`bit_order`) |
 | `exif` | No | `0x00` | N/A |
 | `eoi` | No | `0x00` | N/A |
-
-> `starlight_extractor.py` **MUST** read `.json` sidecar first. If missing, fall back to statistical detection.
 
 ---
 
@@ -223,32 +221,9 @@ To add **J-UNIWARD**:
 
 ---
 
-## 9. Migration from v1
-
-Run:
-```bash
-python migrate_metadata.py --src datasets/v1/stego/
-```
-
-This generates `.json` sidecars from legacy filenames using:
-
-```python
-method → technique mapping:
-  "alpha"    → "alpha"
-  "palette"  → "palette"
-  "lsb"      → "lsb.rgb"
-  "exif"     → "exif"
-  "eoi"      → "raw"
-ai42 = (method == "alpha")
-```
-
----
-
-## 10. References
+## 9. References
 
 - `ai_consensus.md` – Decision: LSB-first, AI42 only in Alpha
-- `starlight/metadata.py` – `EmbeddingType`, `ALGO_TO_EMBEDDING`
-- `scanner_spec.json` – Updated to require `"embedding"` object
 
 ---
 
