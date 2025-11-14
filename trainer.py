@@ -285,7 +285,9 @@ def extract_enhanced_metadata_features(image_path):
     # Tail analysis (next 100 bytes)
     if len(tail) > 0:
         hist = np.histogram(bytearray(tail[:1000]), bins=256)[0]
-        tail_entropy = -np.sum(hist * np.log2(hist + 1e-10))
+        # Normalize histogram to get probabilities for entropy calculation
+        hist_probs = hist / np.sum(hist) if np.sum(hist) > 0 else hist
+        tail_entropy = -np.sum(hist_probs * np.log2(hist_probs + 1e-10))
         enhanced_features[110] = tail_entropy
         enhanced_features[111] = len(tail)
 
