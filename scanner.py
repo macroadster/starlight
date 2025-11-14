@@ -61,8 +61,8 @@ def _scan_logic(image_path, session, extract_message=False):
             # Use the equivalent alternative form to avoid overflow for large negative logits
             stego_prob = np.exp(logit) / (1 + np.exp(logit))
 
-        # Method-specific thresholds to improve detection
-        thresholds = {0: 0.559, 1: 0.95, 2: 0.95, 3: 0.5, 4: 0.95}  # Tuned to reduce false positives
+        # Method-specific thresholds tuned to reduce false positives based on analysis
+        thresholds = {0: 0.7, 1: 0.98, 2: 0.95, 3: 0.5, 4: 0.95}  # Raised alpha and palette thresholds
         threshold = thresholds.get(method_id[0], 0.8)
         is_stego = stego_prob > threshold
         
@@ -93,7 +93,11 @@ def _scan_logic(image_path, session, extract_message=False):
         # Strong validation for alpha steganography to prevent model errors
         if method_id[0] == 0 and is_stego:  # Predicted as alpha steganography
             img = Image.open(image_path)
-            if img.mode == 'RGBA':
+            # CRITICAL FIX: If image has no alpha channel, it cannot be alpha steganography
+            if img.mode != 'RGBA':
+                is_stego = False
+                stego_prob = 0.01  # Very low confidence for non-alpha images
+            else:
                 alpha_channel = img.split()[-1]
                 alpha_data = np.array(alpha_channel)
                 # If alpha is uniform (all 255), it cannot be alpha steganography
@@ -122,6 +126,31 @@ def _scan_logic(image_path, session, extract_message=False):
                 except:
                     pass
         
+        # Special case: Reduce palette false positives by validating extracted content
+        if method_id[0] == 1 and is_stego:  # Detected as palette steganography
+            try:
+                palette_message, _ = extraction_functions['palette'](image_path)
+                # If palette extraction returns None or empty, it's likely a false positive
+                if not palette_message:
+                    is_stego = False
+                    stego_prob = 0.1  # Very low confidence
+                else:
+                    # Check for patterns indicating false positive in palette data
+                    total_chars = len(palette_message)
+                    unique_chars = len(set(palette_message))
+                    
+                    # If message is all same character or very repetitive, likely false positive
+                    if unique_chars <= 2 and total_chars > 10:
+                        is_stego = False
+                        stego_prob = min(stego_prob, 0.3)
+                    # If message is mostly null/control characters, likely false positive
+                    elif sum(1 for c in palette_message if ord(c) < 32 or ord(c) > 126) / total_chars > 0.8:
+                        is_stego = False
+                        stego_prob = min(stego_prob, 0.2)
+            except:
+                is_stego = False
+                stego_prob = 0.1
+
         # Special case: Reduce LSB false positives by validating extracted content
         if method_id[0] == 2 and is_stego:  # Detected as LSB steganography
             try:
