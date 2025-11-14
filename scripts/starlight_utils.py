@@ -4,14 +4,108 @@ from PIL import Image
 import struct
 import torchvision.transforms as transforms
 
+def _find_gif_end_pos(raw_bytes):
+    """
+    Parses a GIF file to find the offset of the byte AFTER the trailer (';').
+    Returns -1 if the file is not a valid GIF or is truncated.
+    """
+    if not (raw_bytes.startswith(b'GIF87a') or raw_bytes.startswith(b'GIF89a')):
+        return -1
+
+    pos = 6  # Start after header
+
+    try:
+        # --- Logical Screen Descriptor (7 bytes) ---
+        if pos + 7 > len(raw_bytes): return -1
+        screen_descriptor = raw_bytes[pos:pos+7]
+        pos += 7
+
+        # --- Global Color Table (if present) ---
+        flags = screen_descriptor[4]
+        if flags & 0x80:  # GCT flag is set
+            color_table_size = 1 << ((flags & 0x07) + 1)
+            if pos + 3 * color_table_size > len(raw_bytes): return -1
+            pos += 3 * color_table_size
+
+        # --- Main loop for blocks ---
+        while pos < len(raw_bytes):
+            block_type = raw_bytes[pos:pos+1]
+            if not block_type: break
+            pos += 1
+
+            if block_type == b';':  # Trailer
+                return pos
+
+            elif block_type == b'!':  # Extension Block
+                if pos >= len(raw_bytes): return -1
+                pos += 1  # Skip extension label
+                while True:
+                    if pos >= len(raw_bytes): return -1
+                    block_size = raw_bytes[pos]
+                    pos += 1
+                    if block_size == 0:
+                        break
+                    if pos + block_size > len(raw_bytes): return -1
+                    pos += block_size
+
+            elif block_type == b',':  # Image Descriptor Block
+                if pos + 9 > len(raw_bytes): return -1
+                descriptor = raw_bytes[pos:pos+9]
+                pos += 9
+
+                img_flags = descriptor[8]
+                if img_flags & 0x80:
+                    lct_size = 1 << ((img_flags & 0x07) + 1)
+                    if pos + 3 * lct_size > len(raw_bytes): return -1
+                    pos += 3 * lct_size
+
+                if pos >= len(raw_bytes): return -1
+                pos += 1  # Skip LZW Minimum Code Size
+
+                while True:
+                    if pos >= len(raw_bytes): return -1
+                    block_size = raw_bytes[pos]
+                    pos += 1
+                    if block_size == 0:
+                        break
+                    if pos + block_size > len(raw_bytes): return -1
+                    pos += block_size
+            
+            else:
+                return -1 # Unknown block type, malformed GIF
+        
+        return -1 # Trailer not found
+
+    except (IndexError, struct.error):
+        return -1 # Truncated or malformed
+
 def extract_post_tail(raw_bytes, format_hint='auto'):
-    tails = {
-        'jpeg': raw_bytes[raw_bytes.rfind(b'\xFF\xD9') + 2:] if raw_bytes.rfind(b'\xFF\xD9') != -1 else b"",
-        'png': raw_bytes[raw_bytes.rfind(b'IEND') + 4:] if raw_bytes.rfind(b'IEND') != -1 else b"",
-        'gif': raw_bytes[raw_bytes.rfind(b';') + 1:] if raw_bytes.rfind(b';') != -1 else b"",
-        'webp': raw_bytes[raw_bytes.rfind(b'VP8X') + 10:] if raw_bytes.rfind(b'VP8X') != -1 else b"",
-    }
-    return tails.get(format_hint, b"")
+    tail = b""
+    if format_hint == 'jpeg':
+        pos = raw_bytes.rfind(b'\xFF\xD9')
+        if pos != -1:
+            tail = raw_bytes[pos + 2:]
+    elif format_hint == 'png':
+        pos = raw_bytes.rfind(b'IEND')
+        if pos != -1:
+            # The IEND chunk is 12 bytes total: 4b length (0), 4b type ('IEND'), 4b CRC.
+            # The tail starts after the 4-byte CRC.
+            tail = raw_bytes[pos + 8:]
+    elif format_hint == 'gif':
+        end_pos = _find_gif_end_pos(raw_bytes)
+        if end_pos != -1 and end_pos < len(raw_bytes):
+            tail = raw_bytes[end_pos:]
+    elif format_hint == 'webp':
+        if raw_bytes.startswith(b'RIFF') and len(raw_bytes) >= 12 and raw_bytes[8:12] == b'WEBP':
+            try:
+                riff_size = struct.unpack('<I', raw_bytes[4:8])[0]
+                expected_size = 8 + riff_size
+                if len(raw_bytes) > expected_size:
+                    tail = raw_bytes[expected_size:]
+            except struct.error:
+                pass # Malformed header
+    
+    return tail
 
 def load_multi_input(path, transform=None):
     img = Image.open(path)
