@@ -135,6 +135,39 @@ class BalancedStegoDataset(Dataset):
                 self.samples = oversampled_clean + all_stego_samples
             else: # Handle case with no clean samples
                 self.samples = all_stego_samples
+        
+        elif balance_strategy == 'balanced_classes':
+            # Ensure each stego class has equal representation
+            # Group stego samples by method
+            stego_by_method = {}
+            for sample in all_stego_samples:
+                method = sample['method_label']
+                if method not in stego_by_method:
+                    stego_by_method[method] = []
+                stego_by_method[method].append(sample)
+            
+            # Find the smallest class size (excluding clean)
+            min_class_size = min(len(samples) for samples in stego_by_method.values()) if stego_by_method else 0
+            
+            # Sample equally from each stego class
+            balanced_stego = []
+            for method, samples in stego_by_method.items():
+                if len(samples) >= min_class_size:
+                    random.shuffle(samples)
+                    balanced_stego.extend(samples[:min_class_size])
+            
+            # Sample clean to match total stego
+            total_stego = len(balanced_stego)
+            if len(clean_samples) >= total_stego:
+                random.shuffle(clean_samples)
+                balanced_clean = clean_samples[:total_stego]
+            else:
+                # Oversample clean if needed
+                clean_multiplier = total_stego // len(clean_samples) + 1
+                balanced_clean = clean_samples * clean_multiplier
+                balanced_clean = balanced_clean[:total_stego]
+            
+            self.samples = balanced_clean + balanced_stego
 
 
         # Collect method labels for class weights
@@ -369,27 +402,98 @@ def load_enhanced_multi_input(path, transform=None):
     else:
         alpha = torch.zeros(1, 256, 256) # Ensure it's 256x256
 
-    # Augmentation for RGB channels
-    rgb_img = img.convert('RGB')
+    # Extract LSB BEFORE augmentation to preserve steganography signals
+    rgb_img_original = img.convert('RGB')
+    lsb_r = (np.array(rgb_img_original)[:, :, 0] & 1).astype(np.float32)
+    lsb_g = (np.array(rgb_img_original)[:, :, 1] & 1).astype(np.float32)
+    lsb_b = (np.array(rgb_img_original)[:, :, 2] & 1).astype(np.float32)
+    lsb_original = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
+    
+    # Resize LSB to match expected dimensions (256x256) using nearest neighbor to preserve binary values
+    from torchvision.transforms import functional as F_transforms
+    lsb = F_transforms.resize(lsb_original, [256, 256], interpolation=F_transforms.InterpolationMode.NEAREST)
+
+    # Augmentation for RGB channels (applied to RGB image for metadata/other features)
     if transform:
-        aug_img = transform(rgb_img)
+        aug_img = transform(rgb_img_original)
     else:
         # Default to CenterCrop if no transform is provided
         crop = transforms.CenterCrop((256, 256))
-        aug_img = crop(rgb_img)
+        aug_img = crop(rgb_img_original)
 
-    # LSB path
-    lsb_r = (np.array(aug_img)[:, :, 0] & 1).astype(np.float32)
-    lsb_g = (np.array(aug_img)[:, :, 1] & 1).astype(np.float32)
-    lsb_b = (np.array(aug_img)[:, :, 2] & 1).astype(np.float32)
-    lsb = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
-
-    # Palette path
+    # Palette path - extract both palette colors AND pixel index LSB patterns for palette steganography
     if img.mode == 'P':
-        palette_bytes = np.array(img.getpalette(), dtype=np.uint8)
-        palette_bytes = np.pad(palette_bytes, (0, 768 - len(palette_bytes)), 'constant')
+        # Extract palette colors (traditional approach)
+        palette_colors = np.array(img.getpalette(), dtype=np.uint8)
+        palette_colors = np.pad(palette_colors, (0, 768 - len(palette_colors)), 'constant')
+        
+        # Extract LSB patterns from pixel indices (actual palette steganography)
+        pixel_indices = np.array(img.getdata())
+        
+        # Create LSB features from pixel indices
+        lsb_features = np.zeros(256, dtype=np.uint8)  # Reduced size for efficiency
+        
+        total_pixels = len(pixel_indices)
+        
+        if total_pixels > 0:
+            # Extract LSB patterns from pixel indices
+            pixel_lsb = pixel_indices & 1
+            
+            # Sample LSB values from different regions (store as raw bytes, not packed)
+            region_size = min(64, total_pixels // 4)  # Sample up to 64 pixels per region
+            
+            # Top-left region - store raw LSB values
+            if region_size > 0:
+                lsb_features[0:region_size] = pixel_lsb[:region_size].astype(np.uint8) * 255
+            
+            # Center region  
+            center_start = total_pixels // 2 - region_size // 2
+            if center_start + region_size <= total_pixels:
+                lsb_features[64:64+region_size] = pixel_lsb[center_start:center_start + region_size].astype(np.uint8) * 255
+            
+            # Bottom-right region
+            if region_size > 0:
+                start_idx = 128
+                lsb_features[start_idx:start_idx+region_size] = pixel_lsb[-region_size:].astype(np.uint8) * 255
+            
+            # Overall LSB statistics
+            lsb_features[192] = int(np.mean(pixel_lsb) * 255)  # Average LSB value
+            lsb_features[193] = int(np.std(pixel_lsb) * 255)   # LSB variation
+            lsb_features[194] = int((pixel_lsb.sum() % 256))    # LSB sum modulo
+            
+            # Additional features: transitions and patterns
+            if len(pixel_lsb) > 1:
+                transitions = np.sum(pixel_lsb[1:] != pixel_lsb[:-1])  # Count LSB transitions
+                lsb_features[195] = min(255, transitions)  # Cap at 255
+                
+                # Count consecutive same bits
+                max_consecutive = 0
+                current_consecutive = 1
+                for i in range(1, len(pixel_lsb)):
+                    if pixel_lsb[i] == pixel_lsb[i-1]:
+                        current_consecutive += 1
+                        max_consecutive = max(max_consecutive, current_consecutive)
+                    else:
+                        current_consecutive = 1
+                lsb_features[196] = min(255, max_consecutive)
+            
+        # Combine palette colors and LSB features
+        palette_bytes = np.concatenate([palette_colors[:512], lsb_features])  # 512 + 256 = 768
+        
     else:
+        # For non-palette images, create minimal palette data
         palette_bytes = np.zeros(768, dtype=np.uint8)
+        
+        # Only extract palette if there's evidence of palette-based steganography
+        if hasattr(img, 'info') and 'palette' in img.info:
+            try:
+                embedded_palette = img.info['palette']
+                if isinstance(embedded_palette, (bytes, bytearray)) and len(embedded_palette) > 0:
+                    palette_data = np.frombuffer(embedded_palette[:768], dtype=np.uint8)
+                    palette_bytes[:len(palette_data)] = palette_data
+            except (ValueError, TypeError):
+                pass  # Keep zero palette if extraction fails
+    
     palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
 
     return meta, alpha, lsb, palette
@@ -553,8 +657,8 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
     # Use separate datasets: training from submissions, validation from val set
     print("Loading training data from submissions and validation data from val set...")
 
-    # Load training samples from all submission datasets
-    train_source_dataset = BalancedStegoDataset(train_clean_dir, train_stego_dir, transform=None, balance_strategy='sample_stego')
+    # Load training samples from all submission datasets with balanced classes
+    train_source_dataset = BalancedStegoDataset(train_clean_dir, train_stego_dir, transform=None, balance_strategy='balanced_classes')
     
     # Load validation samples from val dataset only - use all stego images
     val_source_dataset = BalancedStegoDataset(val_clean_dir, val_stego_dir, transform=None, balance_strategy='use_all_stego')
