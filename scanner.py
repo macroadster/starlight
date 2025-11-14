@@ -62,7 +62,7 @@ def _scan_logic(image_path, session, extract_message=False):
             stego_prob = np.exp(logit) / (1 + np.exp(logit))
 
         # Method-specific thresholds to improve detection
-        thresholds = {0: 0.559, 1: 0.486, 2: 0.724, 3: 0.5, 4: 0.5}  # Optimized for F1 score
+        thresholds = {0: 0.559, 1: 0.95, 2: 0.95, 3: 0.5, 4: 0.95}  # Tuned to reduce false positives
         threshold = thresholds.get(method_id[0], 0.8)
         is_stego = stego_prob > threshold
         
