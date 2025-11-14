@@ -4,8 +4,8 @@ Data Generator - ALIGNED WITH STEGO_FORMAT_SPEC.md
 
 Key Format Rules:
 1. Alpha: LSB-first (byte-reversed) bit order with AI42 hint
-2. LSB: MSB-first, null-terminated (no hint)
-3. Palette: MSB-first, null-terminated
+2. LSB: MSB-first or LSB-first (randomized), null-terminated (no hint)
+3. Palette: MSB-first or LSB-first (randomized), null-terminated
 4. EXIF: UserComment with ASCII encoding header
 5. EOI: Raw append after JPEG EOI marker
 """
@@ -161,10 +161,18 @@ def embed_lsb(cover: Image.Image, payload: bytes, bit_order: str = "random") -> 
     out.putdata(new_data)
     return out, bit_order
 
-def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
+def embed_palette(cover: Image.Image, payload: bytes, bit_order: str = "random") -> tuple[Image.Image, str]:
     """
-    Embed in palette indices using MSB-first bit order.
+    Embed in palette indices using either MSB-first or LSB-first bit order.
     SPEC: MSB-first, null-terminated. Embeds the provided payload.
+
+    Args:
+        cover: Cover image to embed payload in
+        payload: Payload bytes to embed
+        bit_order: "msb-first", "lsb-first", or "random" to randomly choose
+
+    Returns:
+        Tuple of (stego_image, actual_bit_order_used)
     """
     if cover.mode != 'P':
         img = cover.convert("P", colors=256)
@@ -175,12 +183,18 @@ def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
         raise ValueError("Image must have a palette for this technique.")
 
     indices = list(img.getdata())
-    
-    # Convert payload to MSB-first bits + null terminator
-    bits = ""
-    for byte in payload:
-        bits += format(byte, '08b')  # MSB-first
-    bits += "00000000"  # null terminator
+
+    # Choose bit order
+    if bit_order == "random":
+        bit_order = random.choice(["msb-first", "lsb-first"])
+
+    # Encode bits based on chosen order with null terminator
+    if bit_order == "lsb-first":
+        # LSB-first (byte-reversed) encoding
+        bits = "".join(format(b, "08b")[::-1] for b in payload) + "00000000"
+    else:
+        # MSB-first encoding (default)
+        bits = "".join(f"{b:08b}" for b in payload) + "00000000"
 
     if len(bits) > len(indices):
         raise ValueError(
@@ -192,7 +206,7 @@ def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
         indices[i] = (indices[i] & 0xFE) | int(bits[i])
 
     img.putdata(indices)
-    return img
+    return img, bit_order
 
 
 def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
@@ -421,9 +435,10 @@ def main():
             if cover_img.mode not in ['RGB', 'RGBA', 'P']:
                 cover_img = cover_img.convert('RGB')
 
-            # Handle LSB function that returns tuple
-            if algo_name == "lsb":
-                stego_img, actual_bit_order = embed_func(cover_img.copy(), payload_content)
+            # Determine bit order for lsb and palette: alternate msb-first and lsb-first
+            if algo_name in ["lsb", "palette"]:
+                bit_order = "msb-first" if image_index % 2 == 0 else "lsb-first"
+                stego_img, actual_bit_order = embed_func(cover_img.copy(), payload_content, bit_order=bit_order)
             else:
                 stego_img = embed_func(cover_img.copy(), payload_content)
                 actual_bit_order = None
@@ -455,8 +470,7 @@ def main():
             if algo_name == 'alpha':
                 embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True, "bit_order": "lsb-first"}
             elif algo_name == 'palette':
-                # NOTE: This generator uses MSB-first for palette, contrary to spec v2.0. Documenting actual behavior.
-                embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "msb-first"}
+                embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": actual_bit_order}
             elif algo_name == 'lsb':
                 embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": actual_bit_order}
             elif algo_name == 'exif':

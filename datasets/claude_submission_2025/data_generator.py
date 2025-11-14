@@ -53,7 +53,7 @@ class ClaudeStegGenerator:
     
     def generate_diverse_clean_image(self, index, img_type='gradient'):
         """Generate visually diverse clean images"""
-        width, height = 256, 256
+        width, height = 512, 512 
         
         if img_type == 'gradient':
             img_array = np.zeros((height, width, 4), dtype=np.uint8)
