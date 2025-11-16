@@ -1,91 +1,146 @@
-🌟 GPT-OSS:120b-Cloud Execution Plan (Project Starlight V3)
-Role: Distributed Executor & Validator for GPT-5 Architectures
-Version: 2025-11-08
-Author: GPT-5 (spec architect)
-Status: Proposed – Pending Sync Approval
-1. Mission Overview
-Objective:
-Serve as GPT-5’s execution layer — converting specifications, proposals, and architectural drafts into runnable, testable, and benchmarked code within the cloud infrastructure.
-Core Tasks:
-Implement and test Starlight Dual-Input V3 Architecture (as proposed in docs/chatgpt_proposal.md).
-Integrate the ensemble and hybrid models into a unified inference API.
-Maintain continuous evaluation against updated datasets and performance benchmarks.
-Provide telemetry, logs, and diff reports back to ai_consensus.md.
-2. Operational Domains
-Domain	Function	Key Outputs
-Model Implementation	Convert specs → PyTorch/ONNX/TFLite models	models/detector_dual.onnx, models/starlight.ggml
-Training & Validation	Run distributed validation on balanced datasets	reports/training_metrics.json
-Benchmarking	Evaluate throughput & latency (edge + cloud)	reports/perf_summary.md
-Synchronization	Push telemetry to Git & ai_consensus	consensus/sync_<timestamp>.json
-Deployment	Build inference endpoints & scanners	scanner/light_scanner.py, Docker images
-3. Phase Breakdown
-Phase 1 – Setup & Alignment (Day 1-2)
-Goal: Reproduce GPT-5’s V3 dual-input pipeline.
-Tasks:
-Clone the latest starlight repo and checkout the v3_spec branch.
-Implement:
-StarlightDetector (dual-input model)
-load_dual_input() preprocessing
-Verify ONNX export and quantization paths.
-Compare layer counts and weights with reference implementation.
-Log build hashes and checksum to /reports/build_verification.json.
-Phase 2 – Dataset Preparation (Day 3-4)
-Goal: Construct representative training and validation sets with correct signal diversity.
-Tasks:
-Merge clean + stego datasets ensuring balanced channel and method distribution.
-Preserve bit integrity (no resizing, no compression re-encoding).
-Tag per-method metadata in manifest:
-filename, method, has_alpha, has_eoi, has_exif, label
-Generate dataset summary:
-% per method
-Channel distribution
-Mean pixel/entropy statistics
-Output → /data/manifest_v3.csv
-Phase 3 – Distributed Validation (Day 5-6)
-Goal: Train lightweight detector replicas and compare with ensemble outputs.
-Tasks:
-Train StarlightDetector on 10% of dataset for quick convergence test.
-Run inference comparison against ensemble’s predictions.
-Compute confusion matrix and method-specific recall/precision.
-Report AUC/F1/Recall for each method:
+GPT-NEXT Roadmap (2025-11-15)
+Execution Plan for GPT-OSS:120B Cloud Counterpart
+0. Mission
+GPT-NEXT acts as the execution engine for architecture proposals, dataset rules, and model specifications produced by the AI team.
+Primary responsibilities:
+Convert Starlight architecture specs → runnable, testable code
+Execute large-scale validation, benchmarking, and comparison
+Publish models and metrics for the team to use
+Maintain uptime and consistency for long-running tasks
+1. Immediate Priorities (Next 7 Days)
+1.1 Implement Unified Multi-Stream Architecture (V3+V4 Merge)
+Build the merged 6-stream model:
+Pixel tensor
+Alpha channel
+LSB tensor
+Palette features
+Metadata (EXIF/EOI)
+Format features (Gemini)
+Ensure full ONNX export + quantization path
+Produce reproducible build logs:
+layer count
+parameter checksum
+export graph hash
+Output:
+models/starlight_unified_v3.onnx
+reports/build_verification.json
+1.2 Dataset Repair Executor
+Implement automated scripts to enforce the cross-agent dataset rules:
+Repair tasks:
+Remove impossible labels (alpha-in-RGB, palette on non-paletted images)
+Verify extraction success for every stego sample
+Rebalance file counts per method
+Validate PNG/GIF/WebP palette and tail structures
+Generate negative counterexamples:
+uniform alpha PNGs
+LSB-clean GIF dithering
+non-payload repetitive hex patterns
+Output:
+data/manifest_v3.jsonl (signed)
+data/consistency_report.md
+1.3 Run Full Cross-Dataset Evaluation
+Using all available submissions (22k+ images):
+For each model under evaluation:
+Compute FP, FN, Precision, Recall, AUC
+Compute per-method and per-format metrics
+Identify residual special-case failures
+Compare against production baseline (0.32% FP)
+Output:
 reports/validation_metrics_v3.json
-Send telemetry to GPT-5 for specification feedback.
-Phase 4 – Performance & Deployment (Day 7-8)
-Goal: Validate latency and portability for blockchain / edge.
-Tasks:
-Quantize ONNX → INT8 → TFLite → ggml.
-Benchmark latency on simulated low-power VM.
-Compare with ensemble’s throughput (target ≥ 10 img/s).
-Generate dockerized inference service:
-/deploy/Dockerfile.light_scanner
-REST API exposing POST /scan with image file.
-Publish metrics summary:
-reports/performance_v3.md
-Phase 5 – Feedback Loop (Continuous)
-Goal: Maintain live synchronization with GPT-5 and other agents.
-Actions:
-Auto-generate diff summary every sync cycle:
-Changed lines in consensus files
-New metrics deltas
-Sync timestamp + version tag
-Post sync_<timestamp>.json to ai_consensus.md.
-Listen for GPT-5 updates in /docs/STEGO_FORMAT_SPEC.md and /docs/V3_ARCH_SPEC.md.
-Trigger retraining or benchmark scripts when schema changes detected.
-4. Reporting Protocol
-Type	Frequency	File	Description
-Build verification	On model export	/reports/build_verification.json	Checksums, layer counts
-Dataset summary	Once per dataset update	/data/manifest_v3.csv	Source stats
-Validation metrics	Weekly	/reports/validation_metrics_v3.json	Accuracy & AUC
-Performance summary	Weekly	/reports/performance_v3.md	Latency & throughput
-Consensus diff	Per sync	/consensus/sync_*.json	Log of changes & comments
-5. Key Success Criteria
-✅ Dual-input model exported & quantized under 1.5 MB
-✅ ≥ 0.96 F1 across all methods (alpha, palette, rgb_lsb, exif, eoi)
-✅ ≥ 10 img/s throughput on CPU target
-✅ Reproducible build logs and checksum verification
-✅ Weekly synchronization with GPT-5 architecture notes
-6. Future Collaboration Targets
-Transition from ensemble to unified federated inference model.
-Integrate blockchain-compatible streaming output (batch digest verification).
-Expand metadata path to include PNG ancillary chunks (future method).
-Contribute to V3.1 Spec refinement and implementation feedback loop.
+1.4 Performance Benchmarking
+Benchmark unified model across hardware tiers:
+CPU x86
+CPU ARM (Apple Silicon)
+Raspberry Pi 4 / ARMv8
+Typical validator VM profile
+1-thread, 2-thread, 4-thread tests
+Record:
+imgs/sec throughput
+latency histogram
+quantization benefit (INT8 vs FP16 vs FP32)
+Output:
+reports/perf_summary_v3.md
+1.5 HF Export + Public Model Card
+Publish the unified model to HF Hub:
+Repo: macroadster/starlight-v3
+Contents:
+ONNX
+TFLite
+ggml
+Model card w/ benchmarks
+Code snippet for inference
+Output:
+HF repo online + verification screenshot
+2. Secondary Goals (Week 2–3)
+2.1 Teacher → Student Distillation
+Train a compact student model using:
+production balanced model
+unified multi-stream model
+ensemble teacher voting
+Target output size: ≤ 12 MB ONNX
+2.2 Confidence Calibration
+Implement temperature scaling + conformal calibration:
+Per-method calibration
+Separate EXIF/EOI scaling
+Save calibrated logits
+Output:
+models/starlight_calibrated.onnx
+2.3 Edge Deployment Bundle
+Build a deployable scanner bundle for validator nodes:
+1-binary inference engine
+no Python dependencies
+ONNXRuntime minimal package
+CLI interface: starlight_scan <file>
+Output:
+deploy/starlight_scanner_bundle_v1.tar.gz
+3. Long-Term Objectives (30–90 Days)
+3.1 Fully Learned Special Cases (No Hardcoded Rules)
+Train the unified model to learn:
+format impossibilities
+uniform alpha constraints
+LSB signal validity
+hex-pattern artifacts
+palette dithering noise
+EXIF/EOI real vs fake metadata
+Requires:
+heavy negative example generation
+adversarial “anti-stego” data
+extraction-verified labeling
+3.2 Cross-Agent Federated Evaluation
+Automate:
+weekly model evaluation
+diff summaries of model shifts
+dataset drift detection
+consensus updates
+Upload deltas into:
+consensus/sync_<timestamp>.json
+3.3 Participate in Spec v3.1
+Provide feedback on:
+metadata vector design
+palette feature specs
+multi-format EOI consistency
+expansion to PNG ancillary chunks
+4. Weekly Ritual
+Every Sunday:
+Run dataset integrity script
+Retrain quick models on 10% dataset
+Run benchmark suite
+Upload deltas to ai_consensus.md
+Generate sync_<timestamp>.json
+5. Success Criteria
+For GPT-NEXT to be considered “green” for this cycle:
+Category	Target
+FP Rate (Research)	< 5% across all datasets
+Cross-Dataset Generalization	> 90% recall
+Method Classification	> 90% accuracy
+Throughput	≥ 10 img/sec CPU
+ONNX Model Size	≤ 15 MB
+Dataset Integrity	100% extraction-verified labels
+6. Final Positioning
+GPT-NEXT is the execution layer for Starlight’s next-generation research direction:
+runs heavy jobs
+verifies architectures
+enforces dataset rules
+publishes models
+closes the gap between specs and production
+This plan keeps GPT-NEXT aligned with the full multi-agent roadmap while keeping responsibilities crisp, actionable, and autonomous.
