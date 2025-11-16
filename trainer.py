@@ -17,6 +17,7 @@ import random
 import glob
 import piexif
 from scripts.starlight_utils import extract_post_tail
+from scripts.starlight_utils import load_unified_input
 
 class BalancedStegoDataset(Dataset):
     """
@@ -206,7 +207,7 @@ class BalancedStegoDataset(Dataset):
         img_path = sample['path']
 
         try:
-            meta, alpha, lsb, palette = load_enhanced_multi_input(str(img_path), self.transform)
+            pixel_tensor, meta, alpha, lsb, palette, format_features, content_features = load_unified_input(str(img_path))
             # Add bit_order as one-hot encoding: [lsb-first, msb-first, none]
             bit_order = sample.get('bit_order', 'msb-first')
             if bit_order == 'lsb-first':
@@ -216,16 +217,19 @@ class BalancedStegoDataset(Dataset):
             else:  # clean images
                 bit_order_feat = torch.tensor([0.0, 0.0, 1.0])
             
-            return meta, alpha, lsb, palette, bit_order_feat, sample['stego_label'], sample['method_label']
+            return pixel_tensor, meta, alpha, lsb, palette, format_features, content_features, bit_order_feat, sample['stego_label'], sample['method_label']
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
             # Return dummy data
+            dummy_pixel = torch.zeros(3, 256, 256)
             dummy_meta = torch.zeros(2048)
             dummy_alpha = torch.zeros(1, 256, 256)
             dummy_lsb = torch.zeros(3, 256, 256)
             dummy_palette = torch.zeros(768)
+            dummy_format = torch.zeros(6)
+            dummy_content = torch.zeros(6)
             dummy_bit_order = torch.tensor([0.0, 0.0, 1.0])  # clean default
-            return dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_bit_order, 0, -1
+            return dummy_pixel, dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_format, dummy_content, dummy_bit_order, 0, -1
 
 def extract_enhanced_metadata_features(image_path):
     """Extract enhanced metadata features for better EXIF detection across various formats."""
@@ -561,8 +565,22 @@ class BalancedStarlightDetector(nn.Module):
             nn.Linear(128, 64)
         )
 
+        # Format features stream
+        self.format_features_fc = nn.Sequential(
+            nn.Linear(6, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16)
+        )
+
+        # Content features stream
+        self.content_features_fc = nn.Sequential(
+            nn.Linear(6, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16)
+        )
+
         # Fusion and classification
-        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 3  # +3 for bit_order features
+        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16 + 3  # +3 for bit_order features
         self.fusion = nn.Sequential(
             nn.Linear(self.fusion_dim, 512),
             nn.ReLU(),
@@ -578,7 +596,7 @@ class BalancedStarlightDetector(nn.Module):
         self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
         self.embedding_head = nn.Linear(64, 64)
 
-    def forward(self, meta, alpha, lsb, palette, bit_order):
+    def forward(self, meta, alpha, lsb, palette, format_features, content_features, bit_order):
         # Metadata stream with weighting
         meta = meta.unsqueeze(1)  # Add channel dimension
         meta = self.meta_conv(meta)
@@ -596,8 +614,14 @@ class BalancedStarlightDetector(nn.Module):
         # Palette stream
         palette = self.palette_fc(palette)
 
+        # Format features stream
+        format_features = self.format_features_fc(format_features)
+
+        # Content features stream
+        content_features = self.content_features_fc(content_features)
+
         # Fusion with bit_order features
-        fused = torch.cat([meta, alpha, lsb, palette, bit_order], dim=1)
+        fused = torch.cat([meta, alpha, lsb, palette, format_features, content_features, bit_order], dim=1)
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
@@ -634,7 +658,7 @@ def compute_class_weights(method_labels):
 
     return weights
 
-def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_balanced.onnx"):
+def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_generalized.onnx"):
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -710,11 +734,14 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
         method_total = 0
 
         for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
-            meta, alpha, lsb, palette, bit_order_feat, stego_labels, method_labels = batch
+            pixel_tensor, meta, alpha, lsb, palette, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
+            pixel_tensor = pixel_tensor.to(device)
             meta = meta.to(device)
             alpha = alpha.to(device)
             lsb = lsb.to(device)
             palette = palette.to(device)
+            format_features = format_features.to(device)
+            content_features = content_features.to(device)
             bit_order_feat = bit_order_feat.to(device)
             stego_labels = stego_labels.float().to(device)
             method_labels = method_labels.long().to(device)
@@ -722,7 +749,7 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
             optimizer.zero_grad()
 
             # Forward pass
-            stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette, bit_order_feat)
+            stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette, format_features, content_features, bit_order_feat)
 
             # Compute losses
             stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
@@ -764,16 +791,19 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
 
         with torch.no_grad():
             for batch in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
-                meta, alpha, lsb, palette, bit_order_feat, stego_labels, method_labels = batch
+                pixel_tensor, meta, alpha, lsb, palette, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
+                pixel_tensor = pixel_tensor.to(device)
                 meta = meta.to(device)
                 alpha = alpha.to(device)
                 lsb = lsb.to(device)
                 palette = palette.to(device)
+                format_features = format_features.to(device)
+                content_features = content_features.to(device)
                 bit_order_feat = bit_order_feat.to(device)
                 stego_labels = stego_labels.float().to(device)
                 method_labels = method_labels.long().to(device)
 
-                stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette, bit_order_feat)
+                stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette, format_features, content_features, bit_order_feat)
                 stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
                 stego_mask = stego_labels > 0.5
                 if stego_mask.sum() > 0:
@@ -843,25 +873,31 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
     dummy_alpha = torch.randn(1, 1, 256, 256)
     dummy_lsb = torch.randn(1, 3, 256, 256)
     dummy_palette = torch.randn(1, 768)
+    dummy_format_features = torch.randn(1, 6)
+    dummy_content_features = torch.randn(1, 6)
     dummy_bit_order = torch.tensor([[0.0, 1.0, 0.0]])  # msb-first default
 
     dummy_meta = dummy_meta.to(device)
     dummy_alpha = dummy_alpha.to(device)
     dummy_lsb = dummy_lsb.to(device)
     dummy_palette = dummy_palette.to(device)
+    dummy_format_features = dummy_format_features.to(device)
+    dummy_content_features = dummy_content_features.to(device)
     dummy_bit_order = dummy_bit_order.to(device)
 
     torch.onnx.export(
         model,
-        (dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_bit_order),
+        (dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_format_features, dummy_content_features, dummy_bit_order),
         out_path,
-        input_names=['meta', 'alpha', 'lsb', 'palette', 'bit_order'],
+        input_names=['meta', 'alpha', 'lsb', 'palette', 'format_features', 'content_features', 'bit_order'],
         output_names=['stego_logits', 'method_logits', 'method_id', 'method_probs', 'embedding'],
         dynamic_axes={
             'meta': {0: 'batch'},
             'alpha': {0: 'batch'},
             'lsb': {0: 'batch'},
             'palette': {0: 'batch'},
+            'format_features': {0: 'batch'},
+            'content_features': {0: 'batch'},
             'bit_order': {0: 'batch'},
             'stego_logits': {0: 'batch'},
             'method_logits': {0: 'batch'},
@@ -872,7 +908,7 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
         opset_version=11
     )
 
-    print(f"Balanced model exported to {out_path}")
+    print(f"Generalized model exported to {out_path}")
 
 
 
