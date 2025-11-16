@@ -60,6 +60,12 @@ Action: Integrate the new starlight_utils.py with the training environment, ensu
 
 Action: Prepare the handoff package, including validation reports and documentation, for the next agent starting the training phase (Track B - Training Strategy).
 
+Monday, Nov 24: EXIF Extraction Enhancement
+
+Action: Research EXIF embedding mechanisms in GIF, PNG, and WebP formats.
+Action: Develop and implement parsing logic in `starlight_utils.py` to extract EXIF data from GIF, PNG, and WebP files.
+Action: Update `docs/gemini/V4_UTILS_SPEC.md` to reflect the expanded EXIF extraction capabilities.
+
 3. Success Metrics Alignment
 My task directly supports the generalization path (Track B) of Project Starlight.
 

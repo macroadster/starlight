@@ -11,7 +11,7 @@ import torchvision.transforms as transforms
 import time
 import json
 from scripts.starlight_extractor import extraction_functions
-from trainer import load_enhanced_multi_input # Import from trainer.py
+from scripts.starlight_utils import load_unified_input # Import from trainer.py
 
 
 
@@ -31,13 +31,15 @@ def _scan_logic(image_path, session, extract_message=False):
     global METHOD_MAP
     try:
 
-        meta, alpha, lsb, palette = load_enhanced_multi_input(image_path)
+        pixel_tensor, meta, alpha, lsb, palette, format_features, content_features = load_unified_input(image_path)
 
         # Add batch dimension for ONNX model
         meta = meta.unsqueeze(0)
         alpha = alpha.unsqueeze(0)
         lsb = lsb.unsqueeze(0)
         palette = palette.unsqueeze(0)
+        format_features = format_features.unsqueeze(0)
+        content_features = content_features.unsqueeze(0)
 
         # Create bit_order feature (default to msb-first for inference)
         bit_order = torch.tensor([[0.0, 1.0, 0.0]])  # [lsb-first, msb-first, none]
@@ -48,6 +50,8 @@ def _scan_logic(image_path, session, extract_message=False):
             'alpha': alpha.numpy(),
             'lsb': lsb.numpy(),
             'palette': palette.numpy(),
+            'format_features': format_features.numpy(),
+            'content_features': content_features.numpy(),
             'bit_order': bit_order.numpy()
         }
         stego_logits, _, method_id, method_probs, _ = session.run(None, input_feed)

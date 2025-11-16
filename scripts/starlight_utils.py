@@ -160,11 +160,9 @@ def load_unified_input(path):
     # --- Metadata Path ---
     with open(path, 'rb') as f:
         raw = f.read()
-    exif = b""
-    pos = raw.find(b'\xFF\xE1')
-    if pos != -1:
-        length = struct.unpack('>H', raw[pos+2:pos+4])[0]
-        exif = raw[pos+4:pos+4+length-2]
+    
+    exif = img.info.get("exif", b"") # Use Pillow's built-in EXIF extraction
+    
     format_hint = img.format.lower() if img.format else 'auto'
     tail = extract_post_tail(raw, format_hint)
     meta_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:2048]
