@@ -256,11 +256,9 @@ def load_unified_input(path, fast_mode=False):
         # Full mode: complete metadata analysis
         exif = img.info.get("exif", b"") # Use Pillow's built-in EXIF extraction
         
-        if len(raw_bytes) < 5000:  # Fast path for small files
-            tail = b""
-        else:
-            format_hint = img.format.lower() if img.format else 'auto'
-            tail = extract_post_tail(raw_bytes, format_hint)
+        # Always extract tail for EOI steganography (remove size limit)
+        format_hint = img.format.lower() if img.format else 'auto'
+        tail = extract_post_tail(raw_bytes, format_hint)
         
         meta_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:2048]
         meta_bytes = np.pad(meta_bytes, (0, 2048 - len(meta_bytes)), 'constant')

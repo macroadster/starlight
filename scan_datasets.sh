@@ -11,7 +11,7 @@ DEFAULT_MODEL="models/detector_balanced.onnx"
 # Parse command line arguments
 MODEL_PATH=""
 SHOW_DETAILS=false
-WORKERS=$(nproc 2>/dev/null || echo 4)
+WORKERS=$(nproc 2>/dev/null || echo 8)
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -181,6 +181,8 @@ except:
         fi
         if [[ $errors -gt 0 ]]; then
             echo "   ⚠️  Errors: $errors"
+        else
+            echo "   ✅ No errors"
         fi
         
         # Show detected files if any
@@ -244,16 +246,20 @@ print_summary() {
     
     echo ""
     echo "$title:"
-    echo "┌─────────────────────────────────┬────────┬─────────┬──────────┬───────┐"
-    echo "│ Dataset                        │ Files  │ $metric_name │ Rate (%) │ Errors│"
-    echo "├─────────────────────────────────┼────────┼─────────┼──────────┼───────┤"
+    echo "┌─────────────────────────────────┬─────────┬─────────────┬───────────┬─────────┐"
+    if [[ "$metric_name" == "False Pos" ]]; then
+        echo "│ Dataset                         │ Files   │ False Pos   │ Rate (%)  │ Errors  │"
+    else
+        echo "│ Dataset                         │ Files   │ Detected    │ Rate (%)  │ Errors  │"
+    fi
+    echo "├─────────────────────────────────┼─────────┼─────────────┼───────────┼─────────┤"
     
     for result in "${results[@]}"; do
         IFS=':' read -r dataset total detected rate errors <<< "$result"
-        printf "│ %-31s │ %6d │ %7d │ %8.1f │ %5d │\n" "$dataset" "$total" "$detected" "$rate" "$errors"
+        printf "│ %-31s │ %7d │ %11d │ %9.1f │ %7d │\n" "$dataset" "$total" "$detected" "$rate" "$errors"
     done
     
-    echo "└─────────────────────────────────┴────────┴─────────┴──────────┴───────┘"
+    echo "└─────────────────────────────────┴─────────┴─────────────┴───────────┴─────────┘"
 }
 
 # Print clean results summary
@@ -296,34 +302,34 @@ if [[ $total_stego_files -gt 0 ]]; then
     overall_detection_rate=$(echo "scale=2; $total_stego_detected * 100 / $total_stego_files" | bc -l 2>/dev/null || echo 0)
 fi
 
-echo "┌─────────────────────────────────┬──────────┬─────────────┐"
-echo "│ Metric                         │ Count    │ Rate (%)    │"
-echo "├─────────────────────────────────┼──────────┼─────────────┤"
-printf "│ Total Clean Files              │ %8d │ %11.2f │\n" "$total_clean_files" "$overall_fp_rate"
-printf "│ Total Stego Files              │ %8d │ %11.2f │\n" "$total_stego_files" "$overall_detection_rate"
-echo "├─────────────────────────────────┼──────────┼─────────────┤"
-printf "│ False Positives (Clean)        │ %8d │ %11.2f │\n" "$total_clean_fps" "$overall_fp_rate"
-printf "│ True Positives (Stego)         │ %8d │ %11.2f │\n" "$total_stego_detected" "$overall_detection_rate"
-echo "└─────────────────────────────────┴──────────┴─────────────┘"
+echo "┌─────────────────────────────────┬───────────┬─────────────┐"
+echo "│ Metric                          │ Count     │ Rate (%)    │"
+echo "├─────────────────────────────────┼───────────┼─────────────┤"
+printf "│ Total Clean Files               │ %9d │ %11.2f │\n" "$total_clean_files" "$overall_fp_rate"
+printf "│ Total Stego Files               │ %9d │ %11.2f │\n" "$total_stego_files" "$overall_detection_rate"
+echo "├─────────────────────────────────┼───────────┼─────────────┤"
+printf "│ False Positives (Clean)         │ %9d │ %11.2f │\n" "$total_clean_fps" "$overall_fp_rate"
+printf "│ True Positives (Stego)          │ %9d │ %11.2f │\n" "$total_stego_detected" "$overall_detection_rate"
+echo "└─────────────────────────────────┴───────────┴─────────────┘"
 
 echo ""
 echo "🎯 PERFORMANCE ASSESSMENT:"
 
-# Performance assessment
+# Performance assessment with color coding
 if (( $(echo "$overall_fp_rate < 1.0" | bc -l 2>/dev/null || echo 0) )); then
-    echo "✅ False positive rate: EXCELLENT (< 1%)"
+    echo -e "✅ \033[32mFalse positive rate: EXCELLENT (< 1%)\033[0m"
 elif (( $(echo "$overall_fp_rate < 5.0" | bc -l 2>/dev/null || echo 0) )); then
-    echo "✅ False positive rate: GOOD (< 5%)"
+    echo -e "✅ \033[33mFalse positive rate: GOOD (< 5%)\033[0m"
 else
-    echo "❌ False positive rate: NEEDS IMPROVEMENT (> 5%)"
+    echo -e "❌ \033[31mFalse positive rate: NEEDS IMPROVEMENT (> 5%)\033[0m"
 fi
 
 if (( $(echo "$overall_detection_rate > 95.0" | bc -l 2>/dev/null || echo 0) )); then
-    echo "✅ Detection rate: EXCELLENT (> 95%)"
+    echo -e "✅ \033[32mDetection rate: EXCELLENT (> 95%)\033[0m"
 elif (( $(echo "$overall_detection_rate > 85.0" | bc -l 2>/dev/null || echo 0) )); then
-    echo "✅ Detection rate: GOOD (> 85%)"
+    echo -e "✅ \033[33mDetection rate: GOOD (> 85%)\033[0m"
 else
-    echo "❌ Detection rate: NEEDS IMPROVEMENT (< 85%)"
+    echo -e "❌ \033[31mDetection rate: NEEDS IMPROVEMENT (< 85%)\033[0m"
 fi
 
 echo ""
