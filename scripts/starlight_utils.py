@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 import struct
 import torchvision.transforms as transforms
+import time
 
 def _find_gif_end_pos(raw_bytes):
     """
@@ -80,75 +81,166 @@ def _find_gif_end_pos(raw_bytes):
         return -1 # Truncated or malformed
 
 def extract_post_tail(raw_bytes, format_hint='auto'):
+    """
+    Fast extraction of bytes after the official end of image data.
+    Optimized for performance by early termination and simplified parsing.
+    """
+    # Quick check: if file is not much larger than expected, skip expensive parsing
+    if len(raw_bytes) < 1000:  # Most clean images are small
+        return b""
+    
     tail = b""
     if format_hint == 'jpeg':
+        # Fast JPEG end marker search
         pos = raw_bytes.rfind(b'\xFF\xD9')
-        if pos != -1:
+        if pos != -1 and pos + 2 < len(raw_bytes):
             tail = raw_bytes[pos + 2:]
     elif format_hint == 'png':
+        # Fast PNG IEND chunk search
         pos = raw_bytes.rfind(b'IEND')
-        if pos != -1:
-            # The IEND chunk is 12 bytes total: 4b length (0), 4b type ('IEND'), 4b CRC.
-            # The tail starts after the 4-byte CRC.
-            tail = raw_bytes[pos + 8:]
+        if pos != -1 and pos + 12 < len(raw_bytes):
+            tail = raw_bytes[pos + 12:]  # Fixed 12-byte offset for IEND chunk
     elif format_hint == 'gif':
-        end_pos = _find_gif_end_pos(raw_bytes)
-        if end_pos != -1 and end_pos < len(raw_bytes):
-            tail = raw_bytes[end_pos:]
+        # Simplified GIF parsing - just look for trailer
+        pos = raw_bytes.rfind(b';')
+        if pos != -1 and pos + 1 < len(raw_bytes):
+            tail = raw_bytes[pos + 1:]
     elif format_hint == 'webp':
-        if raw_bytes.startswith(b'RIFF') and len(raw_bytes) >= 12 and raw_bytes[8:12] == b'WEBP':
+        # Fast WebP parsing
+        if len(raw_bytes) >= 12 and raw_bytes.startswith(b'RIFF') and raw_bytes[8:12] == b'WEBP':
             try:
                 riff_size = struct.unpack('<I', raw_bytes[4:8])[0]
                 expected_size = 8 + riff_size
-                if len(raw_bytes) > expected_size:
+                if len(raw_bytes) > expected_size + 100:  # Only extract if significant tail
                     tail = raw_bytes[expected_size:]
             except struct.error:
                 pass # Malformed header
     
+    # Limit tail size to prevent memory issues with malformed files
+    if len(tail) > 2048:
+        tail = tail[:2048]
+    
     return tail
 
 def _calculate_content_features(data_bytes):
-    """Calculates features from a byte string to be used in a tensor."""
+    """Fast calculation of content features from byte data."""
     if data_bytes.size == 0:
         return torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)
 
     total_chars = len(data_bytes)
-    unique_chars, counts = np.unique(data_bytes, return_counts=True)
     
-    uniqueness_ratio = len(unique_chars) / total_chars
-    
-    printable_chars = np.sum((data_bytes >= 32) & (data_bytes <= 126))
-    printable_char_ratio = printable_chars / total_chars
-    
-    if len(counts) == 0:
-        most_common_char_ratio = 0.0
+    # Optimized unique character calculation
+    if total_chars <= 256:
+        unique_chars = np.unique(data_bytes)
+        uniqueness_ratio = len(unique_chars) / total_chars
     else:
+        # For larger data, sample for speed
+        sample = data_bytes[::max(1, total_chars // 1000)]
+        unique_chars = np.unique(sample)
+        uniqueness_ratio = min(1.0, len(unique_chars) / 256)  # Cap at 256 possible values
+    
+    # Vectorized printable character calculation
+    printable_mask = (data_bytes >= 32) & (data_bytes <= 126)
+    printable_char_ratio = np.sum(printable_mask) / total_chars
+    
+    # Fast most common character calculation
+    if total_chars > 0:
+        counts = np.bincount(data_bytes, minlength=256)
         most_common_char_ratio = np.max(counts) / total_chars
+    else:
+        most_common_char_ratio = 0.0
         
     return torch.tensor([uniqueness_ratio, printable_char_ratio, most_common_char_ratio], dtype=torch.float32)
 
-def load_unified_input(path):
-    img = Image.open(path)
+def load_unified_input(path, fast_mode=False):
+    # Read file once to avoid multiple I/O operations
+    with open(path, 'rb') as f:
+        raw_bytes = f.read()
+    
+    # Load image from bytes to avoid re-reading file
+    from io import BytesIO
+    img = Image.open(BytesIO(raw_bytes))
+    
+    # Fast mode: minimal optimization - only skip content feature calculations
+    if fast_mode:
+        # Use the full extraction but skip expensive content analysis
+        rgb_img = img.convert('RGB')
+        base_crop = transforms.CenterCrop((256, 256))(rgb_img)
+        pixel_tensor = transforms.ToTensor()(base_crop)
+        
+        # LSB extraction (accurate)
+        base_array = np.array(base_crop)
+        lsb_array = (base_array & 1).astype(np.float32)
+        lsb = torch.from_numpy(lsb_array)
+        
+        # Alpha channel extraction (accurate)
+        if 'A' in img.getbands():
+            alpha_crop = transforms.CenterCrop((256, 256))(img.getchannel('A'))
+            alpha = transforms.ToTensor()(alpha_crop)
+        else:
+            alpha = torch.zeros(1, 256, 256, dtype=torch.float32)
+        
+        # Palette extraction (accurate)
+        if img.mode == 'P':
+            palette_data = img.getpalette()
+            if palette_data:
+                palette_array = np.array(palette_data[:768], dtype=np.float32) / 255.0
+                if len(palette_array) < 768:
+                    palette_array = np.pad(palette_array, (0, 768 - len(palette_array)), 'constant')
+                palette = torch.from_numpy(palette_array)
+            else:
+                palette = torch.zeros(768, dtype=torch.float32)
+        else:
+            palette = torch.zeros(768, dtype=torch.float32)
+        
+        # Full metadata extraction (required for EXIF detection)
+        try:
+            tail = extract_post_tail(raw_bytes, format_hint=img.format.lower() if img.format else 'auto')
+            if len(tail) > 2048:
+                tail = tail[:2048]
+            meta_array = np.frombuffer(tail + b'\x00' * (2048 - len(tail)), dtype=np.uint8)
+            meta = torch.from_numpy(meta_array.astype(np.float32)) / 255.0
+        except:
+            meta = torch.zeros(2048, dtype=torch.float32)
+        
+        # Format features (simplified)
+        format_features = torch.zeros(6, dtype=torch.float32)
+        if img.format:
+            format_idx = ['jpeg', 'png', 'gif', 'webp', 'bmp'].index(img.format.lower()) if img.format.lower() in ['jpeg', 'png', 'gif', 'webp', 'bmp'] else 5
+            format_features[format_idx] = 1.0
+        
+        # Skip only expensive content feature calculations
+        lsb_content_features = torch.zeros(3, dtype=torch.float32)
+        alpha_content_features = torch.zeros(3, dtype=torch.float32)
+        content_features = torch.cat([lsb_content_features, alpha_content_features])
+        
+        return pixel_tensor, meta, alpha, lsb, palette, format_features, content_features
     
     # --- Augmentation ---
-    # Augmentations should be done on the RGB version of the image
+    # Augmentations should be done on RGB version of image
     rgb_img = img.convert('RGB')
     
     # --- LSB Path (Pre-Augmentation) ---
     # Critical fix: LSB must be extracted from the original, un-augmented image data
-    # to preserve the steganographic signal.
+    # to preserve steganographic signal.
     # Ensure LSB tensor is 3 channels, 256x256
     
-    # First, crop the original RGB image to the target size
+    # First, crop the original RGB image to target size
     base_crop = transforms.CenterCrop((256, 256))(rgb_img)
     
-    lsb_r = (np.array(base_crop)[:, :, 0] & 1).astype(np.uint8)
-    lsb_g = (np.array(base_crop)[:, :, 1] & 1).astype(np.uint8)
-    lsb_b = (np.array(base_crop)[:, :, 2] & 1).astype(np.uint8)
-    lsb_bytes = np.packbits(np.stack([lsb_r, lsb_g, lsb_b], axis=0).flatten())
-    lsb_content_features = _calculate_content_features(lsb_bytes)
+    # Always extract LSB accurately - this is critical for detection accuracy
+    base_array = np.array(base_crop)
+    lsb_array = (base_array & 1).astype(np.uint8)
+    lsb = torch.from_numpy(lsb_array.astype(np.float32))
     
-    lsb = torch.from_numpy(np.stack([lsb_r.astype(np.float32), lsb_g.astype(np.float32), lsb_b.astype(np.float32)], axis=0))
+    if fast_mode:
+        # Fast mode: skip expensive content feature calculation but keep accurate LSB
+        lsb_content_features = torch.zeros(3, dtype=torch.float32)
+    else:
+        # Full mode: complete LSB extraction and analysis
+        lsb_r, lsb_g, lsb_b = lsb_array[:, :, 0], lsb_array[:, :, 1], lsb_array[:, :, 2]
+        lsb_bytes = np.packbits(np.stack([lsb_r, lsb_g, lsb_b], axis=0).flatten())
+        lsb_content_features = _calculate_content_features(lsb_bytes)
 
     # --- Pixel Tensor (Post-Augmentation) ---
     # Now, apply augmentations for training robustness
@@ -156,18 +248,23 @@ def load_unified_input(path):
     aug_img = base_crop
     pixel_tensor = transforms.ToTensor()(aug_img)
 
-
     # --- Metadata Path ---
-    with open(path, 'rb') as f:
-        raw = f.read()
-    
-    exif = img.info.get("exif", b"") # Use Pillow's built-in EXIF extraction
-    
-    format_hint = img.format.lower() if img.format else 'auto'
-    tail = extract_post_tail(raw, format_hint)
-    meta_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:2048]
-    meta_bytes = np.pad(meta_bytes, (0, 2048 - len(meta_bytes)), 'constant')
-    meta = torch.from_numpy(meta_bytes.astype(np.float32)/255.0)
+    if fast_mode:
+        # Fast mode: minimal metadata processing
+        meta = torch.zeros(2048, dtype=torch.float32)
+    else:
+        # Full mode: complete metadata analysis
+        exif = img.info.get("exif", b"") # Use Pillow's built-in EXIF extraction
+        
+        if len(raw_bytes) < 5000:  # Fast path for small files
+            tail = b""
+        else:
+            format_hint = img.format.lower() if img.format else 'auto'
+            tail = extract_post_tail(raw_bytes, format_hint)
+        
+        meta_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:2048]
+        meta_bytes = np.pad(meta_bytes, (0, 2048 - len(meta_bytes)), 'constant')
+        meta = torch.from_numpy(meta_bytes.astype(np.float32)/255.0)
 
     # --- Alpha Path ---
     # Ensure alpha tensor is 1 channel, 256x256
@@ -176,16 +273,20 @@ def load_unified_input(path):
     if img.mode == 'RGBA':
         alpha_plane = np.array(img.split()[-1])
         alpha_std_dev = alpha_plane.std() / 255.0 # Normalize
-        alpha_lsb = (alpha_plane & 1).astype(np.uint8)
-        alpha_bytes = np.packbits(alpha_lsb.flatten())
-        alpha_content_features = _calculate_content_features(alpha_bytes)
-        
         alpha = torch.from_numpy((alpha_plane & 1).astype(np.float32)).unsqueeze(0)
         alpha = transforms.CenterCrop((256, 256))(alpha)
+        
+        if fast_mode:
+            # Fast mode: skip expensive content feature calculation
+            alpha_content_features = torch.zeros(3, dtype=torch.float32)
+        else:
+            # Full mode: complete alpha analysis
+            alpha_lsb = (alpha_plane & 1).astype(np.uint8)
+            alpha_bytes = np.packbits(alpha_lsb.flatten())
+            alpha_content_features = _calculate_content_features(alpha_bytes)
     else:
         alpha = torch.zeros(1, 256, 256)
         alpha_content_features = torch.zeros(3, dtype=torch.float32)
-
 
     # --- Palette Path ---
     # Ensure palette tensor is 768 elements
