@@ -107,17 +107,32 @@ def extract_post_tail(raw_bytes, format_hint='auto'):
     
     return tail
 
-def load_multi_input(path, transform=None):
+def load_unified_input(path):
     img = Image.open(path)
     
     # --- Augmentation ---
     # Augmentations should be done on the RGB version of the image
     rgb_img = img.convert('RGB')
-    if transform:
-        aug_img = transform(rgb_img)
-    else:
-        crop = transforms.CenterCrop((256, 256))
-        aug_img = crop(rgb_img)
+    
+    # --- LSB Path (Pre-Augmentation) ---
+    # Critical fix: LSB must be extracted from the original, un-augmented image data
+    # to preserve the steganographic signal.
+    # Ensure LSB tensor is 3 channels, 256x256
+    
+    # First, crop the original RGB image to the target size
+    base_crop = transforms.CenterCrop((256, 256))(rgb_img)
+    
+    lsb_r = (np.array(base_crop)[:, :, 0] & 1).astype(np.float32)
+    lsb_g = (np.array(base_crop)[:, :, 1] & 1).astype(np.float32)
+    lsb_b = (np.array(base_crop)[:, :, 2] & 1).astype(np.float32)
+    lsb = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
+
+    # --- Pixel Tensor (Post-Augmentation) ---
+    # Now, apply augmentations for training robustness
+    # For now, we use a standard crop, but this is where other transforms would go.
+    aug_img = base_crop
+    pixel_tensor = transforms.ToTensor()(aug_img)
+
 
     # --- Metadata Path ---
     with open(path, 'rb') as f:
@@ -129,25 +144,19 @@ def load_multi_input(path, transform=None):
         exif = raw[pos+4:pos+4+length-2]
     format_hint = img.format.lower() if img.format else 'auto'
     tail = extract_post_tail(raw, format_hint)
-    meta_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:1024]
-    meta_bytes = np.pad(meta_bytes, (0, 1024 - len(meta_bytes)), 'constant')
+    meta_bytes = np.frombuffer(exif + tail, dtype=np.uint8)[:2048]
+    meta_bytes = np.pad(meta_bytes, (0, 2048 - len(meta_bytes)), 'constant')
     meta = torch.from_numpy(meta_bytes.astype(np.float32)/255.0)
 
     # --- Alpha Path ---
     # Ensure alpha tensor is 1 channel, 256x256
     if img.mode == 'RGBA':
-        alpha_plane = np.array(img.split()[-1]).astype(np.float32) / 255.0
-        alpha = torch.from_numpy(alpha_plane).unsqueeze(0) # Add channel dim
+        alpha_plane = np.array(img.split()[-1])
+        alpha_lsb = (alpha_plane & 1).astype(np.float32)
+        alpha = torch.from_numpy(alpha_lsb).unsqueeze(0)
+        alpha = transforms.CenterCrop((256, 256))(alpha)
     else:
-        alpha = torch.zeros(1, img.height, img.width) # Use original image dimensions
-    alpha = transforms.CenterCrop((256, 256))(alpha) # Crop to 256x256
-
-    # --- LSB Path ---
-    # Ensure LSB tensor is 3 channels, 256x256
-    lsb_r = (np.array(aug_img)[:, :, 0] & 1).astype(np.float32)
-    lsb_g = (np.array(aug_img)[:, :, 1] & 1).astype(np.float32)
-    lsb_b = (np.array(aug_img)[:, :, 2] & 1).astype(np.float32)
-    lsb = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
+        alpha = torch.zeros(1, 256, 256)
 
     # --- Palette Path ---
     # Ensure palette tensor is 768 elements
@@ -158,4 +167,15 @@ def load_multi_input(path, transform=None):
         palette_bytes = np.zeros(768, dtype=np.uint8)
     palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
 
-    return meta, alpha, lsb, palette
+    # --- Format Features Path ---
+    # Simplified format features to match the model's expectations.
+    width, height = img.size
+    format_features = torch.tensor([
+        1.0 if img.mode == 'RGBA' else 0.0,  # has_alpha
+        1.0 if img.mode == 'P' else 0.0,    # is_palette
+        1.0 if img.mode == 'RGB' else 0.0,   # is_rgb
+        float(width) / 256.0,          # width_norm
+        float(height) / 256.0            # height_norm
+    ], dtype=torch.float32)
+
+    return pixel_tensor, meta, alpha, lsb, palette, format_features
