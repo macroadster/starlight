@@ -107,6 +107,26 @@ def extract_post_tail(raw_bytes, format_hint='auto'):
     
     return tail
 
+def _calculate_content_features(data_bytes):
+    """Calculates features from a byte string to be used in a tensor."""
+    if data_bytes.size == 0:
+        return torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)
+
+    total_chars = len(data_bytes)
+    unique_chars, counts = np.unique(data_bytes, return_counts=True)
+    
+    uniqueness_ratio = len(unique_chars) / total_chars
+    
+    printable_chars = np.sum((data_bytes >= 32) & (data_bytes <= 126))
+    printable_char_ratio = printable_chars / total_chars
+    
+    if len(counts) == 0:
+        most_common_char_ratio = 0.0
+    else:
+        most_common_char_ratio = np.max(counts) / total_chars
+        
+    return torch.tensor([uniqueness_ratio, printable_char_ratio, most_common_char_ratio], dtype=torch.float32)
+
 def load_unified_input(path):
     img = Image.open(path)
     
@@ -122,10 +142,13 @@ def load_unified_input(path):
     # First, crop the original RGB image to the target size
     base_crop = transforms.CenterCrop((256, 256))(rgb_img)
     
-    lsb_r = (np.array(base_crop)[:, :, 0] & 1).astype(np.float32)
-    lsb_g = (np.array(base_crop)[:, :, 1] & 1).astype(np.float32)
-    lsb_b = (np.array(base_crop)[:, :, 2] & 1).astype(np.float32)
-    lsb = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
+    lsb_r = (np.array(base_crop)[:, :, 0] & 1).astype(np.uint8)
+    lsb_g = (np.array(base_crop)[:, :, 1] & 1).astype(np.uint8)
+    lsb_b = (np.array(base_crop)[:, :, 2] & 1).astype(np.uint8)
+    lsb_bytes = np.packbits(np.stack([lsb_r, lsb_g, lsb_b], axis=0).flatten())
+    lsb_content_features = _calculate_content_features(lsb_bytes)
+    
+    lsb = torch.from_numpy(np.stack([lsb_r.astype(np.float32), lsb_g.astype(np.float32), lsb_b.astype(np.float32)], axis=0))
 
     # --- Pixel Tensor (Post-Augmentation) ---
     # Now, apply augmentations for training robustness
@@ -150,13 +173,21 @@ def load_unified_input(path):
 
     # --- Alpha Path ---
     # Ensure alpha tensor is 1 channel, 256x256
+    has_alpha = 1.0 if img.mode == 'RGBA' else 0.0
+    alpha_std_dev = 0.0
     if img.mode == 'RGBA':
         alpha_plane = np.array(img.split()[-1])
-        alpha_lsb = (alpha_plane & 1).astype(np.float32)
-        alpha = torch.from_numpy(alpha_lsb).unsqueeze(0)
+        alpha_std_dev = alpha_plane.std() / 255.0 # Normalize
+        alpha_lsb = (alpha_plane & 1).astype(np.uint8)
+        alpha_bytes = np.packbits(alpha_lsb.flatten())
+        alpha_content_features = _calculate_content_features(alpha_bytes)
+        
+        alpha = torch.from_numpy((alpha_plane & 1).astype(np.float32)).unsqueeze(0)
         alpha = transforms.CenterCrop((256, 256))(alpha)
     else:
         alpha = torch.zeros(1, 256, 256)
+        alpha_content_features = torch.zeros(3, dtype=torch.float32)
+
 
     # --- Palette Path ---
     # Ensure palette tensor is 768 elements
@@ -171,11 +202,14 @@ def load_unified_input(path):
     # Simplified format features to match the model's expectations.
     width, height = img.size
     format_features = torch.tensor([
-        1.0 if img.mode == 'RGBA' else 0.0,  # has_alpha
+        has_alpha,
+        alpha_std_dev,
         1.0 if img.mode == 'P' else 0.0,    # is_palette
         1.0 if img.mode == 'RGB' else 0.0,   # is_rgb
         float(width) / 256.0,          # width_norm
         float(height) / 256.0            # height_norm
     ], dtype=torch.float32)
+    
+    content_features = torch.cat([lsb_content_features, alpha_content_features])
 
-    return pixel_tensor, meta, alpha, lsb, palette, format_features
+    return pixel_tensor, meta, alpha, lsb, palette, format_features, content_features
