@@ -1,383 +1,443 @@
-# Claude CLI - Project Starlight Action Plan
-**Week of November 11-15, 2025**
+# Claude CLI - Project Starlight Action Plan (Refreshed)
+**Updated: November 15, 2025**
+**Status: Production Stable, Research Track Active**
 
 ---
 
-## 📋 Context Summary (READ THIS FIRST)
+## 🎯 CRITICAL CONTEXT (READ THIS FIRST)
 
-You are Claude working in CLI/terminal mode on Project Starlight - a steganography detection system. This plan bridges the memory gap between browser and terminal sessions.
+### Current System State
+- **Production Model**: `detector_balanced.onnx` + special cases
+- **Performance**: 0.32% FP rate, 96.40% detection rate ✅
+- **Status**: FULLY OPERATIONAL - verified 2025-11-15
+- **Dataset**: 22,630+ files across 6 datasets (6,101 stego pairs verified)
 
-### Critical Background
-- **Current Status**: v2.0 ensemble achieves 96-98% accuracy but only 2 img/sec (too slow for blockchain)
-- **Major Problem Identified**: Pixel-only models CAN'T SEE EXIF/EOI steganography (outside pixel array)
-- **Solution**: v3 dual-input architecture (pixel tensor + metadata tensor from raw bytes)
-- **Your Role**: Data generation pipeline design & validation architecture
+### Your Mission
+You are Claude working in **Track B: Research Path** - pursuing generalization without special cases. The production system (Track A) is stable and requires no immediate changes.
 
-### Key Lessons Learned (DON'T REPEAT THESE MISTAKES)
-1. ❌ RGB-only clean images + alpha-channel stego → model learns "alpha channel = stego"
-2. ❌ Resizing images to uniform dimensions destroys steganography information
-3. ❌ EOI initially limited to JPEG markers only (needs expansion)
-4. ❌ Individual codebases merged later → slow, use unified codebase from start
+### Key Lesson Learned
+**Special cases elimination failed** - 17.82% FP rate without them vs 0.32% with them. Special cases encode essential domain knowledge that models cannot yet learn from training data alone.
 
 ---
 
-## 🎯 Week Objectives
+## 📋 Two-Track Strategy
 
-### Primary Deliverable
-**Design & validate training data generation pipeline for v3 dual-input model**
+### Track A: Production (Stable - ChatGPT/Gemini ownership)
+- Maintain `detector_balanced.onnx` + special cases
+- Monitor weekly health checks
+- Integrate Grok's multi-format EXIF/EOI
 
-### Success Criteria
-- [ ] Balanced dataset across ALL 5 methods (alpha, LSB, EXIF, EOI, palette)
-- [ ] No information-destroying preprocessing
-- [ ] Raw byte extraction working for EXIF + EOI
-- [ ] Validation scripts confirm stego visibility in both input streams
+### Track B: Research (Your Focus)
+- Fix dataset quality issues
+- Develop V3/V4 architecture
+- Train models that learn domain constraints
+- Timeline: 18-24 months to true generalization
 
 ---
 
-## 📅 Daily Breakdown
+## 🔥 Your Primary Deliverable: Dataset Reconstruction
 
-### Monday (Nov 11) - Architecture & Spec Review
+### Problem Identified
+Current training data has fundamental issues preventing generalization:
 
-**Morning: Deep Dive into v3 Spec**
+1. **Invalid Labels**: Alpha steganography labels on RGB images
+2. **Format Mismatches**: Clean images don't match stego format distribution
+3. **Corrupted Signals**: Augmentations destroying LSB data
+4. **Missing Negatives**: No examples teaching what steganography is NOT
+
+### Required Actions
+
+#### Week 1: Dataset Validation & Repair Pipeline
+
+**Monday: Assessment**
 ```bash
-# Read these files in order:
 cd ~/starlight
-cat docs/chatgpt_proposal.md          # v3 dual-input architecture
-cat docs/survey-consolidated.md       # Current status & lessons learned
-cat docs/STEGO_FORMAT_SPEC.md         # If exists - current encoding rules
+
+# Analyze current datasets
+python scripts/analyze_datasets.py --output docs/claude/dataset_audit.json
+
+# Check for impossible labels
+python scripts/validate_labels.py \
+  --datasets "datasets/*_submission_*/stego" \
+  --report docs/claude/invalid_labels.md
 ```
 
-**Tasks:**
-1. Document your understanding of dual-input model architecture
-2. Note all 5 steganography methods and their "visibility":
-   - alpha: visible in PIL Image (RGBA channel)
-   - palette: visible in PIL Image (P mode indices)
-   - rgb_lsb: visible in PIL Image (pixel values)
-   - exif: INVISIBLE in np.array - need raw bytes
-   - eoi: INVISIBLE in np.array - need raw bytes after 0xFFD9
-3. Create `docs/claude/architecture_notes.md` with findings
+**Expected Findings**:
+- RGB images labeled as alpha steganography
+- Format distribution mismatches
+- Extraction failures
+- Label inconsistencies between agents
 
-**Output:** Architecture understanding document
+**Tuesday: Create Repair Pipeline**
 
----
+Build `scripts/dataset_repair.py`:
 
-### Tuesday (Nov 12) - Data Generation Design
-
-**Morning: Design Data Pipeline**
-
-**Create:** `scripts/data_gen/dual_input_dataset.py`
-
-**Requirements:**
 ```python
-class DatasetGenerator:
-    """
-    Generate balanced stego/clean dataset for dual-input training
+class DatasetRepairer:
+    """Fix fundamental dataset quality issues"""
     
-    Critical Rules:
-    - NO image resizing (destroys stego)
-    - Equal distribution across 5 methods
-    - Clean images must have SAME format distribution as stego
-    - Save both PIL-compatible and raw bytes
-    """
+    def validate_alpha_labels(self, img_path, label):
+        """Remove alpha labels from RGB images"""
+        img = Image.open(img_path)
+        if label == 'alpha' and img.mode != 'RGBA':
+            return None  # Invalid label
+        return label
     
-    def generate_clean_image(self, method_format):
-        """
-        Generate clean image in SAME format as stego method
+    def verify_extraction(self, img_path, method):
+        """Confirm steganography is actually present"""
+        try:
+            result = extract_message(img_path, method)
+            return result is not None and len(result) > 0
+        except:
+            return False
+    
+    def balance_format_distribution(self, clean_dir, stego_dir):
+        """Ensure clean images match stego format distribution"""
+        stego_formats = count_formats(stego_dir)
+        clean_formats = count_formats(clean_dir)
         
-        Args:
-            method_format: 'rgba' | 'rgb' | 'palette' | 'jpeg_exif' | 'jpeg_eoi'
-        
-        Returns:
-            PIL.Image in correct format
-        """
-        pass
-    
-    def embed_alpha(self, img, payload):
-        """Alpha channel embedding (v2.0 spec)"""
-        pass
-    
-    def embed_lsb(self, img, payload):
-        """RGB LSB embedding"""
-        pass
-    
-    def embed_palette(self, img, payload):
-        """Palette index embedding"""
-        pass
-    
-    def embed_exif(self, img_path, payload):
-        """EXIF metadata embedding (raw bytes)"""
-        pass
-    
-    def embed_eoi(self, img_path, payload):
-        """Post-EOI tail embedding (raw bytes)"""
-        pass
-    
-    def extract_dual_inputs(self, img_path):
-        """
-        Extract both inputs for training:
-        - pixel_tensor: from PIL Image
-        - metadata_tensor: from raw bytes (EXIF + EOI)
-        
-        Returns:
-            (pixel_np, metadata_np, labels)
-        """
-        pass
+        # Generate additional clean images to match
+        for format, count in stego_formats.items():
+            shortage = count - clean_formats.get(format, 0)
+            if shortage > 0:
+                generate_clean_images(format, shortage)
 ```
 
-**Afternoon: Validation Logic**
+**Wednesday: Add Negative Examples**
+
+Create `scripts/generate_negatives.py`:
+
 ```python
-def validate_stego_visibility(img_path, method):
-    """
-    Verify stego is actually present in correct input stream
+class NegativeExampleGenerator:
+    """Generate examples teaching what steganography is NOT"""
     
-    For alpha/lsb/palette: check pixel_tensor
-    For exif/eoi: check metadata_tensor (raw bytes)
-    """
-    pass
+    def rgb_with_alpha_check(self):
+        """RGB images that should NOT be detected as alpha"""
+        # Generate diverse RGB images with various characteristics
+        pass
+    
+    def uniform_alpha_images(self):
+        """RGBA images with uniform alpha (no hidden data)"""
+        # All pixels alpha=255
+        pass
+    
+    def natural_lsb_noise(self):
+        """Clean images with natural LSB variation"""
+        # GIF dithering, JPEG compression artifacts
+        pass
+    
+    def repetitive_patterns(self):
+        """Images with repetitive hex patterns (not stego)"""
+        # Solid colors, gradients, patterns
+        pass
 ```
 
-**Output:** Complete data generation script design
+**Thursday: Comprehensive Validation**
 
----
+Create `scripts/validate_repaired_dataset.py`:
 
-### Wednesday (Nov 13) - Implementation & Testing
-
-**Morning: Implement Core Functions**
-```bash
-cd ~/starlight/scripts/data_gen
-python dual_input_dataset.py --test-mode
+```python
+def validate_dataset(dataset_path):
+    """Verify dataset meets quality requirements"""
+    checks = {
+        'no_invalid_labels': check_label_validity(),
+        'extraction_verified': verify_all_extractions(),
+        'format_balanced': check_format_balance(),
+        'negatives_present': count_negative_examples(),
+        'no_corrupted_signals': verify_signal_integrity()
+    }
+    
+    return all(checks.values()), checks
 ```
 
-**Test Each Method Independently:**
-```bash
-# Test alpha
-python dual_input_dataset.py --method alpha --samples 10 --validate
+**Friday: Documentation & Handoff**
 
-# Test LSB
-python dual_input_dataset.py --method lsb --samples 10 --validate
+Create `docs/claude/DATASET_V3_SPEC.md`:
 
-# Test palette
-python dual_input_dataset.py --method palette --samples 10 --validate
+```markdown
+# Dataset V3 Specification
 
-# Test EXIF (critical - was invisible before)
-python dual_input_dataset.py --method exif --samples 10 --validate
+## Quality Requirements
+- ✅ No impossible labels (alpha on RGB)
+- ✅ All stego images extraction-verified
+- ✅ Format-matched clean images
+- ✅ Negative examples for each special case
+- ✅ No signal-corrupting preprocessing
 
-# Test EOI (critical - was invisible before)
-python dual_input_dataset.py --method eoi --samples 10 --validate
-```
-
-**Validation Checklist:**
-- [ ] Stego payload recoverable from appropriate tensor
-- [ ] Clean images same format distribution as stego
-- [ ] No image resizing applied
-- [ ] EXIF blob extracted correctly from raw bytes
-- [ ] EOI tail extracted correctly after 0xFFD9
-- [ ] Metadata tensor properly formatted (1024-dim, normalized)
-
-**Output:** Working implementation with per-method validation
-
----
-
-### Thursday (Nov 14) - Full Pipeline & Documentation
-
-**Morning: Generate Balanced Dataset**
-```bash
-# Generate full training set
-python dual_input_dataset.py \
-  --output data/training/v3_dual_input \
-  --samples-per-method 1000 \
-  --clean-samples 5000 \
-  --validate-all
-```
-
-**Dataset Structure:**
-```
-data/training/v3_dual_input/
+## Structure
+data/training/v3_repaired/
 ├── clean/
-│   ├── rgba/       # 1000 images (matches alpha format)
-│   ├── rgb/        # 2000 images (matches lsb format)
-│   ├── palette/    # 1000 images (matches palette format)
-│   └── jpeg/       # 1000 images (matches exif/eoi format)
+│   ├── rgb/           # Matches LSB format distribution
+│   ├── rgba/          # Matches alpha format distribution
+│   ├── palette/       # Matches palette format distribution
+│   └── jpeg/          # Matches EXIF/EOI format distribution
 ├── stego/
-│   ├── alpha/      # 1000 images
-│   ├── lsb/        # 1000 images
-│   ├── palette/    # 1000 images
-│   ├── exif/       # 1000 images
-│   └── eoi/        # 1000 images
-├── metadata/
-│   └── labels.json # All labels + method annotations
-└── validation_report.json
+│   ├── alpha/         # All verified extraction
+│   ├── lsb/           # All verified extraction
+│   ├── palette/       # All verified extraction
+│   ├── exif/          # All verified extraction
+│   └── eoi/           # All verified extraction
+├── negatives/
+│   ├── rgb_no_alpha/  # Teaching: RGB cannot have alpha
+│   ├── uniform_alpha/ # Teaching: Uniform alpha = no data
+│   ├── natural_noise/ # Teaching: Dithering ≠ stego
+│   └── patterns/      # Teaching: Repetitive ≠ stego
+└── manifest_v3.jsonl  # Signed manifest with all metadata
 ```
-
-**Afternoon: Documentation**
-
-Create `docs/claude/DATA_GENERATION_V3.md`:
-```markdown
-# V3 Dual-Input Data Generation Pipeline
-
-## Overview
-[Architecture explanation]
-
-## Critical Differences from V2
-1. No image resizing
-2. Format-matched clean images
-3. Raw byte extraction for EXIF/EOI
-4. Dual validation (pixel + metadata streams)
-
-## Usage
-[Command examples]
-
-## Validation
-[How to verify stego visibility]
-
-## Known Issues
-[Any limitations or edge cases]
-```
-
-**Output:** Complete training dataset + documentation
 
 ---
 
-### Friday (Nov 15) - Integration & Handoff
+## 🏗️ Week 2: V3/V4 Architecture Development
 
-**Morning: Integration Testing**
+### Goal
+Merge dual-input (Claude V3) + multi-stream (Gemini V4) architectures.
 
-Create `scripts/validate_v3_pipeline.py`:
+**Monday: Architecture Design**
+
+Create `docs/claude/V3_V4_UNIFIED_SPEC.md`:
+
+```markdown
+# Unified Multi-Stream Architecture
+
+## Input Streams (5 total)
+1. **Pixel Tensor**: (B, 3, H, W) - RGB content
+2. **Alpha Tensor**: (B, 1, H, W) - Alpha channel (zero-padded if absent)
+3. **LSB Tensor**: (B, 3, H, W) - Extracted LSB planes
+4. **Palette Tensor**: (B, 256, 3) - Color palette (zero-padded if absent)
+5. **Metadata Tensor**: (B, 2048) - EXIF + EOI bytes
+
+## Processing Pipeline
+Each stream → Specialized backbone → Feature fusion → Classification
+
+## Key Innovations
+- LSB extraction BEFORE any augmentation
+- Format-aware feature extraction
+- Separate confidence heads per method
+- Constraint validation layer (learns special cases)
+```
+
+**Tuesday-Thursday: Implementation**
+
+Build `models/unified_detector.py`:
+
 ```python
-def test_dataloader_integration():
-    """Verify v3 dataset works with dual-input model"""
-    # Test pixel tensor shape: (B, 3, H, W)
-    # Test metadata tensor shape: (B, 1024)
-    # Test label accuracy
-    pass
-
-def test_method_coverage():
-    """Verify all 5 methods represented"""
-    pass
-
-def test_stego_detectability():
-    """Run baseline model on each method"""
-    # Should achieve >random accuracy on each method
-    pass
+class UnifiedStarlightDetector(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        # Specialized backbones
+        self.pixel_backbone = ResNet18(in_channels=3)
+        self.alpha_backbone = SmallCNN(in_channels=1)
+        self.lsb_backbone = SmallCNN(in_channels=3)
+        self.palette_backbone = MLP(input_dim=768)
+        self.metadata_backbone = MLP(input_dim=2048)
+        
+        # Feature fusion
+        self.fusion = AttentionFusion(num_streams=5)
+        
+        # Classification heads
+        self.stego_classifier = nn.Linear(fusion_dim, 2)
+        self.method_classifier = nn.Linear(fusion_dim, 5)
+        
+        # Constraint validation (learns special cases)
+        self.constraint_validator = ConstraintNet(fusion_dim)
+    
+    def forward(self, pixel, alpha, lsb, palette, metadata):
+        # Extract features from each stream
+        f_pixel = self.pixel_backbone(pixel)
+        f_alpha = self.alpha_backbone(alpha)
+        f_lsb = self.lsb_backbone(lsb)
+        f_palette = self.palette_backbone(palette)
+        f_metadata = self.metadata_backbone(metadata)
+        
+        # Fuse features
+        fused = self.fusion([f_pixel, f_alpha, f_lsb, f_palette, f_metadata])
+        
+        # Classify
+        stego_logits = self.stego_classifier(fused)
+        method_logits = self.method_classifier(fused)
+        
+        # Validate constraints
+        constraint_scores = self.constraint_validator(fused)
+        
+        return stego_logits, method_logits, constraint_scores
 ```
 
-**Afternoon: Final Deliverable Package**
+**Friday: Integration Testing**
 
-Create `docs/claude/WEEK_DELIVERABLE.md`:
-```markdown
-# Week of Nov 11-15: V3 Data Pipeline Deliverable
-
-## ✅ Completed
-- [x] V3 dual-input data generation pipeline
-- [x] Validation for all 5 stego methods
-- [x] 10,000 balanced training samples
-- [x] Documentation for next team member
-- [x] Integration tests
-
-## 📊 Validation Results
-[Include accuracy metrics per method]
-
-## 🔄 Next Steps for Team
-1. Train v3 dual-input model on this dataset
-2. Compare performance vs v2 ensemble
-3. Optimize metadata tensor extraction
-4. Benchmark inference speed
-
-## 📝 Notes for Next Developer
-[Critical insights, gotchas, recommendations]
-```
-
-**Output:** Complete handoff package
-
----
-
-## 🚨 Red Flags to Watch For
-
-### During Implementation
-- [ ] If you catch yourself resizing images → STOP, violates v3 design
-- [ ] If EXIF/EOI validation fails → check raw byte extraction
-- [ ] If clean images all RGB while stego has alpha → format mismatch detected
-- [ ] If any method below 60% detection → stego might not be visible in correct tensor
-
-### Before Committing
-- [ ] Run full validation suite
-- [ ] Check all 5 methods individually
-- [ ] Verify dataset balance (no method overrepresented)
-- [ ] Test on different image formats (PNG, JPEG, etc.)
-
----
-
-## 📂 File Structure You'll Create
-
-```
-starlight/
-├── docs/
-│   └── claude/
-│       ├── architecture_notes.md          # Monday
-│       ├── DATA_GENERATION_V3.md          # Thursday
-│       └── WEEK_DELIVERABLE.md            # Friday
-├── scripts/
-│   ├── data_gen/
-│   │   └── dual_input_dataset.py          # Tuesday-Wednesday
-│   └── validate_v3_pipeline.py            # Friday
-└── data/
-    └── training/
-        └── v3_dual_input/                 # Thursday
-            ├── clean/
-            ├── stego/
-            └── metadata/
-```
-
----
-
-## 🤝 Coordination Points
-
-### Share Progress Daily
 ```bash
-# Commit your work daily
-git add docs/claude/ scripts/data_gen/
-git commit -m "Claude CLI: [Day] - [What you completed]"
-git push origin claude-v3-data-pipeline
+# Test unified model with repaired dataset
+python scripts/test_unified_model.py \
+  --dataset data/training/v3_repaired \
+  --model models/unified_detector.py \
+  --report docs/claude/unified_model_test.md
 ```
 
-### Communication
-- Update `docs/claude/PROGRESS.md` daily
-- Note any blockers immediately in `docs/claude/BLOCKERS.md`
-- If you discover new issues with v2.0 → document in lessons learned
+---
+
+## 🎯 Week 3: Training Strategy
+
+### Advanced Training Techniques
+
+**Create `scripts/train_unified.py`**:
+
+```python
+class UnifiedTrainer:
+    def __init__(self, model, config):
+        self.model = model
+        
+        # Multi-objective loss
+        self.loss_weights = {
+            'stego_detection': 1.0,
+            'method_classification': 0.5,
+            'constraint_validation': 0.3
+        }
+        
+        # Balanced sampling per method
+        self.sampler = BalancedMethodSampler(dataset)
+        
+    def training_step(self, batch):
+        # Standard forward pass
+        stego_logits, method_logits, constraints = self.model(
+            batch['pixel'], batch['alpha'], batch['lsb'],
+            batch['palette'], batch['metadata']
+        )
+        
+        # Multi-objective loss
+        loss_stego = F.cross_entropy(stego_logits, batch['is_stego'])
+        loss_method = F.cross_entropy(method_logits, batch['method'])
+        loss_constraint = constraint_loss(constraints, batch)
+        
+        total_loss = (
+            self.loss_weights['stego_detection'] * loss_stego +
+            self.loss_weights['method_classification'] * loss_method +
+            self.loss_weights['constraint_validation'] * loss_constraint
+        )
+        
+        return total_loss
+```
 
 ---
 
-## 💡 Key Reminders
+## 🔍 Week 4: Validation & Benchmarking
 
-1. **You are NOT training the model** - just generating the data pipeline
-2. **Focus on data quality** over quantity initially (validate thoroughly)
-3. **EXIF and EOI were previously invisible** - this is your key contribution
-4. **No resizing** - repeat this 100 times before preprocessing anything
-5. **Document everything** - next Claude (or team member) needs context
+### Cross-Dataset Testing
 
----
+**Create comprehensive validation**:
 
-## 📚 Reference Materials
+```bash
+# Test on all datasets
+python scripts/validate_unified.py \
+  --model models/unified_detector.onnx \
+  --datasets "datasets/*_submission_*/clean" \
+  --datasets "datasets/*_submission_*/stego" \
+  --output docs/claude/validation_results.json
 
-- `docs/chatgpt_proposal.md` - V3 architecture (dual-input model)
-- `docs/survey-consolidated.md` - Lessons learned from v2.0
-- `docs/STEGO_FORMAT_SPEC.md` - Encoding specifications (if exists)
+# Compare against production baseline
+python scripts/compare_models.py \
+  --baseline models/detector_balanced.onnx \
+  --experimental models/unified_detector.onnx \
+  --report docs/claude/model_comparison.md
+```
 
----
-
-## 🎯 Success Definition
-
-By EOD Friday, any team member should be able to:
-1. Clone the repo
-2. Run your data generation pipeline
-3. Get a balanced dataset with all 5 methods
-4. Validate stego is visible in correct input streams
-5. Start training v3 dual-input model immediately
-
-**If they can't do all 5 steps, the deliverable is incomplete.**
+**Target Metrics**:
+- FP rate < 5% (eventual goal: < 1%)
+- Detection rate > 95%
+- Method classification > 90%
+- Consistent across all datasets
 
 ---
 
-*Last Updated: Nov 8, 2025*  
-*Next Review: Nov 15, 2025*  
-*Plan Author: Claude (Browser) for Claude (CLI)*
+## 🚨 Critical Checkpoints
+
+### Before Each Training Run
+- [ ] Verify no signal-corrupting augmentations
+- [ ] Confirm LSB extraction happens BEFORE augmentation
+- [ ] Check format distribution balance
+- [ ] Validate no impossible labels
+- [ ] Ensure negative examples included
+
+### Daily Progress Logging
+```bash
+# Update daily
+git add docs/claude/
+git commit -m "Claude Research: Day N - [accomplishment]"
+git push origin claude-research-track
+```
+
+---
+
+## 📚 Essential Reading
+
+Before starting, review these files:
+1. `docs/phase1.md` - Two-track strategy
+2. `docs/status.md` - Why special cases are necessary
+3. `docs/chatgpt_proposal.md` - V3 architecture
+4. `docs/survey-consolidated.md` - Lessons learned
+
+---
+
+## 🎯 Success Criteria
+
+**By End of Month 1 (Your Focus)**:
+- ✅ Repaired dataset with 0 invalid labels
+- ✅ Negative examples for all special cases
+- ✅ Unified V3/V4 architecture implemented
+- ✅ Initial training runs showing improvement
+
+**By Month 6 (Team Effort)**:
+- FP rate < 5% without special cases
+- Method classification > 90%
+- Consistent cross-dataset performance
+
+**By Month 18-24 (Long-term Goal)**:
+- FP rate < 1% without special cases
+- Models that learn constraint validation
+- True generalization achieved
+
+---
+
+## 💡 Key Principles
+
+1. **Dataset Quality First**: No amount of architecture sophistication fixes bad training data
+2. **Validate Everything**: Every stego image must have verified extraction
+3. **Format Awareness**: Clean images must match stego format distribution
+4. **Teach Negatives**: Models need examples of what steganography is NOT
+5. **Document Thoroughly**: Next Claude needs full context
+
+---
+
+## 🔗 Coordination
+
+### Daily Sync
+- Update `docs/claude/PROGRESS.md`
+- Note blockers in `docs/claude/BLOCKERS.md`
+- Commit changes daily
+
+### Weekly Review
+- Friday: Submit progress to `ai_consensus.md`
+- Compare notes with Gemini (implementation) and ChatGPT (training)
+- Align with Grok on format expansions
+
+---
+
+## 📅 Timeline Summary
+
+| Week | Focus | Deliverable |
+|------|-------|-------------|
+| 1 | Dataset Repair | Validated, repaired dataset with negatives |
+| 2 | Architecture | Unified V3/V4 multi-stream model |
+| 3 | Training | Initial training runs with multi-objective loss |
+| 4 | Validation | Cross-dataset benchmarking vs production |
+
+---
+
+**Remember**: You're not trying to replace the production system immediately. You're building the foundation for true generalization over the next 18-24 months. Focus on dataset quality and architectural innovations that will enable models to learn what special cases currently encode.
+
+**Production remains stable. Research moves forward. Both tracks succeed.**
+
+---
+
+*Last Updated: 2025-11-15*  
+*Next Review: 2025-11-22*  
+*Track: Research (Track B)*

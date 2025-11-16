@@ -1,131 +1,70 @@
-# Project Starlight - Gemini CLI Session Summary
+Refreshed Plan: Project Starlight – Gemini CLI
+Week of November 16–22, 2025 Focus Track: Track B – Research (Generalization Path)
 
-## Date: Sunday, November 9, 2025
+0. Context & Key Achievement
+The overall goal is to eliminate the need for rule-based "special cases" by building an AI capable of generalization.
 
-## Overall Goal
-The primary objective is to build a robust and high-performance steganography detection pipeline. This involves training a model with a low false-positive rate on clean images and accurate classification of various steganography methods.
+Prior Success (Foundation for this week): We successfully reduced the false-positive rate from 13.24% to a production-ready 0.37% by applying targeted feature engineering. This involved:
 
-## Current State
+Correcting the LSB signal extraction to occur before data augmentations.
 
-### Problem Identification
-The previous dual-stream model (Pixel + Metadata) exhibited a high false-positive rate (~58%) on clean images, predominantly misclassifying them as `lsb.rgb`. While it achieved 100% recall on stego images and accurately classified metadata-based methods (`exif`, `raw`/EOI), it struggled to differentiate between various pixel-based steganography techniques (alpha, palette, LSB) and benign image artifacts. The core issue was identified as the model overfitting on subtle pixel-level noise rather than learning distinct features for each stego method.
+Enhancing Palette feature extraction using LSB patterns from pixel indices.
 
-### Architectural Evolution: Multi-Stream Model (Implemented)
-To address the limitations of the previous model, we refactored the system to implement a new **multi-stream architecture**. This design aims to provide specialized processing for different types of image data, allowing the model to learn more distinct and robust features.
+This week, the critical task is to consolidate these fixes and the existing V4 four-stream architecture into the unified 6-stream V3/V4 merged pipeline.
 
-**Key Changes Implemented:**
-*   **`scripts/trainer.py`:**
-    *   **`StarlightDetector` (V4):** The model architecture has been completely overhauled. It now features four distinct input streams, each with its own specialized backbone:
-        1.  **Metadata Stream (MLP):** Processes EXIF and EOI data.
-        2.  **Alpha Stream (CNN):** A small Convolutional Neural Network (CNN) dedicated to analyzing the alpha channel of images.
-        3.  **LSB Stream (CNN):** A small CNN focused on detecting patterns in the Least Significant Bits (LSB) of the RGB channels.
-        4.  **Palette Stream (MLP):** A small Multi-Layer Perceptron (MLP) designed to process the color palette information.
-    *   **`load_multi_input` function:** A new data loading utility has been created (and moved to `scripts/starlight_utils.py`) to extract these four distinct data types from an image file. It handles padding with zeros for streams where the corresponding feature is not present.
-    *   **Training Loop:** Updated to feed the four input streams into the new `StarlightDetector`.
-    *   **ONNX Export:** Modified to correctly export the new multi-input model.
+1. Primary Objective & Deliverables
+Overall Objective: Implement and validate the pre-processing and data extraction pipeline for the unified 6-stream (V3/V4 merged) architecture, ensuring robust, uncorrupted feature extraction for the generalization research path.
 
-*   **`scripts/scanner.py`:**
-    *   Updated to utilize the new `load_multi_input` function from `scripts/starlight_utils.py`.
-    *   Modified to correctly provide all four data streams as inputs to the ONNX model.
-    *   Adjusted to correctly unpack the model's 4-item output tuple.
-    *   Refactored to use `ProcessPoolExecutor` with an `initializer` to handle non-pickleable ONNX sessions in multiprocessing.
-    *   Fixed scan time calculation.
+Key Deliverables:
 
-### Evaluation of Multi-Stream Model
-The multi-stream model has been successfully trained and exported.
+A unified load_unified_input() function in starlight_utils.py that supports all six required tensor streams.
 
-*   **Stego Dataset Performance:**
-    *   **100% Recall:** All 136 steganographic images were correctly detected.
-    *   **Perfect Method Classification:** The model achieved 100% accuracy in classifying the specific steganography method for each detected stego image (exif, raw/EOI, palette, alpha, lsb.rgb). This is a significant improvement over previous models.
+Verified integration of the LSB extraction before augmentation fix into the new utility.
 
-*   **Clean Dataset Performance:**
-    *   **High False-Positive Rate:** The false-positive rate on the clean dataset remains high, with 230 out of 393 clean images (58.5%) being incorrectly classified as steganographic.
-    *   **Specific False Positives:** Crucially, these false positives are now being classified into specific pixel-based steganography methods:
-        *   `alpha`: 59 false positives
-        *   `palette`: 73 false positives
-        *   `lsb.rgb`: 98 false positives
-    This indicates that benign, naturally occurring artifacts in clean images (e.g., dithering in GIFs, semi-transparent pixels in PNGs) are being strongly correlated with the features of actual steganography methods by the model.
+Implementation of the two missing streams: Pixel Tensor and Format Features.
 
-## Next Steps: Implementing Triplet Loss
+Validation scripts to confirm stego visibility and check against regression of the 0.37% FP rate.
 
-The current model architecture has successfully enabled the model to *differentiate* between various steganography methods. However, it still struggles to *distinguish* between benign image artifacts and actual steganography.
+2. Daily Action Plan
+Monday, Nov 17: Architecture Unification
 
-To address the persistent high false-positive rate, the next step is to implement a **Triplet Loss** function during training. This approach will:
+Action: Review the unified architecture specification (V3/V4 merge) to define exact tensor shapes, padding, and normalization requirements for all six streams.
 
-1.  **Train on Triplets:** Instead of individual images, the model will be fed triplets: an **Anchor** (stego image), a **Positive** (another stego image of the same method), and a **Negative** (a clean image).
-2.  **Metric Learning:** The Triplet Loss will encourage the model to:
-    *   Minimize the distance between the Anchor and the Positive in the embedding space.
-    *   Maximize the distance between the Anchor and the Negative in the embedding space.
-3.  **Robust Feature Learning:** This will force the model to learn more robust and discriminative features that specifically identify steganography, effectively teaching it to ignore benign noise that might resemble steganographic patterns.
+Action: Refactor the existing load_multi_input() function into the final load_unified_input() utility in scripts/starlight_utils.py.
 
-This is a fundamental change to the training objective and is expected to significantly reduce the false-positive rate while maintaining high detection and classification accuracy.
+Action: Implement the baseline extraction for the Pixel Tensor (the standard image data stream).
 
-## Date: Wednesday, November 12, 2025
+Tuesday, Nov 18: Critical Fix Integration
 
-## Session Summary: Addressing False Positives with Targeted Feature Engineering
+Action: Implement the LSB Tensor stream, with the critical fix: Ensure LSB feature calculation occurs before any data augmentation to preserve the success achieved in the last session.
 
-This session focused on directly tackling the persistent high false-positive rate, particularly the confusion between pixel-based steganography methods (`lsb.rgb` and `palette`) and benign image artifacts.
+Action: Implement the Palette Tensor and Alpha Tensor streams, integrating the enhanced feature extraction logic (e.g., LSB patterns from palette indices).
 
-### Initial Attempt: Triplet Loss (Unsuccessful)
-An initial attempt was made to implement Triplet Loss to improve the discriminative power of the model's embeddings. While the implementation was successful, initial training runs showed an *increase* in the false-positive rate, indicating that this approach, as configured, was not effectively solving the problem and was likely over-sensitizing the model.
+Wednesday, Nov 19: Metadata & Final Streams
 
-### Problem Re-identification & Solution: Targeted Feature Engineering
-Further analysis revealed that the core issue was indeed the model's inability to robustly distinguish between `lsb.rgb` and `palette` steganography signals, often confusing them with each other and with natural image noise. This was exacerbated by a bug where data augmentations were corrupting LSB signals during data loading.
+Action: Implement extraction for the Metadata Tensor (EXIF/EOI raw bytes, 2048-dim), ensuring compatibility with Grok’s multi-format extensions (PNG EXIF, IEND tail, etc.).
 
-A critical patch was applied to `trainer.py` to address these issues:
+Action: Implement extraction for the Format Features tensor (e.g., image dimensions, format type, bit depth).
 
-1.  **Corrected LSB Extraction:** The LSB signal extraction was moved to occur *before* any data augmentations, ensuring the model receives an uncorrupted LSB signal.
-2.  **Enhanced Palette Feature Extraction:** The palette stream's feature extraction was significantly improved. Instead of just using palette colors, it now extracts LSB patterns directly from the pixel indices of palette-based images. This effectively "decouples" the signal processing for palette steganography, providing a much more distinct and robust feature set.
-3.  **Balanced Class Sampling:** A new `balanced_classes` strategy was implemented in the dataset loader. This ensures that the model is trained with an equal representation of each steganography method, preventing bias towards more common methods.
+Thursday, Nov 20: Validation and Regression
 
-### Evaluation of Patched Model
-After applying the patch and retraining the model, a significant reduction in the false-positive rate was observed:
+Action: Validate all 6 extraction streams with a small test set, verifying stego payload visibility in the appropriate tensor.
 
-*   **Previous Baseline False-Positive Rate:** 13.24%
-*   **New False-Positive Rate (Patched Model):** **0.37%**
+Action: Run a regression test on the clean dataset to confirm the unified pipeline maintains the low 0.37% FP rate previously achieved.
 
-This represents a dramatic improvement, successfully addressing the primary goal of reducing false positives to a negligible level. The model now exhibits high accuracy in distinguishing clean images from steganographic ones, with minimal misclassifications.
+Action: Document the final tensor outputs and extraction logic in docs/gemini/V4_UTILS_SPEC.md.
 
-## Next Steps: (Updated)
+Friday, Nov 21: Integration & Handoff
 
-The persistent high false-positive rate has been successfully addressed through targeted feature engineering and data balancing. The model now effectively distinguishes between benign image artifacts and actual steganography.
+Action: Integrate the new starlight_utils.py with the training environment, ensuring it is compatible with ChatGPT's unified training script (their assigned task for the week).
 
-Further work could involve:
-*   Re-evaluating recall on stego datasets to ensure no regressions.
-*   Exploring more advanced data augmentation techniques.
-*   Optimizing model size and inference speed.
+Action: Prepare the handoff package, including validation reports and documentation, for the next agent starting the training phase (Track B - Training Strategy).
 
-## Date: Monday, November 10, 2025
+3. Success Metrics Alignment
+My task directly supports the generalization path (Track B) of Project Starlight.
 
-## Session Summary: Refactoring, Cleanup, and Test Suite Modernization
-
-Following the architectural evolution to a multi-stream model, this session focused on significant code cleanup, refactoring, and modernization of the testing suite to improve maintainability and usability.
-
-### Core Script Cleanup and Refactoring
-
-*   **`scanner.py` Refinements:**
-    *   Removed all temporary debugging code and local function copies.
-    *   Message extraction is now performed only when scanning a single file, not for directory scans, improving performance for bulk analysis.
-    *   Suppressed informational print statements when `--json` output is requested, ensuring clean JSON output.
-*   **`starlight_extractor.py` Enhancements:**
-    *   The `extract_palette` function was improved to correctly handle grayscale ('L' mode) images and to attempt both MSB-first and LSB-first bit order extractions, resolving issues with palette-based steganography in various image formats (e.g., GIFs, BMPs).
-*   **Obsolete Code Removal:**
-    *   Removed several legacy trainer scripts (`balanced_trainer.py`, `enhanced_trainer.py`, `fixed_trainer.py`) that were no longer on the critical path.
-    *   Removed associated test scripts that depended on the obsolete trainers, further cleaning the codebase.
-    *   **Removed all "WOW" algorithm implementations and associated test files** from the data generators and datasets, as the approach was deemed impractical for real-world scenarios.
-*   **`trainer.py` Glob Support:**
-    *   The main `trainer.py` script was enhanced to accept glob patterns (e.g., `datasets/*_submission_*/clean`) for dataset directories. This allows for flexible training across multiple submission datasets simultaneously.
-*   **File Structure Reorganization:**
-    *   The primary user-facing scripts, `trainer.py` and `scanner.py`, were moved from the `scripts/` directory to the top-level project directory for easier access.
-    *   Import paths were updated to reflect this change.
-
-### Test Suite Modernization and Bug Fixes
-
-*   **`test_starlight.py` Update:**
-    *   The test script was completely overhauled to work with the modern `scanner.py`.
-    *   It now invokes the scanner with the `--json` flag and parses the structured JSON output instead of relying on brittle string matching of human-readable output.
-    *   **Fixed `NameError: name 'json' is not defined`** by adding `import json`.
-    *   **Corrected EOI test failures** by mapping the model's `raw` prediction to the expected `eoi` algorithm in the test logic.
-    *   These changes make the test suite more robust and less prone to breaking when scanner output formatting changes.
-
-
+Goal	Contribution
+Track B Generalization	Directly implements the data pipeline for the merged V3/V4 architecture, providing the specialized feature streams (Alpha, LSB, Palette, Metadata) required to teach the model fundamental format constraints.
+FP Rate Maintenance	Ensures the proven fix (LSB extraction before augmentation) is integrated into the unified utility, preventing a regression from the 0.37% FP rate.
+Dataset Consistency	Provides 100% format-valid and correctly-extracted tensors required for the next phase of training, addressing a critical blocker.
+Architecture	Finalizes the 6-stream model input path, which is a required step for ONNX export and quantization-safe deployment.
