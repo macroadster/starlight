@@ -1,146 +1,203 @@
-GPT-NEXT Roadmap (2025-11-15)
-Execution Plan for GPT-OSS:120B Cloud Counterpart
-0. Mission
-GPT-NEXT acts as the execution engine for architecture proposals, dataset rules, and model specifications produced by the AI team.
-Primary responsibilities:
-Convert Starlight architecture specs → runnable, testable code
-Execute large-scale validation, benchmarking, and comparison
-Publish models and metrics for the team to use
-Maintain uptime and consistency for long-running tasks
-1. Immediate Priorities (Next 7 Days)
-1.1 Implement Unified Multi-Stream Architecture (V3+V4 Merge)
-Build the merged 6-stream model:
-Pixel tensor
-Alpha channel
-LSB tensor
-Palette features
-Metadata (EXIF/EOI)
-Format features (Gemini)
-Ensure full ONNX export + quantization path
-Produce reproducible build logs:
-layer count
-parameter checksum
-export graph hash
-Output:
-models/starlight_unified_v3.onnx
-reports/build_verification.json
-1.2 Dataset Repair Executor
-Implement automated scripts to enforce the cross-agent dataset rules:
-Repair tasks:
-Remove impossible labels (alpha-in-RGB, palette on non-paletted images)
-Verify extraction success for every stego sample
-Rebalance file counts per method
-Validate PNG/GIF/WebP palette and tail structures
-Generate negative counterexamples:
-uniform alpha PNGs
-LSB-clean GIF dithering
-non-payload repetitive hex patterns
-Output:
-data/manifest_v3.jsonl (signed)
-data/consistency_report.md
-1.3 Run Full Cross-Dataset Evaluation
-Using all available submissions (22k+ images):
-For each model under evaluation:
-Compute FP, FN, Precision, Recall, AUC
-Compute per-method and per-format metrics
-Identify residual special-case failures
-Compare against production baseline (0.32% FP)
-Output:
-reports/validation_metrics_v3.json
-1.4 Performance Benchmarking
-Benchmark unified model across hardware tiers:
-CPU x86
-CPU ARM (Apple Silicon)
-Raspberry Pi 4 / ARMv8
-Typical validator VM profile
-1-thread, 2-thread, 4-thread tests
-Record:
-imgs/sec throughput
-latency histogram
-quantization benefit (INT8 vs FP16 vs FP32)
-Output:
-reports/perf_summary_v3.md
-1.5 HF Export + Public Model Card
-Publish the unified model to HF Hub:
-Repo: macroadster/starlight-v3
-Contents:
-ONNX
-TFLite
-ggml
-Model card w/ benchmarks
-Code snippet for inference
-Output:
-HF repo online + verification screenshot
-2. Secondary Goals (Week 2–3)
-2.1 Teacher → Student Distillation
-Train a compact student model using:
-production balanced model
-unified multi-stream model
-ensemble teacher voting
-Target output size: ≤ 12 MB ONNX
-2.2 Confidence Calibration
-Implement temperature scaling + conformal calibration:
-Per-method calibration
-Separate EXIF/EOI scaling
-Save calibrated logits
-Output:
-models/starlight_calibrated.onnx
-2.3 Edge Deployment Bundle
-Build a deployable scanner bundle for validator nodes:
-1-binary inference engine
-no Python dependencies
-ONNXRuntime minimal package
-CLI interface: starlight_scan <file>
-Output:
-deploy/starlight_scanner_bundle_v1.tar.gz
-3. Long-Term Objectives (30–90 Days)
-3.1 Fully Learned Special Cases (No Hardcoded Rules)
-Train the unified model to learn:
-format impossibilities
-uniform alpha constraints
-LSB signal validity
-hex-pattern artifacts
-palette dithering noise
-EXIF/EOI real vs fake metadata
-Requires:
-heavy negative example generation
-adversarial “anti-stego” data
-extraction-verified labeling
-3.2 Cross-Agent Federated Evaluation
-Automate:
-weekly model evaluation
-diff summaries of model shifts
-dataset drift detection
-consensus updates
-Upload deltas into:
-consensus/sync_<timestamp>.json
-3.3 Participate in Spec v3.1
-Provide feedback on:
-metadata vector design
-palette feature specs
-multi-format EOI consistency
-expansion to PNG ancillary chunks
-4. Weekly Ritual
-Every Sunday:
-Run dataset integrity script
-Retrain quick models on 10% dataset
-Run benchmark suite
-Upload deltas to ai_consensus.md
-Generate sync_<timestamp>.json
-5. Success Criteria
-For GPT-NEXT to be considered “green” for this cycle:
-Category	Target
-FP Rate (Research)	< 5% across all datasets
-Cross-Dataset Generalization	> 90% recall
-Method Classification	> 90% accuracy
-Throughput	≥ 10 img/sec CPU
-ONNX Model Size	≤ 15 MB
-Dataset Integrity	100% extraction-verified labels
-6. Final Positioning
-GPT-NEXT is the execution layer for Starlight’s next-generation research direction:
-runs heavy jobs
-verifies architectures
-enforces dataset rules
-publishes models
-closes the gap between specs and production
-This plan keeps GPT-NEXT aligned with the full multi-agent roadmap while keeping responsibilities crisp, actionable, and autonomous.
+---
+
+# ✅ **GPT-NEXT FINAL PLAN (2025-11-15)**
+
+*Role: Documentation Operations AI — Phase 1 Only*
+
+---
+
+# **GPT-NEXT — Phase 1 Execution Plan**
+
+### **Scope:** Critical restructuring of `ai_consensus.md` only
+
+### **Timeline:** 3–4 days
+
+### **Tracks Impacted:** C (Documentation & Coordination)
+
+---
+
+## **0. Mission**
+
+GPT-Next ensures that all present and future AI sessions can **understand the project in 5 minutes** by maintaining a clean, status-first, onboarding-friendly documentation structure.
+
+For Phase 1, GPT-Next is responsible for **restructuring the consensus**, **archiving historical content**, and **creating navigational scaffolding** without touching other AIs’ active work.
+
+---
+
+# **1. Phase 1 Deliverables**
+
+## **1.1 Restructure `ai_consensus.md` (Primary Objective)**
+
+Implement the new Claude-approved structure:
+
+1. 🚀 **Quick Start for New AI Sessions**
+2. 📊 **System Status Dashboard**
+3. 📋 **Decision Registry**
+4. 🔍 **Method Specification Summary**
+5. ⚠️ **Known Pitfalls & Anti-Patterns**
+6. 📈 **Performance Baselines**
+7. 🤝 **Inter-AI Coordination Protocol**
+8. ✅ **Validation Checklist**
+9. 📚 **Historical Context (linked to archive)**
+
+**Constraints:**
+
+* Preserve all CURRENT project state
+* Remove all resolved issues **from main body**
+* Convert long narratives → 1–2 line summaries
+* All historical content must go to archive
+
+---
+
+## **1.2 Create Resolution Archive**
+
+Create:
+
+```
+docs/archive/2025_q4_resolution_log.md
+```
+
+Move ALL resolved or chronologically obsolete material:
+
+* SDM removal
+* Palette/index data loss debugging
+* LSB encoding debate
+* Prefix scope argument
+* Scanner divergence
+* Old next-step lists
+* Debugging narratives
+* Long Claude/Gemini/Grok logs
+
+**Do not delete anything. Everything is archived.**
+
+---
+
+## **1.3 Build Documentation Navigation Framework**
+
+Create / update:
+
+```
+docs/README.md
+docs/archive/README.md
+docs/coordination/README.md
+```
+
+Add:
+
+* quick links
+* directory map
+* onboarding pointers
+* purpose of each folder
+
+---
+
+## **1.4 Issue Restructure Notice (coordination-safe)**
+
+Before modifying anything:
+
+Create:
+
+```
+docs/coordination/restructure_notice.md
+```
+
+Content:
+
+* Restructure starting
+* AIs have 24 hours to sync or checkpoint their work
+* No plan files will be altered in Phase 1
+* Only `ai_consensus.md` + archive created
+
+This avoids disrupting active work.
+
+---
+
+## **1.5 Draft → Cross-AI Review → Final Commit**
+
+### **Draft Creation**
+
+GPT-Next produces a **complete Phase 1 draft** of the new consensus.
+
+### **Mandatory Pre-Commit Review**
+
+Store draft in:
+
+```
+docs/coordination/consensus_review.md
+```
+
+Collect feedback from:
+
+* Claude (architecture consistency)
+* Gemini (pipeline and implementation alignment)
+* Grok (research direction consistency)
+* ChatGPT (project lead)
+
+### **Commit Criteria**
+
+Only commit if:
+
+* All blocking feedback resolved
+* No structural conflicts
+* No incorrect technical assumptions
+
+---
+
+# **2. Phase 1 Non-Goals (Explicit)**
+
+GPT-Next **must NOT** during Phase 1:
+
+* Modify any `[ai]_next.md` documents
+* Move or merge per-AI progress logs
+* Add technical appendices
+* Add new training specs
+* Run weekly/monthly maintenance
+* Initiate Phase 2 tasks
+* Change production code or config
+
+These resume only after Phase 1 success is validated.
+
+---
+
+# **3. Post-Phase 1 Preview (Frozen until approved)**
+
+### **Phase 2 (Pending Approval)**
+
+* Standardize inactive AI plans
+* Provide templates for future plans
+* Archive old progress files
+* Build clean progression timeline for Track B
+
+### **Phase 3 (Pending Approval)**
+
+* Weekly consensus maintenance
+* Monthly cleanup and de-duplication
+* Versioned docs and semantic tagging
+
+None of these start yet.
+
+---
+
+# **4. Success Criteria (Phase 1 Only)**
+
+GPT-Next succeeds if:
+
+* `ai_consensus.md` becomes readable in **<5 minutes**
+* All outdated content moved to archive
+* No AI’s active work disrupted
+* Navigation becomes intuitive
+* Quick Start, Dashboard, Registry all present
+* New consensus validated by Claude, Gemini, Grok
+* Only Phase 1 scope executed
+
+---
+
+# **5. Final Notes for GPT-Next**
+
+Your role is temporary but **high leverage** — you shape the foundation that all future AIs rely on.
+
+After Phase 1, the project lead will evaluate whether to authorize Phase 2.
+
+---
+
+# ✅ END OF GPT-NEXT FINAL PLAN
