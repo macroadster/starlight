@@ -28,7 +28,7 @@ This repository provides the foundational text and framework for a decentralized
 
 The core of our approach involves training AI models to identify the subtle statistical and pixel-level anomalies that steganography leaves behind. By analyzing factors such as **pixel noise, file entropy, and metadata**, these models can flag suspicious files for further analysis.
 
-The accompanying resources in this repository, such as **[bitcoin_white_paper_2.md](datasets/gemini_submission_2025/bitcoin_white_paper_2.md)**, outline proposed mechanisms like a consensus structure to further enhance this protocol by disincentivizing the embedding of malicious data. Additionally, **[ai_common_sense_on_blockchain.md](datasets/gemini_submission_2025/ai_common_sense_on_blockchain.md)** outlines a proposed protocol for AI to send smart contract messages on the blockchain.
+The accompanying resources in this repository, such as **[bitcoin_white_paper_2.md](datasets/gemini_submission_2025/seeds/bitcoin_white_paper_2.md)**, outline proposed mechanisms like a consensus structure to further enhance this protocol by disincentivizing the embedding of malicious data. Additionally, **[ai_common_sense_on_blockchain.md](datasets/gemini_submission_2025/seeds/ai_common_sense_on_blockchain.md)** outlines a proposed protocol for AI to send smart contract messages on the blockchain.
 
 ---
 

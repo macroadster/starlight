@@ -38,7 +38,7 @@ All commands are run from the project root unless specified.
 3.  **Train Model**:
     Ask user to run the train command is preferred because training duration exceeds most command timeout limit.
     ```bash
-    python3 train.py
+    python3 trainer.py
     ```
     *This saves `detector.onnx` and other model files to the `model/` subdirectory.*
 
@@ -60,12 +60,3 @@ All commands are run from the project root unless specified.
 - **Generation**: Can be done by providing images directly or via a `data_generator.py` script that processes seed files (e.g., `sample_seed.md`).
 - **Naming**: `{payload_name}_{algorithm}_{index}.{ext}` (e.g., `seed1_alpha_001.png`).
 
-### Model Contribution (`USAGE.md`)
-
-- **Location**: `datasets/[contributor_submission_year]/model/`
-- **Required Files**:
-    - `detector.onnx`: The detection model.
-    - `inference.py`: Standardized inference script.
-    - `model_card.md`: Contains performance metrics (AUC-ROC) and steganography methods covered.
-    - `requirements.txt`: Dependencies.
-- **Integration**: After adding a model, run `python3 aggregate_models.py` to include it in the main ensemble. The ensemble weights models based on performance (AUC-ROC) and specialization.
