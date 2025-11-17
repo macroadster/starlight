@@ -1,0 +1,11 @@
+{
+  "total_images": 6586,
+  "clean_count": 5686,
+  "stego_count": 0,
+  "negative_count": 900,
+  "no_invalid_labels": true,
+  "extraction_verified": true,
+  "format_balanced": true,
+  "negatives_present": true,
+  "no_corrupted_signals": true,
+  "mode_distribution": {
