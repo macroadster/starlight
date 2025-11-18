@@ -7,15 +7,15 @@
     "lsb",
     "palette"
   ],
-  "clean_files": 2800,
-  "stego_files": 5600,
+  "clean_files": 4200,
+  "stego_files": 8400,
   "validation_passed": true,
   "errors": [],
   "generated_counts": {
-    "lsb": 600,
-    "alpha": 600,
-    "palette": 400,
-    "exif": 600,
-    "eoi": 600
+    "lsb": 300,
+    "alpha": 300,
+    "palette": 200,
+    "exif": 300,
+    "eoi": 300
   }
 }

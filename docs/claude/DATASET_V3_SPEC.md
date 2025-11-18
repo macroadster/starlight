@@ -10,7 +10,7 @@ Dataset V3 is the repaired and enhanced version of the original Starlight datase
 
 ## Directory Structure
 ```
-data/training/v3_repaired/
+datasets/grok_submission_2025/training/v3_repaired/
 ├── clean/                    # 5,686 clean images
 │   ├── *.jpg                # JPEG images
 │   ├── *.png                # PNG images
@@ -60,7 +60,7 @@ data/training/v3_repaired/
 ### For Training
 ```python
 # Load dataset structure
-dataset_path = "data/training/v3_repaired"
+dataset_path = "datasets/grok_submission_2025/training/v3_repaired"
 
 # Clean examples
 clean_images = load_images(f"{dataset_path}/clean", label=0)

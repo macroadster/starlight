@@ -114,7 +114,7 @@ git push origin claude-research-track
 # First, do a dry run
 python scripts/dataset_repair.py \
   --datasets datasets \
-  --output data/training/v3_repaired_test \
+  --output datasets/grok_submission_2025/training/v3_repaired_test \
   --dry-run
 
 # This will show what WOULD be done without actually doing it
@@ -147,7 +147,7 @@ print(f'Format: {img.format}')
 # Remove --dry-run to actually apply
 python scripts/dataset_repair.py \
   --datasets datasets \
-  --output data/training/v3_repaired
+  --output datasets/grok_submission_2025/training/v3_repaired
 
 # This creates a NEW dataset, doesn't modify original
 ```
@@ -156,10 +156,10 @@ python scripts/dataset_repair.py \
 
 ```bash
 # Check what was created
-ls -la data/training/v3_repaired/
+ls -la datasets/grok_submission_2025/training/v3_repaired/
 
 # Review the manifest
-cat data/training/v3_repaired/repair_manifest.json | python -m json.tool | less
+cat datasets/grok_submission_2025/training/v3_repaired/repair_manifest.json | python -m json.tool | less
 ```
 
 **Commit:**
@@ -179,7 +179,7 @@ git push
 **Step 1: Generate All Categories**
 ```bash
 python scripts/generate_negatives.py \
-  --output data/training/v3_repaired/negatives \
+  --output datasets/grok_submission_2025/training/v3_repaired/negatives \
   --count 200
 
 # This will generate ~900 total images:
@@ -194,7 +194,7 @@ python scripts/generate_negatives.py \
 
 ```bash
 # View some samples
-ls data/training/v3_repaired/negatives/rgb_no_alpha/ | head -5
+ls datasets/grok_submission_2025/training/v3_repaired/negatives/rgb_no_alpha/ | head -5
 
 # Open a few to verify they look correct
 # (Use your preferred image viewer)
@@ -244,7 +244,7 @@ git push
 **Step 1: Run Full Validation**
 ```bash
 python scripts/validate_repaired_dataset.py \
-  --dataset data/training/v3_repaired \
+  --dataset datasets/grok_submission_2025/training/v3_repaired \
   --output docs/claude/validation_report.json
 ```
 
@@ -448,7 +448,7 @@ df -h
 
 # Clean up if needed
 # (But DON'T delete original datasets!)
-rm -rf data/training/v3_repaired_test/  # Only test data
+rm -rf datasets/grok_submission_2025/training/v3_repaired_test/  # Only test data
 ```
 
 ---
@@ -460,8 +460,8 @@ At the end of Week 1, you should have:
 - [x] **5 working Python scripts** in `scripts/`
 - [ ] **Complete dataset analysis** in `docs/claude/dataset_audit.json`
 - [ ] **Invalid label report** in `docs/claude/invalid_labels.md`
-- [ ] **Repaired dataset** in `data/training/v3_repaired/`
-- [ ] **900+ negative examples** in `data/training/v3_repaired/negatives/`
+- [ ] **Repaired dataset** in `datasets/grok_submission_2025/training/v3_repaired/`
+- [ ] **900+ negative examples** in `datasets/grok_submission_2025/training/v3_repaired/negatives/`
 - [ ] **Validation report** showing all checks passing
 - [ ] **Complete documentation** in `docs/claude/`
 - [ ] **Clean git history** with daily commits
