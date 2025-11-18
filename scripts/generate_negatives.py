@@ -3,7 +3,7 @@
 Negative Examples Generator - Week 1, Day 3
 Generates examples teaching what steganography is NOT
 
-Run: python scripts/generate_negatives.py --output data/training/v3_repaired/negatives --count 1000
+Run: python scripts/generate_negatives.py --output datasets/grok_submission_2025/training/v3_repaired/negatives --count 1000
 """
 
 import argparse
@@ -277,7 +277,7 @@ def main():
     )
     parser.add_argument(
         '--output',
-        default='data/training/v3_negatives',
+        default='datasets/grok_submission_2025/training/v3_negatives',
         help='Output directory for negative examples'
     )
     parser.add_argument(

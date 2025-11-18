@@ -20,7 +20,7 @@
 3. `scripts/dataset_repair.py` - Automated repair pipeline with dry-run
 4. `scripts/generate_negatives.py` - Negative example generator
 5. `scripts/validate_repaired_dataset.py` - Final validation tool
-6. `data/training/v3_repaired/` - Complete validated dataset
+6. `datasets/grok_submission_2025/training/v3_repaired/` - Complete validated dataset
 7. `docs/claude/` - Comprehensive documentation
 
 ## Metrics

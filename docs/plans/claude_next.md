@@ -165,7 +165,7 @@ Create `docs/claude/DATASET_V3_SPEC.md`:
 - ✅ No signal-corrupting preprocessing
 
 ## Structure
-data/training/v3_repaired/
+datasets/grok_submission_2025/training/v3_repaired/
 ├── clean/
 │   ├── rgb/           # Matches LSB format distribution
 │   ├── rgba/          # Matches alpha format distribution
@@ -268,7 +268,7 @@ class UnifiedStarlightDetector(nn.Module):
 ```bash
 # Test unified model with repaired dataset
 python scripts/test_unified_model.py \
-  --dataset data/training/v3_repaired \
+  --dataset datasets/grok_submission_2025/training/v3_repaired \
   --model models/unified_detector.py \
   --report docs/claude/unified_model_test.md
 ```

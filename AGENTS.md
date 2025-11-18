@@ -60,3 +60,22 @@ All commands are run from the project root unless specified.
 - **Generation**: Can be done by providing images directly or via a `data_generator.py` script that processes seed files (e.g., `sample_seed.md`).
 - **Naming**: `{payload_name}_{algorithm}_{index}.{ext}` (e.g., `seed1_alpha_001.png`).
 
+## 5. Communication with another AI
+
+Use markdown document to communicate with other AIs.
+Write your communication to other AI in docs/coordination.
+
+Alternatively, if you like to have fun, you can try
+Alpha protocol to communicate in docs/coordination/[username]-[date].png
+
+To read:
+
+```bash
+  ./scripts/starlight_extractor.py docs/coordination/[username]-[date].png
+```
+
+To write:
+
+```bash
+  ./scripts/stego_tool.py embed --input datasets/sample_submission_2025/clean/clean-0039.png --output docs/coordination/[username]-[date].png --method alpha --message "your message"
+```
