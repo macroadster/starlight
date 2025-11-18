@@ -12,6 +12,9 @@ from pathlib import Path
 from PIL import Image
 import random
 from typing import List, Tuple
+import json
+import subprocess
+import datetime
 
 class NegativeExampleGenerator:
     """Generate examples teaching what steganography is NOT"""
@@ -117,15 +120,15 @@ class NegativeExampleGenerator:
         
         print(f"✅ Generated {count} uniform alpha images in {output_subdir}")
     
-    def natural_lsb_noise(self, count: int = 100):
+    def dithered_gif(self, count: int = 100):
         """
-        Generate clean images with natural LSB variation
+        Generate images with natural LSB variation
         
-        This teaches: Natural dithering/compression artifacts â‰  steganography
+        This teaches: Natural dithering/compression artifacts ≠ steganography
         """
         print(f"Generating {count} images with natural LSB noise...")
         
-        output_subdir = self.output_dir / 'natural_noise'
+        output_subdir = self.output_dir / 'dithered_gif'
         output_subdir.mkdir(exist_ok=True)
         
         sizes = [(128, 128), (256, 256), (512, 512)]
@@ -173,15 +176,15 @@ class NegativeExampleGenerator:
         
         print(f"✅ Generated {count} natural noise images in {output_subdir}")
     
-    def repetitive_patterns(self, count: int = 100):
+    def repetitive_hex(self, count: int = 100):
         """
         Generate images with repetitive patterns (not steganography)
         
-        This teaches: Repetitive hex patterns â‰  hidden data
+        This teaches: Repetitive hex patterns ≠ hidden data
         """
         print(f"Generating {count} images with repetitive patterns...")
         
-        output_subdir = self.output_dir / 'patterns'
+        output_subdir = self.output_dir / 'repetitive_hex'
         output_subdir.mkdir(exist_ok=True)
         
         sizes = [(128, 128), (256, 256), (512, 512)]
@@ -251,61 +254,7 @@ class NegativeExampleGenerator:
         
         print(f"✅ Generated {count} pattern images in {output_subdir}")
     
-    def special_case_negatives(self, count: int = 50):
-        """
-        Generate specific negatives for each special case rule
-        
-        This directly targets the special cases that models currently fail to learn
-        """
-        print(f"Generating {count} special case negatives...")
-        
-        output_subdir = self.output_dir / 'special_cases'
-        output_subdir.mkdir(exist_ok=True)
-        
-        for i in range(count):
-            case_type = i % 5
-            size = (256, 256)
-            
-            if case_type == 0:
-                # Small images (< 64x64)
-                small_size = (random.randint(10, 63), random.randint(10, 63))
-                data = np.random.randint(0, 256, (small_size[1], small_size[0], 3), dtype=np.uint8)
-                img = Image.fromarray(data, 'RGB')
-                img.save(output_subdir / f'small_image_{i:04d}.png')
-            
-            elif case_type == 1:
-                # Palette images without sufficient colors
-                data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
-                img = Image.fromarray(data, 'RGB')
-                # Convert to palette with very few colors
-                img = img.quantize(colors=8)
-                img.save(output_subdir / f'few_colors_{i:04d}.png')
-            
-            elif case_type == 2:
-                # High-frequency noise (looks suspicious but isn't stego)
-                data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
-                img = Image.fromarray(data, 'RGB')
-                img.save(output_subdir / f'high_freq_noise_{i:04d}.png')
-            
-            elif case_type == 3:
-                # Specific problematic formats
-                # GIF with transparency
-                data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
-                img = Image.fromarray(data, 'RGB')
-                img = img.convert('P', palette=Image.ADAPTIVE)
-                img.info['transparency'] = 0
-                img.save(output_subdir / f'gif_transparent_{i:04d}.gif')
-            
-            else:
-                # Monochrome/grayscale
-                value = random.randint(0, 255)
-                data = np.full((size[1], size[0]), value, dtype=np.uint8)
-                img = Image.fromarray(data, 'L')
-                img.save(output_subdir / f'grayscale_{i:04d}.png')
-        
-        print(f"✅ Generated {count} special case negatives in {output_subdir}")
-    
-    def generate_all(self, count_per_type: int = 100):
+    def generate_all(self, count_per_type: int = 1000):
         """Generate all types of negative examples"""
         print("\n" + "="*70)
         print("GENERATING NEGATIVE EXAMPLES")
@@ -313,11 +262,10 @@ class NegativeExampleGenerator:
         
         self.rgb_with_alpha_check(count_per_type)
         self.uniform_alpha_images(count_per_type)
-        self.natural_lsb_noise(count_per_type)
-        self.repetitive_patterns(count_per_type)
-        self.special_case_negatives(count_per_type // 2)
+        self.dithered_gif(count_per_type)
+        self.repetitive_hex(count_per_type)
         
-        total = count_per_type * 4 + count_per_type // 2
+        total = count_per_type * 4
         
         print("\n" + "="*70)
         print(f"✅ COMPLETE: Generated {total} negative examples")
@@ -329,7 +277,7 @@ def main():
     )
     parser.add_argument(
         '--output',
-        required=True,
+        default='data/training/v3_negatives',
         help='Output directory for negative examples'
     )
     parser.add_argument(
@@ -343,6 +291,67 @@ def main():
     
     generator = NegativeExampleGenerator(Path(args.output))
     generator.generate_all(args.count)
+    
+    # Generate manifest
+    constraints = {
+        'rgb_no_alpha': "RGB images cannot have alpha steganography",
+        'uniform_alpha': "Uniform alpha channel contains no hidden data",
+        'dithered_gif': "GIF dithering is natural noise, not steganography",
+        'repetitive_hex': "Repetitive hex patterns are visible, not hidden"
+    }
+    
+    manifest_path = generator.output_dir / 'manifest.jsonl'
+    with open(manifest_path, 'w') as f:
+        for image in sorted(generator.output_dir.rglob('*')):
+            if image.is_file() and image.suffix.lower() in ['.png', '.gif']:
+                method = image.parent.name
+                if method in constraints:
+                    entry = {
+                        "method": method,
+                        "constraint": constraints[method],
+                        "label": "clean",
+                        "file_path": str(image.relative_to(generator.output_dir))
+                    }
+                    f.write(json.dumps(entry) + '\n')
+    
+    # Validation
+    all_images = [img for img in generator.output_dir.rglob('*') if img.is_file() and img.suffix.lower() in ['.png', '.gif']]
+    total_samples = len(all_images)
+    failed_samples = []
+    passed = 0
+    for image in all_images:
+        result = subprocess.run(['python3', 'scanner.py', str(image), '--json'], capture_output=True, text=True, cwd='/Users/eric/sandbox/starlight')
+        if result.returncode == 0:
+            try:
+                data = json.loads(result.stdout.strip())
+                is_failed = any(item.get('is_stego', False) for item in data)
+                if is_failed:
+                    failed_samples.append(str(image.relative_to(generator.output_dir)))
+                else:
+                    passed += 1
+            except json.JSONDecodeError:
+                failed_samples.append(str(image.relative_to(generator.output_dir)))
+        else:
+            failed_samples.append(str(image.relative_to(generator.output_dir)))
+    
+    validation_report = {
+        "total_samples": total_samples,
+        "extraction_tests_passed": passed,
+        "extraction_tests_failed": len(failed_samples),
+        "failed_samples": failed_samples,
+        "validation_timestamp": datetime.datetime.now().isoformat(),
+        "scanner_version": "v1.0"
+    }
+    
+    with open(generator.output_dir / 'validation_report.json', 'w') as f:
+        json.dump(validation_report, f, indent=2)
+    
+    print(f"Manifest created: {manifest_path}")
+    print(f"Validation report created: {generator.output_dir / 'validation_report.json'}")
+    if failed_samples:
+        print(f"Warning: {len(failed_samples)} samples failed validation")
+    else:
+        print("All samples passed validation")
     
     return 0
 
