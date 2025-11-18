@@ -3,7 +3,7 @@
 Dataset Repair Pipeline - Week 1, Day 2
 Fixes fundamental dataset quality issues
 
-Run: python scripts/dataset_repair.py --datasets datasets --output data/training/v3_repaired --dry-run
+Run: python scripts/dataset_repair.py --datasets datasets --output datasets/grok_submission_2025/training/v3_repaired --dry-run
 """
 
 import os

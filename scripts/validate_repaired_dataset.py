@@ -3,7 +3,7 @@
 Repaired Dataset Validator - Week 1, Day 4
 Validates that repaired dataset meets all quality requirements
 
-Run: python scripts/validate_repaired_dataset.py --dataset data/training/v3_repaired --output docs/claude/validation_report.json
+Run: python scripts/validate_repaired_dataset.py --dataset datasets/grok_submission_2025/training/v3_repaired --output docs/claude/validation_report.json
 """
 
 import os
