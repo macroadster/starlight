@@ -207,7 +207,7 @@ class BalancedStegoDataset(Dataset):
         img_path = sample['path']
 
         try:
-            pixel_tensor, meta, alpha, lsb, palette, format_features, content_features = load_unified_input(str(img_path))
+            pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(str(img_path))
             # Add bit_order as one-hot encoding: [lsb-first, msb-first, none]
             bit_order = sample.get('bit_order', 'msb-first')
             if bit_order == 'lsb-first':
@@ -217,19 +217,23 @@ class BalancedStegoDataset(Dataset):
             else:  # clean images
                 bit_order_feat = torch.tensor([0.0, 0.0, 1.0])
             
-            return pixel_tensor, meta, alpha, lsb, palette, format_features, content_features, bit_order_feat, sample['stego_label'], sample['method_label']
+            # Permute lsb from HWC to CHW before returning
+            lsb = lsb.permute(2, 0, 1) # HWC -> CHW
+            
+            return pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order_feat, sample['stego_label'], sample['method_label']
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
             # Return dummy data
             dummy_pixel = torch.zeros(3, 256, 256)
             dummy_meta = torch.zeros(2048)
             dummy_alpha = torch.zeros(1, 256, 256)
-            dummy_lsb = torch.zeros(3, 256, 256)
+            dummy_lsb = torch.zeros(3, 256, 256) # CHW
             dummy_palette = torch.zeros(768)
+            dummy_palette_lsb = torch.zeros(1, 256, 256)
             dummy_format = torch.zeros(6)
             dummy_content = torch.zeros(6)
             dummy_bit_order = torch.tensor([0.0, 0.0, 1.0])  # clean default
-            return dummy_pixel, dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_format, dummy_content, dummy_bit_order, 0, -1
+            return dummy_pixel, dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_palette_lsb, dummy_format, dummy_content, dummy_bit_order, 0, -1
 
 def extract_enhanced_metadata_features(image_path):
     """Extract enhanced metadata features for better EXIF detection across various formats."""
@@ -579,8 +583,36 @@ class BalancedStarlightDetector(nn.Module):
             nn.Linear(32, 16)
         )
 
+        # Pixel tensor processing (new stream)
+        self.pixel_conv = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(8)
+        )
+
+        # Palette LSB processing (new stream)
+        self.palette_lsb_conv = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(8)
+        )
+
         # Fusion and classification
-        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16 + 3  # +3 for bit_order features
+        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16  # Updated for 8 streams
         self.fusion = nn.Sequential(
             nn.Linear(self.fusion_dim, 512),
             nn.ReLU(),
@@ -596,23 +628,31 @@ class BalancedStarlightDetector(nn.Module):
         self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
         self.embedding_head = nn.Linear(64, 64)
 
-    def forward(self, meta, alpha, lsb, palette, format_features, content_features, bit_order):
+    def forward(self, pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features):
+        # Pixel tensor stream (new)
+        pixel_tensor = self.pixel_conv(pixel_tensor)
+        pixel_tensor = pixel_tensor.reshape(pixel_tensor.size(0), -1)
+
         # Metadata stream with weighting
         meta = meta.unsqueeze(1)  # Add channel dimension
         meta = self.meta_conv(meta)
-        meta = meta.view(meta.size(0), -1)
+        meta = meta.reshape(meta.size(0), -1)
         meta = meta * self.meta_weight  # Apply weighting to reduce dominance
 
         # Alpha stream
         alpha = self.alpha_conv(alpha)
-        alpha = alpha.view(alpha.size(0), -1)
+        alpha = alpha.reshape(alpha.size(0), -1)
 
-        # LSB stream
+        # LSB stream (already NCHW from DataLoader and __getitem__)
         lsb = self.lsb_conv(lsb)
-        lsb = lsb.view(lsb.size(0), -1)
+        lsb = lsb.reshape(lsb.size(0), -1)
 
         # Palette stream
         palette = self.palette_fc(palette)
+
+        # Palette LSB stream (new)
+        palette_lsb = self.palette_lsb_conv(palette_lsb)
+        palette_lsb = palette_lsb.reshape(palette_lsb.size(0), -1)
 
         # Format features stream
         format_features = self.format_features_fc(format_features)
@@ -620,8 +660,8 @@ class BalancedStarlightDetector(nn.Module):
         # Content features stream
         content_features = self.content_features_fc(content_features)
 
-        # Fusion with bit_order features
-        fused = torch.cat([meta, alpha, lsb, palette, format_features, content_features, bit_order], dim=1)
+        # Fusion of all 8 streams
+        fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features], dim=1)
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
@@ -659,12 +699,14 @@ def compute_class_weights(method_labels):
     return weights
 
 def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_generalized.onnx"):
+    # Use CPU for now due to MPS tensor view compatibility issues
+    # TODO: Fix MPS compatibility issues in future PyTorch versions
     if torch.cuda.is_available():
         device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
     else:
         device = torch.device("cpu")
+        if torch.backends.mps.is_available():
+            print("Note: MPS detected but using CPU due to tensor compatibility issues")
     print(f"Using device: {device}")
 
     # Data augmentation
@@ -723,7 +765,7 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
     print("Starting training...")
     best_val_loss = float('inf')
     epochs_no_improve = 0
-    patience = 10
+    patience = 5
 
     for epoch in range(epochs):
         model.train()
@@ -734,12 +776,13 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
         method_total = 0
 
         for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
-            pixel_tensor, meta, alpha, lsb, palette, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
+            pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
             pixel_tensor = pixel_tensor.to(device)
             meta = meta.to(device)
             alpha = alpha.to(device)
             lsb = lsb.to(device)
             palette = palette.to(device)
+            palette_lsb = palette_lsb.to(device)
             format_features = format_features.to(device)
             content_features = content_features.to(device)
             bit_order_feat = bit_order_feat.to(device)
@@ -749,10 +792,10 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
             optimizer.zero_grad()
 
             # Forward pass
-            stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette, format_features, content_features, bit_order_feat)
+            stego_logits, method_logits, method_ids, method_probs, embeddings = model(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
 
             # Compute losses
-            stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
+            stego_loss = stego_criterion(stego_logits.reshape(-1), stego_labels)
 
             # Only compute method loss for stego samples
             stego_mask = stego_labels > 0.5
@@ -762,7 +805,7 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
                 method_loss = torch.tensor(0.0).to(device)
 
             # Dynamic loss weighting - reduce method loss importance to avoid overfitting
-            total_loss_batch = stego_loss + 0.01 * method_loss #+ 0.05 * method_loss  # Further reduced
+            total_loss_batch = stego_loss + 0.1 * method_loss #+ 0.05 * method_loss  # Further reduced
 
             # Backward pass
             total_loss_batch.backward()
@@ -791,20 +834,21 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
 
         with torch.no_grad():
             for batch in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
-                pixel_tensor, meta, alpha, lsb, palette, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
+                pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
                 pixel_tensor = pixel_tensor.to(device)
                 meta = meta.to(device)
                 alpha = alpha.to(device)
                 lsb = lsb.to(device)
                 palette = palette.to(device)
+                palette_lsb = palette_lsb.to(device)
                 format_features = format_features.to(device)
                 content_features = content_features.to(device)
                 bit_order_feat = bit_order_feat.to(device)
                 stego_labels = stego_labels.float().to(device)
                 method_labels = method_labels.long().to(device)
 
-                stego_logits, method_logits, method_ids, method_probs, embeddings = model(meta, alpha, lsb, palette, format_features, content_features, bit_order_feat)
-                stego_loss = stego_criterion(stego_logits.view(-1), stego_labels)
+                stego_logits, method_logits, method_ids, method_probs, embeddings = model(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
+                stego_loss = stego_criterion(stego_logits.reshape(-1), stego_labels)
                 stego_mask = stego_labels > 0.5
                 if stego_mask.sum() > 0:
                     method_loss = method_criterion(method_logits[stego_mask], method_labels[stego_mask])
@@ -868,37 +912,42 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
     model.load_state_dict(torch.load(out_path.replace('.onnx', '.pth')))
     model.eval()
 
-    # Create dummy input
+    # Create dummy input matching 8-tensor model signature
+    dummy_pixel_tensor = torch.randn(1, 3, 256, 256)
     dummy_meta = torch.randn(1, 2048)
     dummy_alpha = torch.randn(1, 1, 256, 256)
     dummy_lsb = torch.randn(1, 3, 256, 256)
     dummy_palette = torch.randn(1, 768)
+    dummy_palette_lsb = torch.randn(1, 1, 256, 256)
     dummy_format_features = torch.randn(1, 6)
     dummy_content_features = torch.randn(1, 6)
     dummy_bit_order = torch.tensor([[0.0, 1.0, 0.0]])  # msb-first default
 
+    dummy_pixel_tensor = dummy_pixel_tensor.to(device)
     dummy_meta = dummy_meta.to(device)
     dummy_alpha = dummy_alpha.to(device)
     dummy_lsb = dummy_lsb.to(device)
     dummy_palette = dummy_palette.to(device)
+    dummy_palette_lsb = dummy_palette_lsb.to(device)
     dummy_format_features = dummy_format_features.to(device)
     dummy_content_features = dummy_content_features.to(device)
     dummy_bit_order = dummy_bit_order.to(device)
 
     torch.onnx.export(
         model,
-        (dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_format_features, dummy_content_features, dummy_bit_order),
+        (dummy_pixel_tensor, dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_palette_lsb, dummy_format_features, dummy_content_features),
         out_path,
-        input_names=['meta', 'alpha', 'lsb', 'palette', 'format_features', 'content_features', 'bit_order'],
+        input_names=['pixel_tensor', 'meta', 'alpha', 'lsb', 'palette', 'palette_lsb', 'format_features', 'content_features'],
         output_names=['stego_logits', 'method_logits', 'method_id', 'method_probs', 'embedding'],
         dynamic_axes={
+            'pixel_tensor': {0: 'batch'},
             'meta': {0: 'batch'},
             'alpha': {0: 'batch'},
             'lsb': {0: 'batch'},
             'palette': {0: 'batch'},
+            'palette_lsb': {0: 'batch'},
             'format_features': {0: 'batch'},
             'content_features': {0: 'batch'},
-            'bit_order': {0: 'batch'},
             'stego_logits': {0: 'batch'},
             'method_logits': {0: 'batch'},
             'method_id': {0: 'batch'},
