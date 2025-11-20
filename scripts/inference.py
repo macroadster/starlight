@@ -86,7 +86,7 @@ class StarlightModel:
             return {"error": "starlight_utils not available"}
 
         # Use unified input loader (aligned with scanner.py design)
-        pixel_tensor, meta, alpha, lsb, palette, format_features, content_features = load_unified_input(img_path, fast_mode=True)
+        pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(img_path, fast_mode=True)
 
         # Convert to numpy for ONNX and add batch dimension
         # Note: lsb and alpha need to be in CHW format for ONNX
@@ -181,7 +181,7 @@ if ONNX_AVAILABLE and load_unified_input:
 
             # Use unified input loader
             try:
-                pixel_tensor, meta, alpha, lsb, palette, format_features, content_features = load_unified_input(image_path, fast_mode=True)
+                pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(image_path, fast_mode=True)
             except Exception as e:
                 raise ValueError(f"Failed to preprocess image {image_path}: {e}")
 
@@ -240,7 +240,7 @@ if ONNX_AVAILABLE and load_unified_input:
 
             # Use unified input loader
             try:
-                pixel_tensor, meta, alpha, lsb, palette, format_features, content_features = load_unified_input(image_path, fast_mode=True)
+                pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(image_path, fast_mode=True)
             except Exception as e:
                 raise ValueError(f"Failed to preprocess image {image_path}: {e}")
 

@@ -8,6 +8,7 @@ import os
 import struct
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms as transforms
 import time
 import json
@@ -23,6 +24,140 @@ MODEL_TYPE = None  # 'onnx' or 'pytorch'
 DEVICE = None  # 'cpu', 'cuda', or 'mps'
 METHOD_MAP = {0: "alpha", 1: "palette", 2: "lsb.rgb", 3: "exif", 4: "raw"}
 NO_HEURISTICS = False # Global flag to disable heuristics for benchmarking
+
+# Legacy model class for older PyTorch models
+class LegacyStarlightDetector(nn.Module):
+    """Legacy model with 5 streams for compatibility with older models"""
+
+    def __init__(self):
+        super(LegacyStarlightDetector, self).__init__()
+
+        # Metadata stream (2048 features)
+        self.meta_conv = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=7, stride=2, padding=3),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(16)
+        )
+
+        # Alpha stream
+        self.alpha_conv = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(8)
+        )
+
+        # LSB stream
+        self.lsb_conv = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(8)
+        )
+
+        # Palette stream (different architecture for legacy) - use ModuleList for manual naming
+        self.palette_fc_layers = nn.ModuleList([
+            nn.Linear(768, 256),  # will be named palette_fc.0
+            nn.ReLU(),            # will be named palette_fc.1
+            nn.ReLU(),            # will be named palette_fc.2
+            nn.Linear(256, 128),  # will be named palette_fc.3
+            nn.ReLU(),            # will be named palette_fc.4
+            nn.ReLU(),            # will be named palette_fc.5
+            nn.Linear(128, 64)    # will be named palette_fc.6
+        ])
+        # Manually assign names to match saved state dict
+        for i, layer in enumerate(self.palette_fc_layers):
+            self.add_module(f'palette_fc.{i}', layer)
+
+        # Fusion and classification
+        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64  # meta + alpha + lsb + palette = 10304
+        self.fusion = nn.Sequential(
+            nn.Linear(self.fusion_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128 + 64)  # 128 for embedding, 64 for classification
+        )
+
+        # Heads
+        self.stego_head = nn.Linear(64, 1)
+        self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
+        self.embedding_head = nn.Linear(64, 64)
+
+    def forward(self, meta, alpha, lsb, palette, bit_order):
+        # Metadata stream
+        meta = meta.unsqueeze(1)  # Add channel dimension
+        meta = self.meta_conv(meta)
+        meta = meta.reshape(meta.size(0), -1)
+
+        # Alpha stream
+        alpha = self.alpha_conv(alpha)
+        alpha = alpha.reshape(alpha.size(0), -1)
+
+        # LSB stream - ensure CHW format
+        if lsb.dim() == 4 and lsb.shape[1] == 256:  # (N, H, W, C) format
+            lsb = lsb.permute(0, 3, 1, 2)  # NHWC -> NCHW
+        elif lsb.dim() == 4:  # Already in (N, C, H, W) format
+            pass  # Already correct
+        elif lsb.dim() == 3 and lsb.shape[0] == 256:  # (H, W, C) format
+            lsb = lsb.permute(2, 0, 1).unsqueeze(0)  # HWC -> CHW -> NCHW
+        elif lsb.dim() == 3:  # (C, H, W) format
+            lsb = lsb.unsqueeze(0)  # Add batch dimension
+        else:
+            raise ValueError(f"Unexpected LSB tensor shape: {lsb.shape}")
+        
+        lsb = self.lsb_conv(lsb)
+        lsb = lsb.reshape(lsb.size(0), -1)
+
+        # Palette stream
+        x = palette
+        x = getattr(self, 'palette_fc.0')(x)  # Linear 768->256
+        x = getattr(self, 'palette_fc.1')(x)  # ReLU
+        x = getattr(self, 'palette_fc.2')(x)  # ReLU
+        x = getattr(self, 'palette_fc.3')(x)  # Linear 256->128
+        x = getattr(self, 'palette_fc.4')(x)  # ReLU
+        x = getattr(self, 'palette_fc.5')(x)  # ReLU
+        palette = getattr(self, 'palette_fc.6')(x)  # Linear 128->64
+
+        # Fusion of 4 streams (ignoring bit_order for legacy compatibility)
+        fused = torch.cat([meta, alpha, lsb, palette], dim=1)
+        fused = self.fusion(fused)
+
+        # Split into embedding and classification features
+        embedding = fused[:, :128]
+        cls_features = fused[:, 128:]
+
+        # Outputs
+        stego_logits = self.stego_head(cls_features)
+        method_logits = self.method_head(cls_features)
+        embedding = self.embedding_head(cls_features)
+
+        # Get method predictions
+        method_probs = F.softmax(method_logits, dim=1)
+        method_id = torch.argmax(method_probs, dim=1)
+
+        return stego_logits, method_logits, method_id, method_probs, embedding
 
 # Import PyTorch model class
 class BalancedStarlightDetector(nn.Module):
@@ -79,11 +214,35 @@ class BalancedStarlightDetector(nn.Module):
         self.palette_fc = nn.Sequential(
             nn.Linear(768, 256),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 128),
+            nn.Linear(256, 64)
+        )
+
+        # Pixel tensor processing (new stream)
+        self.pixel_conv = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 64)
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(8)
+        )
+
+        # Palette LSB stream
+        self.palette_lsb_conv = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(8)
         )
 
         # Format features stream
@@ -101,7 +260,7 @@ class BalancedStarlightDetector(nn.Module):
         )
 
         # Fusion and classification
-        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16 + 3  # +3 for bit_order features
+        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16 + 3  # Updated for 8 streams + bit_order
         self.fusion = nn.Sequential(
             nn.Linear(self.fusion_dim, 512),
             nn.ReLU(),
@@ -117,7 +276,11 @@ class BalancedStarlightDetector(nn.Module):
         self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
         self.embedding_head = nn.Linear(64, 64)
 
-    def forward(self, meta, alpha, lsb, palette, format_features, content_features, bit_order):
+    def forward(self, pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order):
+        # Pixel tensor stream (new)
+        pixel_tensor = self.pixel_conv(pixel_tensor)
+        pixel_tensor = pixel_tensor.reshape(pixel_tensor.size(0), -1)
+
         # Metadata stream with weighting
         meta = meta.unsqueeze(1)  # Add channel dimension
         meta = self.meta_conv(meta)
@@ -128,9 +291,13 @@ class BalancedStarlightDetector(nn.Module):
         alpha = self.alpha_conv(alpha)
         alpha = alpha.reshape(alpha.size(0), -1)
 
-        # LSB stream - should already be in CHW format when it reaches here
-        if lsb.dim() == 4:  # Already in (N, C, H, W) format
+        # LSB stream - ensure CHW format
+        if lsb.dim() == 4 and lsb.shape[1] == 256:  # (N, H, W, C) format
+            lsb = lsb.permute(0, 3, 1, 2)  # NHWC -> NCHW
+        elif lsb.dim() == 4:  # Already in (N, C, H, W) format
             pass  # Already correct
+        elif lsb.dim() == 3 and lsb.shape[0] == 256:  # (H, W, C) format
+            lsb = lsb.permute(2, 0, 1).unsqueeze(0)  # HWC -> CHW -> NCHW
         elif lsb.dim() == 3:  # (C, H, W) format
             lsb = lsb.unsqueeze(0)  # Add batch dimension
         else:
@@ -142,14 +309,18 @@ class BalancedStarlightDetector(nn.Module):
         # Palette stream
         palette = self.palette_fc(palette)
 
+        # Palette LSB stream
+        palette_lsb = self.palette_lsb_conv(palette_lsb)
+        palette_lsb = palette_lsb.reshape(palette_lsb.size(0), -1)
+
         # Format features stream
         format_features = self.format_features_fc(format_features)
 
         # Content features stream
         content_features = self.content_features_fc(content_features)
 
-        # Fusion with bit_order features
-        fused = torch.cat([meta, alpha, lsb, palette, format_features, content_features, bit_order], dim=1)
+        # Fusion of all 8 streams
+        fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order], dim=1)
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
@@ -162,7 +333,7 @@ class BalancedStarlightDetector(nn.Module):
         embedding = self.embedding_head(cls_features)
 
         # Get method predictions
-        method_probs = torch.softmax(method_logits, dim=1)
+        method_probs = F.softmax(method_logits, dim=1)
         method_id = torch.argmax(method_probs, dim=1)
 
         return stego_logits, method_logits, method_id, method_probs, embedding
@@ -219,29 +390,35 @@ def _scan_logic(image_path, session, extract_message=False, fast_mode=False):
     global METHOD_MAP, MODEL_TYPE, DEVICE
     try:
 
-        pixel_tensor, meta, alpha, lsb, palette, format_features, content_features = load_unified_input(image_path, fast_mode=fast_mode)
+        pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(image_path, fast_mode=fast_mode)
+        # LSB is returned as HWC (256, 256, 3) from load_unified_input.
+        # Permute to CHW (3, 256, 256) to match ONNX model input expectation.
+        lsb = lsb.permute(2, 0, 1) # HWC -> CHW
         
         # Create bit_order feature (default to msb-first for inference)
         bit_order = torch.tensor([[0.0, 1.0, 0.0]])  # [lsb-first, msb-first, none]
         
         # Move tensors to GPU/MPS if using PyTorch to avoid CPU bottlenecks
         if MODEL_TYPE == 'pytorch' and DEVICE is not None:
+            pixel_tensor = pixel_tensor.to(DEVICE)
             meta = meta.to(DEVICE)
             alpha = alpha.to(DEVICE)
-            # Convert LSB from HWC to CHW before moving to device
-            if lsb.dim() == 3 and lsb.shape == torch.Size([256, 256, 3]):  # HWC format
-                lsb = lsb.permute(2, 0, 1)  # HWC -> CHW
-            lsb = lsb.to(DEVICE)
+            lsb = lsb.to(DEVICE) # LSB is already CHW now, no further permutation needed here
             palette = palette.to(DEVICE)
+            palette_lsb = palette_lsb.to(DEVICE)
             format_features = format_features.to(DEVICE)
             content_features = content_features.to(DEVICE)
-            bit_order = bit_order.to(DEVICE)
 
         # Add batch dimension for ONNX model
+        pixel_tensor = pixel_tensor.unsqueeze(0)
         meta = meta.unsqueeze(0)
         alpha = alpha.unsqueeze(0)
-        lsb = lsb.unsqueeze(0)
+        
+        # LSB handling for ONNX model input - it's already CHW, just add batch dim
+        lsb_onnx = lsb.unsqueeze(0)
+        
         palette = palette.unsqueeze(0)
+        palette_lsb = palette_lsb.unsqueeze(0)
         format_features = format_features.unsqueeze(0)
         content_features = content_features.unsqueeze(0)
         
@@ -249,35 +426,60 @@ def _scan_logic(image_path, session, extract_message=False, fast_mode=False):
         if MODEL_TYPE == 'pytorch':
             # PyTorch inference
             with torch.no_grad():
+                pixel_tensor = pixel_tensor.to(DEVICE)
                 meta = meta.to(DEVICE)
                 alpha = alpha.to(DEVICE)
                 lsb = lsb.to(DEVICE)
                 palette = palette.to(DEVICE)
+                palette_lsb = palette_lsb.to(DEVICE)
                 format_features = format_features.to(DEVICE)
                 content_features = content_features.to(DEVICE)
+                bit_order = bit_order.to(DEVICE)
                 
-                stego_logits, method_logits, method_id, method_probs, embedding = session(meta, alpha, lsb, palette, format_features, content_features, bit_order)
+                # Check if this is a legacy model
+                if isinstance(session, LegacyStarlightDetector):
+                    # Legacy model expects only 5 inputs
+                    stego_logits, method_logits, method_id, method_probs, embedding = session(meta, alpha, lsb, palette, bit_order)
+                else:
+                    # Current model expects 8 inputs
+                    stego_logits, method_logits, method_id, method_probs, embedding = session(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order)
                 
                 stego_logits = stego_logits.cpu().numpy()
                 method_id = method_id.cpu().numpy()
                 method_probs = method_probs.cpu().numpy()
         else:
-            # ONNX inference - need to permute LSB to match ONNX expected format
-            if lsb.dim() == 3:  # HWC format
-                lsb_onnx = lsb.permute(2, 0, 1)  # HWC -> CHW
-            else:
-                lsb_onnx = lsb  # Already correct format
+            # ONNX inference
+            model_inputs = {inp.name for inp in session.get_inputs()}
             
-            # Prepare inputs for ONNX (add batch dimension where needed)
-            input_feed = {
-                'meta': meta.numpy(),
-                'alpha': alpha.numpy(),
-                'lsb': lsb_onnx.numpy(),
-                'palette': palette.numpy(),
-                'format_features': format_features.numpy(),
-                'content_features': content_features.numpy(),
-                'bit_order': bit_order.numpy()
-            }
+            input_feed = {}
+            if 'meta' in model_inputs:
+                input_feed['meta'] = meta.numpy()
+            if 'alpha' in model_inputs:
+                input_feed['alpha'] = alpha.numpy()
+            if 'lsb' in model_inputs:
+                # lsb_onnx is already (1, 3, 256, 256) NCHW
+                input_feed['lsb'] = lsb_onnx.numpy()
+            if 'palette' in model_inputs:
+                input_feed['palette'] = palette.numpy()
+            if 'format_features' in model_inputs:
+                input_feed['format_features'] = format_features.numpy()
+            if 'content_features' in model_inputs:
+                input_feed['content_features'] = content_features.numpy()
+            if 'pixel_tensor' in model_inputs:
+                input_feed['pixel_tensor'] = pixel_tensor.numpy()
+            if 'palette_lsb' in model_inputs:
+                input_feed['palette_lsb'] = palette_lsb.numpy()
+            
+            # Legacy inputs handling (for older models if any)
+            if 'bit_order' in model_inputs:
+                bit_order = torch.tensor([[0.0, 1.0, 0.0]])
+                input_feed['bit_order'] = bit_order.numpy()
+            if 'pixel' in model_inputs:
+                pixel_4ch = torch.cat([pixel_tensor.squeeze(0), alpha.squeeze(0)], dim=0)
+                input_feed['pixel'] = pixel_4ch.unsqueeze(0).numpy()
+            if 'metadata' in model_inputs:
+                input_feed['metadata'] = meta.numpy()
+            
             stego_logits, _, method_id, method_probs, _ = session.run(None, input_feed)
 
         # Process results
@@ -289,128 +491,9 @@ def _scan_logic(image_path, session, extract_message=False, fast_mode=False):
             # Use the equivalent alternative form to avoid overflow for large negative logits
             stego_prob = np.exp(logit) / (1 + np.exp(logit))
 
-        if not NO_HEURISTICS:
-            # Method-specific thresholds tuned to reduce false positives based on analysis
-            thresholds = {0: 0.7, 1: 0.98, 2: 0.95, 3: 0.5, 4: 0.95}  # Raised alpha and palette thresholds
-            threshold = thresholds.get(method_id[0], 0.8)
-            is_stego = stego_prob > threshold
-            
-            # Strong validation for high-confidence LSB predictions to prevent systematic false positives
-            if method_id[0] == 2 and is_stego and stego_prob > 0.9:  # High confidence LSB
-                try:
-                    lsb_message, _ = extraction_functions['lsb'](image_path)
-                    # If extraction returns None or empty, it's definitely a false positive
-                    if not lsb_message:
-                        is_stego = False
-                        stego_prob = 0.1  # Very low confidence
-                    else:
-                        # Check for patterns indicating false positive
-                        total_chars = len(lsb_message)
-                        unique_chars = len(set(lsb_message))
-                        
-                        # If message is all hex characters and repetitive pattern, likely false positive
-                        hex_chars = sum(1 for c in lsb_message if c.lower() in '0123456789abcdef')
-                        if hex_chars == total_chars and unique_chars <= 16:
-                            # Check for repetitive hex patterns (like ffffff, 000000)
-                            if 'ffff' in lsb_message or '0000' in lsb_message:
-                                is_stego = False
-                                stego_prob = 0.2
-                except:
-                    is_stego = False
-                    stego_prob = 0.1
-            
-            # Strong validation for alpha steganography to prevent model errors
-            if method_id[0] == 0 and is_stego:  # Predicted as alpha steganography
-                img = Image.open(image_path)
-                # CRITICAL FIX: If image has no alpha channel, it cannot be alpha steganography
-                if img.mode != 'RGBA':
-                    is_stego = False
-                    stego_prob = 0.01  # Very low confidence for non-alpha images
-                else:
-                    alpha_channel = img.split()[-1]
-                    alpha_data = np.array(alpha_channel)
-                    # If alpha is uniform (all 255), it cannot be alpha steganography
-                    if alpha_data.std() == 0 or np.sum(alpha_data != 255) == 0:
-                        is_stego = False
-                        stego_prob = min(stego_prob, 0.1)  # Very low confidence
-            
-            # Special case: Override model decision for alpha steganography when clearly present
-            # This fixes the metadata bias issue where PNG files with metadata are incorrectly classified as clean
-            # Also handles cases where alpha steganography signal is weak but contains valid content
-            img = Image.open(image_path)
-            if img.mode == 'RGBA':
-                alpha_channel = img.split()[-1]
-                alpha_data = np.array(alpha_channel)
-                # Only check for alpha steganography if there's actual alpha variation
-                if alpha_data.std() > 0 and np.sum(alpha_data != 255) > 100:
-                    # Try to extract and validate alpha content
-                    try:
-                        alpha_message, _ = extraction_functions['alpha'](image_path)
-                        # If alpha contains readable text content (not just binary), it's alpha stego
-                        if alpha_message and len(alpha_message) > 10 and any(c.isalpha() and c.islower() for c in alpha_message):
-                            # Override to alpha method if it wasn't detected as alpha
-                            if method_id[0] != 0:
-                                method_id[0] = 0
-                                stego_prob = max(stego_prob, 0.8)
-                    except:
-                        pass
-            
-            # Special case: Reduce palette false positives by validating extracted content
-            if method_id[0] == 1 and is_stego:  # Detected as palette steganography
-                try:
-                    palette_message, _ = extraction_functions['palette'](image_path)
-                    # If palette extraction returns None or empty, it's likely a false positive
-                    if not palette_message:
-                        is_stego = False
-                        stego_prob = 0.1  # Very low confidence
-                    else:
-                        # Check for patterns indicating false positive in palette data
-                        total_chars = len(palette_message)
-                        unique_chars = len(set(palette_message))
-                        
-                        # If message is all same character or very repetitive, likely false positive
-                        if unique_chars <= 2 and total_chars > 10:
-                            is_stego = False
-                            stego_prob = min(stego_prob, 0.3)
-                        # If message is mostly null/control characters, likely false positive
-                        elif sum(1 for c in palette_message if ord(c) < 32 or ord(c) > 126) / total_chars > 0.8:
-                            is_stego = False
-                            stego_prob = min(stego_prob, 0.2)
-                except:
-                    is_stego = False
-                    stego_prob = 0.1
-
-            # Special case: Reduce LSB false positives by validating extracted content
-            if method_id[0] == 2 and is_stego:  # Detected as LSB steganography
-                try:
-                    lsb_message, _ = extraction_functions['lsb'](image_path)
-                    # If LSB message is mostly repeated characters or meaningless, it's likely false positive
-                    if lsb_message:
-                        # Check for patterns indicating false positive
-                        unique_chars = set(lsb_message)
-                        total_chars = len(lsb_message)
-                        
-                        # If message is mostly repeated characters (>80% same char) or very short, likely false positive
-                        if len(unique_chars) <= 2 and total_chars > 20:
-                            # Calculate ratio of most common character
-                            most_common_ratio = max(lsb_message.count(c) for c in unique_chars) / total_chars
-                            if most_common_ratio > 0.8:
-                                is_stego = False
-                                stego_prob = min(stego_prob, 0.4)  # Reduce confidence
-                        # If message is all same character repeated, definitely false positive
-                        elif len(unique_chars) == 1 and total_chars > 10:
-                            is_stego = False
-                            stego_prob = min(stego_prob, 0.2)
-                        # If message is mostly null bytes or control characters, likely false positive
-                        elif sum(1 for c in lsb_message if ord(c) < 32) / total_chars > 0.7:
-                            is_stego = False
-                            stego_prob = min(stego_prob, 0.3)
-                except:
-                    pass
-        else:
-            # When heuristics are disabled, use a simple 0.5 threshold for benchmarking
-            threshold = 0.5
-            is_stego = stego_prob > threshold
+        # When heuristics are disabled, use a simple 0.5 threshold for benchmarking
+        threshold = 0.5
+        is_stego = stego_prob > threshold
         result = {
             "file_path": str(image_path),
             "is_stego": bool(is_stego),
@@ -549,12 +632,24 @@ class StarlightScanner:
             else:
                 DEVICE = torch.device('cpu')
             
-            # Load PyTorch model
-            model = BalancedStarlightDetector()
-            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
-            model.to(DEVICE)
-            model.eval()
-            session = model
+            # Load PyTorch model with compatibility detection
+            try:
+                # Try loading with current architecture first
+                model = BalancedStarlightDetector()
+                model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
+                model.to(DEVICE)
+                model.eval()
+                session = model
+            except RuntimeError as e:
+                if "Missing key(s)" in str(e) or "size mismatch" in str(e):
+                    # Fall back to legacy model for older checkpoints
+                    model = LegacyStarlightDetector()
+                    model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
+                    model.to(DEVICE)
+                    model.eval()
+                    session = model
+                else:
+                    raise
         else:
             MODEL_TYPE = 'onnx'
             DEVICE = None
@@ -654,12 +749,13 @@ def main():
     NO_HEURISTICS = args.no_heuristics
     
     # Auto-detect and use PyTorch model if available on Mac
-    if args.model.endswith('.onnx') and torch.backends.mps.is_available():
-        pth_model = args.model.replace('.onnx', '.pth')
-        if os.path.exists(pth_model):
-            args.model = pth_model
-            if not args.json:
-                print(f"[AUTO] Using PyTorch model with MPS acceleration: {args.model}")
+    # DISABLED: PyTorch models have architecture mismatch with current code
+    # if args.model.endswith('.onnx') and torch.backends.mps.is_available():
+    #     pth_model = args.model.replace('.onnx', '.pth')
+    #     if os.path.exists(pth_model):
+    #         args.model = pth_model
+    #         if not args.json:
+    #             print(f"[AUTO] Using PyTorch model with MPS acceleration: {args.model}")
     
     # Initialize global variables for model type and device
     global MODEL_TYPE, DEVICE

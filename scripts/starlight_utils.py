@@ -192,6 +192,14 @@ def load_unified_input(path, fast_mode=False):
                 palette = torch.zeros(768, dtype=torch.float32)
         else:
             palette = torch.zeros(768, dtype=torch.float32)
+            
+        # Palette LSB extraction (accurate) for fast mode
+        if img.mode == 'P':
+            indexed_img = img.convert('L')
+            indexed_array = np.array(transforms.CenterCrop((256, 256))(indexed_img))
+            palette_lsb = torch.from_numpy((indexed_array & 1).astype(np.float32)).unsqueeze(0)
+        else:
+            palette_lsb = torch.zeros(1, 256, 256, dtype=torch.float32)
         
         # Full metadata extraction (required for EXIF detection)
         try:
@@ -203,18 +211,17 @@ def load_unified_input(path, fast_mode=False):
         except:
             meta = torch.zeros(2048, dtype=torch.float32)
         
-        # Format features (simplified)
+        # Format features (format-agnostic to eliminate bias)
+        # Use neutral format features to prevent format-based bias
         format_features = torch.zeros(6, dtype=torch.float32)
-        if img.format:
-            format_idx = ['jpeg', 'png', 'gif', 'webp', 'bmp'].index(img.format.lower()) if img.format.lower() in ['jpeg', 'png', 'gif', 'webp', 'bmp'] else 5
-            format_features[format_idx] = 1.0
+        format_features[5] = 1.0  # Use "unknown" format index for all images
         
         # Skip only expensive content feature calculations
         lsb_content_features = torch.zeros(3, dtype=torch.float32)
         alpha_content_features = torch.zeros(3, dtype=torch.float32)
         content_features = torch.cat([lsb_content_features, alpha_content_features])
         
-        return pixel_tensor, meta, alpha, lsb, palette, format_features, content_features
+        return pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features
     
     # --- Augmentation ---
     # Augmentations should be done on RGB version of image
@@ -289,24 +296,28 @@ def load_unified_input(path, fast_mode=False):
     # --- Palette Path ---
     # Ensure palette tensor is 768 elements
     if img.mode == 'P':
+        # Extract palette colors
         palette_bytes = np.array(img.getpalette(), dtype=np.uint8)
         palette_bytes = np.pad(palette_bytes, (0, 768 - len(palette_bytes)), 'constant')
+        palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
+
+        # Extract LSB patterns from palette indices (image pixel data)
+        # Convert to 'L' mode to get the palette indices
+        indexed_img = img.convert('L')
+        indexed_array = np.array(transforms.CenterCrop((256, 256))(indexed_img))
+        palette_lsb = torch.from_numpy((indexed_array & 1).astype(np.float32)).unsqueeze(0)
     else:
         palette_bytes = np.zeros(768, dtype=np.uint8)
-    palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
+        palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
+        palette_lsb = torch.zeros(1, 256, 256, dtype=torch.float32) # Default for non-palette images
 
     # --- Format Features Path ---
     # Simplified format features to match the model's expectations.
-    width, height = img.size
-    format_features = torch.tensor([
-        has_alpha,
-        alpha_std_dev,
-        1.0 if img.mode == 'P' else 0.0,    # is_palette
-        1.0 if img.mode == 'RGB' else 0.0,   # is_rgb
-        float(width) / 256.0,          # width_norm
-        float(height) / 256.0            # height_norm
-    ], dtype=torch.float32)
+    # Format features (format-agnostic to eliminate bias)
+    # Use neutral format features to prevent format-based bias
+    format_features = torch.zeros(6, dtype=torch.float32)
+    format_features[5] = 1.0  # Use "unknown" format index for all images
     
     content_features = torch.cat([lsb_content_features, alpha_content_features])
-
-    return pixel_tensor, meta, alpha, lsb, palette, format_features, content_features
+    
+    return pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features

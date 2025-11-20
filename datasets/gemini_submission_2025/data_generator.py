@@ -9,7 +9,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # --- CONFIGURATION ---
 # Note: This is now the DEFAULT, but it will be overridden if --limit is used.
 NUM_IMAGES_PER_PAYLOAD = 5      # Default number of image pairs to generate for each .md file
-RESOLUTION = 512
+RESOLUTION = 256
 HINT_BYTES = b'AI42'           # Sequence to signal hidden data
 TERMINATOR_BYTES = b'\x00'       # Byte to signal the end of the message
 
@@ -245,7 +245,12 @@ def generate_images(limit=None, resolution=RESOLUTION):
                 payload_name = base_name.lower() # payload_name
                 algorithm = algorithm_name.lower() # lsb or eoi
                 index = f'{i:03d}' # zero-padded index
-                ext = current_format.lower() # png or jpeg
+                
+                # Determine file extension (50% WebP for alpha to balance training data)
+                if algorithm == 'alpha' and i % 2 == 0:
+                    ext = 'webp'
+                else:
+                    ext = current_format.lower() # png or jpeg
                 
                 # Construct the full structured filename
                 filename = f'{payload_name}_{algorithm}_{index}.{ext}'
@@ -254,18 +259,20 @@ def generate_images(limit=None, resolution=RESOLUTION):
                 stego_path = os.path.join(stego_dir, filename)
                 
                 # 2. Generate Synthetic Clean Image
-                img_data_rgb = np.random.randint(0, 256, (resolution, resolution, 3), dtype=np.uint8)
-                
-                # Prepare image data based on format requirements
                 if current_format == PNG_FORMAT:
                     # PNG/LSB requires RGBA for max capacity and lossless saving
-                    alpha_channel = np.full((resolution, resolution, 1), 255, dtype=np.uint8)
-                    img_data_rgba = np.concatenate((img_data_rgb, alpha_channel), axis=2)
-                    Image.fromarray(img_data_rgba).save(clean_path, current_format)
-                
+                    img_data_rgba = np.random.randint(0, 256, (resolution, resolution, 4), dtype=np.uint8)
+                    img_data_rgba[:, :, 3] = 255  # Set alpha to fully opaque
+                    # Save with appropriate format
+                    save_format = 'WEBP' if ext == 'webp' else current_format
+                    Image.fromarray(img_data_rgba).save(clean_path, save_format)
                 elif current_format == JPEG_FORMAT:
                     # JPEG uses RGB and fixed quality
+                    img_data_rgb = np.random.randint(0, 256, (resolution, resolution, 3), dtype=np.uint8)
                     Image.fromarray(img_data_rgb).save(clean_path, current_format, quality=quality)
+                else:
+                    continue # Should not happen
+
                 
                 # 3. Generate Stego Image
                 embed_result = embed_func(clean_path, stego_path, full_byte_payload)

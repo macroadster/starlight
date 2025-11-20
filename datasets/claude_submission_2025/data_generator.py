@@ -53,7 +53,7 @@ class ClaudeStegGenerator:
     
     def generate_diverse_clean_image(self, index, img_type='gradient'):
         """Generate visually diverse clean images"""
-        width, height = 512, 512 
+        width, height = 256, 256 
         
         if img_type == 'gradient':
             img_array = np.zeros((height, width, 4), dtype=np.uint8)
@@ -99,7 +99,7 @@ class ClaudeStegGenerator:
             img_array[:, :, 3] = 255  # Set alpha to fully opaque
             return Image.fromarray(img_array, mode='RGBA')
         
-        else:  # 'blocks'
+        elif img_type == 'blocks':  # 'blocks'
             img = Image.new('RGBA', (width, height))
             draw = ImageDraw.Draw(img)
             block_size = 64
@@ -114,6 +114,17 @@ class ClaudeStegGenerator:
                     )
                     draw.rectangle([x, y, x + block_size, y + block_size], fill=color)
             return img
+        else:
+            img_array = np.zeros((height, width, 4), dtype=np.uint8)
+            for y in range(height):
+                for x in range(width):
+                    img_array[y, x] = [
+                        int(255 * x / width),
+                        int(255 * y / height),
+                        int(255 * (x + y) / (width + height)),
+                        255  # Fully opaque alpha channel
+                    ]
+            return Image.fromarray(img_array)
     
     def validate_capacity(self, payload, capacity, method_name):
         """Validate that payload fits in container"""
@@ -405,12 +416,22 @@ class ClaudeStegGenerator:
                 img_type = image_types[i % len(image_types)]
                 method_name, file_ext, embed_func, extract_func = methods[i % len(methods)]
                 
-                # Use sequential counter for this method
+                 # Use sequential counter for this method
                 method_idx = method_counters[method_name]
                 method_counters[method_name] += 1
                 
                 base_filename = f"{payload_name}_{method_name}_{method_idx:03d}"
                 
+                # Determine file format (50% WebP for alpha to balance training data)
+                if method_name == 'alpha' and method_idx % 2 == 0:
+                    # Even indices: use WebP for alpha files
+                    actual_file_ext = 'webp'
+                    save_format = 'WEBP'
+                else:
+                    # Odd indices and all other methods: use original format
+                    actual_file_ext = file_ext
+                    save_format = 'BMP' if file_ext == 'bmp' else 'PNG'
+               
                 try:
                     # Generate clean image
                     clean_img = self.generate_diverse_clean_image(
@@ -418,20 +439,13 @@ class ClaudeStegGenerator:
                     )
                     
                     # Save clean
-                    clean_path = self.clean_dir / f"{base_filename}.{file_ext}"
-                    if file_ext == 'bmp':
-                        clean_img.save(clean_path, 'BMP')
-                    else:
-                        clean_img.save(clean_path, 'PNG')
+                    clean_path = self.clean_dir / f"{base_filename}.{actual_file_ext}"
+                    clean_img.save(clean_path, save_format)
                     
                     # Generate stego
                     stego_img = embed_func(clean_img, payload_data)
-                    stego_path = self.stego_dir / f"{base_filename}.{file_ext}"
-                    
-                    if file_ext == 'bmp':
-                        stego_img.save(stego_path, 'BMP')
-                    else:
-                        stego_img.save(stego_path, 'PNG')
+                    stego_path = self.stego_dir / f"{base_filename}.{actual_file_ext}"
+                    stego_img.save(stego_path, save_format)
 
                     # --- Create JSON Sidecar ---
                     json_path = stego_path.with_suffix(stego_path.suffix + '.json')
