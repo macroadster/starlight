@@ -25,139 +25,7 @@ DEVICE = None  # 'cpu', 'cuda', or 'mps'
 METHOD_MAP = {0: "alpha", 1: "palette", 2: "lsb.rgb", 3: "exif", 4: "raw"}
 NO_HEURISTICS = False # Global flag to disable heuristics for benchmarking
 
-# Legacy model class for older PyTorch models
-class LegacyStarlightDetector(nn.Module):
-    """Legacy model with 5 streams for compatibility with older models"""
-
-    def __init__(self):
-        super(LegacyStarlightDetector, self).__init__()
-
-        # Metadata stream (2048 features)
-        self.meta_conv = nn.Sequential(
-            nn.Conv1d(1, 32, kernel_size=7, stride=2, padding=3),
-            nn.BatchNorm1d(32),
-            nn.ReLU(),
-            nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool1d(16)
-        )
-
-        # Alpha stream
-        self.alpha_conv = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8)
-        )
-
-        # LSB stream
-        self.lsb_conv = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8)
-        )
-
-        # Palette stream (different architecture for legacy) - use ModuleList for manual naming
-        self.palette_fc_layers = nn.ModuleList([
-            nn.Linear(768, 256),  # will be named palette_fc.0
-            nn.ReLU(),            # will be named palette_fc.1
-            nn.ReLU(),            # will be named palette_fc.2
-            nn.Linear(256, 128),  # will be named palette_fc.3
-            nn.ReLU(),            # will be named palette_fc.4
-            nn.ReLU(),            # will be named palette_fc.5
-            nn.Linear(128, 64)    # will be named palette_fc.6
-        ])
-        # Manually assign names to match saved state dict
-        for i, layer in enumerate(self.palette_fc_layers):
-            self.add_module(f'palette_fc.{i}', layer)
-
-        # Fusion and classification
-        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64  # meta + alpha + lsb + palette = 10304
-        self.fusion = nn.Sequential(
-            nn.Linear(self.fusion_dim, 512),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 128 + 64)  # 128 for embedding, 64 for classification
-        )
-
-        # Heads
-        self.stego_head = nn.Linear(64, 1)
-        self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
-        self.embedding_head = nn.Linear(64, 64)
-
-    def forward(self, meta, alpha, lsb, palette, bit_order):
-        # Metadata stream
-        meta = meta.unsqueeze(1)  # Add channel dimension
-        meta = self.meta_conv(meta)
-        meta = meta.reshape(meta.size(0), -1)
-
-        # Alpha stream
-        alpha = self.alpha_conv(alpha)
-        alpha = alpha.reshape(alpha.size(0), -1)
-
-        # LSB stream - ensure CHW format
-        if lsb.dim() == 4 and lsb.shape[1] == 256:  # (N, H, W, C) format
-            lsb = lsb.permute(0, 3, 1, 2)  # NHWC -> NCHW
-        elif lsb.dim() == 4:  # Already in (N, C, H, W) format
-            pass  # Already correct
-        elif lsb.dim() == 3 and lsb.shape[0] == 256:  # (H, W, C) format
-            lsb = lsb.permute(2, 0, 1).unsqueeze(0)  # HWC -> CHW -> NCHW
-        elif lsb.dim() == 3:  # (C, H, W) format
-            lsb = lsb.unsqueeze(0)  # Add batch dimension
-        else:
-            raise ValueError(f"Unexpected LSB tensor shape: {lsb.shape}")
-        
-        lsb = self.lsb_conv(lsb)
-        lsb = lsb.reshape(lsb.size(0), -1)
-
-        # Palette stream
-        x = palette
-        x = getattr(self, 'palette_fc.0')(x)  # Linear 768->256
-        x = getattr(self, 'palette_fc.1')(x)  # ReLU
-        x = getattr(self, 'palette_fc.2')(x)  # ReLU
-        x = getattr(self, 'palette_fc.3')(x)  # Linear 256->128
-        x = getattr(self, 'palette_fc.4')(x)  # ReLU
-        x = getattr(self, 'palette_fc.5')(x)  # ReLU
-        palette = getattr(self, 'palette_fc.6')(x)  # Linear 128->64
-
-        # Fusion of 4 streams (ignoring bit_order for legacy compatibility)
-        fused = torch.cat([meta, alpha, lsb, palette], dim=1)
-        fused = self.fusion(fused)
-
-        # Split into embedding and classification features
-        embedding = fused[:, :128]
-        cls_features = fused[:, 128:]
-
-        # Outputs
-        stego_logits = self.stego_head(cls_features)
-        method_logits = self.method_head(cls_features)
-        embedding = self.embedding_head(cls_features)
-
-        # Get method predictions
-        method_probs = F.softmax(method_logits, dim=1)
-        method_id = torch.argmax(method_probs, dim=1)
-
-        return stego_logits, method_logits, method_id, method_probs, embedding
+# Legacy model class for older PyTorch models (REMOVED)
 
 # Import PyTorch model class
 class BalancedStarlightDetector(nn.Module):
@@ -385,12 +253,12 @@ def init_worker(model_path):
         sess_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
         SESSION = onnxruntime.InferenceSession(model_path, sess_options)
 
-def _scan_logic(image_path, session, extract_message=False, fast_mode=False):
+def _scan_logic(image_path, session, extract_message=False):
     """The actual scanning logic, independent of the execution context."""
     global METHOD_MAP, MODEL_TYPE, DEVICE
     try:
 
-        pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(image_path, fast_mode=fast_mode)
+        pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(image_path)
         # LSB is returned as HWC (256, 256, 3) from load_unified_input.
         # Permute to CHW (3, 256, 256) to match ONNX model input expectation.
         lsb = lsb.permute(2, 0, 1) # HWC -> CHW
@@ -436,13 +304,8 @@ def _scan_logic(image_path, session, extract_message=False, fast_mode=False):
                 content_features = content_features.to(DEVICE)
                 bit_order = bit_order.to(DEVICE)
                 
-                # Check if this is a legacy model
-                if isinstance(session, LegacyStarlightDetector):
-                    # Legacy model expects only 5 inputs
-                    stego_logits, method_logits, method_id, method_probs, embedding = session(meta, alpha, lsb, palette, bit_order)
-                else:
-                    # Current model expects 8 inputs
-                    stego_logits, method_logits, method_id, method_probs, embedding = session(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order)
+                # Current model expects 8 inputs
+                stego_logits, method_logits, method_id, method_probs, embedding = session(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order)
                 
                 stego_logits = stego_logits.cpu().numpy()
                 method_id = method_id.cpu().numpy()
@@ -539,18 +402,9 @@ def scan_batch_worker(image_paths):
     global SESSION, MODEL_TYPE, DEVICE
     results = []
     
-    # Smart fast mode: detect LSB-heavy workloads
-    lsb_files = sum(1 for path in image_paths if 'lsb' in path.lower())
-    lsb_ratio = lsb_files / len(image_paths) if image_paths else 0
-    
-    # Disable fast mode completely to ensure 100% detection accuracy
-    fast_mode = False
-    
-    # For now, use individual processing but with optimizations
-    # True batch processing requires more complex tensor handling
     for path in image_paths:
         try:
-            result = _scan_logic(path, SESSION, extract_message=False, fast_mode=fast_mode)
+            result = _scan_logic(path, SESSION, extract_message=False)
             results.append(result)
         except Exception as e:
             # Handle errors gracefully without crashing the entire batch
@@ -632,24 +486,11 @@ class StarlightScanner:
             else:
                 DEVICE = torch.device('cpu')
             
-            # Load PyTorch model with compatibility detection
-            try:
-                # Try loading with current architecture first
-                model = BalancedStarlightDetector()
-                model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
-                model.to(DEVICE)
-                model.eval()
-                session = model
-            except RuntimeError as e:
-                if "Missing key(s)" in str(e) or "size mismatch" in str(e):
-                    # Fall back to legacy model for older checkpoints
-                    model = LegacyStarlightDetector()
-                    model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
-                    model.to(DEVICE)
-                    model.eval()
-                    session = model
-                else:
-                    raise
+            model = BalancedStarlightDetector()
+            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
+            model.to(DEVICE)
+            model.eval()
+            session = model
         else:
             MODEL_TYPE = 'onnx'
             DEVICE = None
