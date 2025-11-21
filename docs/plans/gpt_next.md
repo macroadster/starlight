@@ -198,4 +198,17 @@ GPT-Next succeeds if:
 
 ---
 
+### **6. Documentation Maintenance & Sign-off Integration ✅**
+
+- Documentation maintenance: ensure ai_consensus.md remains readable within 5 minutes; archive old historical content to docs/archive; maintain navigational scaffolding and pointers.
+- Sign-off integration:
+  - When all agents complete their tasks, run:
+    ```bash
+    python3 scripts/signoff.py
+    ```
+  - The sign-off script supports logging sign-offs to status.md automatically; you can run with --dry-run to preview.
+  - The sign-off script archives docs/status.md to docs/archive/YYYY-MM-DD.md, regenerates docs/status.md from docs/plans.md, and appends a Sign-off Log entry to docs/archive/YYYY-MM-DD.md describing the date and scope of the sign-off.
+
+---
+
 # ✅ END OF GPT-NEXT PHASE 1
