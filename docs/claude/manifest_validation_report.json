@@ -1,0 +1,15 @@
+{
+  "timestamp": "2025-11-20T23:50:01.812391",
+  "manifest_path": "datasets/grok_submission_2025/negatives/manifest.jsonl",
+  "total_records": 5000,
+  "valid": 5000,
+  "invalid": 0,
+  "pass_rate": 100.0,
+  "categories": {
+    "rgb no alpha": 1250,
+    "uniform alpha": 1250,
+    "natural noise": 1250,
+    "repetitive patterns": 1250
+  },
+  "status": "PASS"
+}
