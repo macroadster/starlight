@@ -20,3 +20,5 @@ stego/
 **/stego/
 checkpoints/
 test_images/
+
+**/*.log
