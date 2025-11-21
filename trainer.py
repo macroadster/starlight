@@ -547,7 +547,7 @@ class BalancedStarlightDetector(nn.Module):
 
         # Alpha stream
         self.alpha_conv = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(2, 16, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
@@ -930,7 +930,7 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
     # Create dummy input matching 8-tensor model signature
     dummy_pixel_tensor = torch.randn(1, 3, 256, 256)
     dummy_meta = torch.randn(1, 2048)
-    dummy_alpha = torch.randn(1, 1, 256, 256)
+    dummy_alpha = torch.randn(1, 2, 256, 256)
     dummy_lsb = torch.randn(1, 3, 256, 256)
     dummy_palette = torch.randn(1, 768)
     dummy_palette_lsb = torch.randn(1, 1, 256, 256)
