@@ -25,7 +25,7 @@ class BalancedStegoDataset(Dataset):
     Creates perfect 1:1 clean:stego ratio by sampling stego images to match clean count.
     """
 
-    def __init__(self, clean_dir_pattern, stego_dir_pattern, transform=None, balance_strategy='sample_stego'):
+    def __init__(self, clean_dir_pattern, stego_dir_pattern, negative_dir_pattern, transform=None, balance_strategy='sample_stego'):
         self.transform = transform
         self.samples = []
         self.clean_files_used = set()
@@ -33,7 +33,7 @@ class BalancedStegoDataset(Dataset):
         self.method_labels_list = []
         self.method_map = {"alpha": 0, "palette": 1, "lsb.rgb": 2, "exif": 3, "raw": 4}
 
-        print(f"[BALANCED DATASET] Loading from clean pattern: {clean_dir_pattern}, stego pattern: {stego_dir_pattern}...")
+        print(f"[BALANCED DATASET] Loading from clean pattern: {clean_dir_pattern}, stego pattern: {stego_dir_pattern}, negative pattern: {negative_dir_pattern}...")
         print(f"[BALANCED DATASET] Balance strategy: {balance_strategy}")
 
         stego_dirs = sorted(glob.glob(stego_dir_pattern))
@@ -42,6 +42,21 @@ class BalancedStegoDataset(Dataset):
 
         all_stego_samples = []
         clean_samples = []
+
+        # Load negative samples
+        if negative_dir_pattern:
+            negative_dirs = sorted(glob.glob(negative_dir_pattern))
+            for neg_dir_str in negative_dirs:
+                neg_dir = Path(neg_dir_str)
+                print(f"  - Processing negative dir: {neg_dir_str}")
+                for img_file in neg_dir.glob("*.png"):
+                    clean_samples.append({
+                        'path': img_file,
+                        'stego_label': 0,
+                        'method_label': -1,
+                        'bit_order': 'none',
+                        'type': 'clean'
+                    })
 
         for stego_dir_str in stego_dirs:
             stego_dir = Path(stego_dir_str)
@@ -698,7 +713,7 @@ def compute_class_weights(method_labels):
 
     return weights
 
-def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_generalized.onnx"):
+def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_generalized.onnx"):
     # Use CPU for now due to MPS tensor view compatibility issues
     # TODO: Fix MPS compatibility issues in future PyTorch versions
     if torch.cuda.is_available():
@@ -726,10 +741,10 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
     print("Loading training data from submissions and validation data from val set...")
 
     # Load training samples from all submission datasets with balanced classes
-    train_source_dataset = BalancedStegoDataset(train_clean_dir, train_stego_dir, transform=None, balance_strategy='balanced_classes')
+    train_source_dataset = BalancedStegoDataset(train_clean_dir, train_stego_dir, train_negative_dir, transform=None, balance_strategy='balanced_classes')
     
     # Load validation samples from val dataset only - use all stego images
-    val_source_dataset = BalancedStegoDataset(val_clean_dir, val_stego_dir, transform=None, balance_strategy='use_all_stego')
+    val_source_dataset = BalancedStegoDataset(val_clean_dir, val_stego_dir, None, transform=None, balance_strategy='use_all_stego')
 
     # Create training dataset with augmentations
     train_dataset = copy.deepcopy(train_source_dataset)
@@ -765,7 +780,7 @@ def train_model(train_clean_dir, train_stego_dir, val_clean_dir=None, val_stego_
     print("Starting training...")
     best_val_loss = float('inf')
     epochs_no_improve = 0
-    patience = 5
+    patience = 10
 
     for epoch in range(epochs):
         model.train()
@@ -965,6 +980,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_clean_dir", default="datasets/*_submission_*/clean")
     parser.add_argument("--train_stego_dir", default="datasets/*_submission_*/stego")
+    parser.add_argument("--train_negative_dir", default="datasets/*_submission_*/negatives")
     parser.add_argument("--val_clean_dir", default="datasets/val/clean")
     parser.add_argument("--val_stego_dir", default="datasets/val/stego")
     parser.add_argument("--epochs", type=int, default=50) # Increased default epochs
@@ -974,6 +990,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     os.makedirs("models", exist_ok=True)
-    train_model(args.train_clean_dir, args.train_stego_dir, args.val_clean_dir, args.val_stego_dir, args.epochs, args.batch_size, args.lr, args.out)
+    train_model(args.train_clean_dir, args.train_stego_dir, args.train_negative_dir, args.val_clean_dir, args.val_stego_dir, args.epochs, args.batch_size, args.lr, args.out)
 
 

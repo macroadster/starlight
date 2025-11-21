@@ -221,6 +221,9 @@ def load_unified_input(path):
 
     # --- Palette Path ---
     # Ensure palette tensor is 768 elements
+    if img.format == 'GIF' and img.mode == 'L':
+        img = img.convert('P')
+
     if img.mode == 'P':
         # Extract palette colors
         palette_bytes = np.array(img.getpalette(), dtype=np.uint8)
@@ -239,10 +242,21 @@ def load_unified_input(path):
 
     # --- Format Features Path ---
     # Simplified format features to match the model's expectations.
-    # Format features (format-agnostic to eliminate bias)
-    # Use neutral format features to prevent format-based bias
-    format_features = torch.zeros(6, dtype=torch.float32)
-    format_features[5] = 1.0  # Use "unknown" format index for all images
+    width, height = img.size
+    has_alpha = 1.0 if img.mode == 'RGBA' else 0.0
+    alpha_std_dev = 0.0
+    if has_alpha:
+        alpha_plane = np.array(img.split()[-1])
+        alpha_std_dev = alpha_plane.std() / 255.0 # Normalize
+
+    format_features = torch.tensor([
+        has_alpha,
+        alpha_std_dev,
+        1.0 if img.mode == 'P' else 0.0,    # is_palette
+        1.0 if img.mode == 'RGB' else 0.0,   # is_rgb
+        float(width) / 256.0,          # width_norm
+        float(height) / 256.0            # height_norm
+    ], dtype=torch.float32)
     
     content_features = torch.cat([lsb_content_features, alpha_content_features])
     
