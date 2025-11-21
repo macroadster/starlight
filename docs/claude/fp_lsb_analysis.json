@@ -1,0 +1,137 @@
+[
+  {
+    "filename": "clean-0026.png",
+    "detected_as": "lsb.rgb",
+    "confidence": 100.0,
+    "file_analysis": {
+      "total_bytes": 1177261,
+      "image_format": "PNG",
+      "image_mode": "RGB"
+    },
+    "lsb_patterns": {
+      "R": {
+        "ones": 536266,
+        "zeros": 512310,
+        "one_ratio": 0.5114231109619141
+      },
+      "G": {
+        "ones": 618022,
+        "zeros": 430554,
+        "one_ratio": 0.5893917083740234
+      },
+      "B": {
+        "ones": 594600,
+        "zeros": 453976,
+        "one_ratio": 0.5670547485351562
+      }
+    }
+  },
+  {
+    "filename": "clean-0039.png",
+    "detected_as": "lsb.rgb",
+    "confidence": 100.0,
+    "file_analysis": {
+      "total_bytes": 1155321,
+      "image_format": "PNG",
+      "image_mode": "RGB"
+    },
+    "lsb_patterns": {
+      "R": {
+        "ones": 586303,
+        "zeros": 462273,
+        "one_ratio": 0.5591421127319336
+      },
+      "G": {
+        "ones": 609502,
+        "zeros": 439074,
+        "one_ratio": 0.5812664031982422
+      },
+      "B": {
+        "ones": 603407,
+        "zeros": 445169,
+        "one_ratio": 0.5754537582397461
+      }
+    }
+  },
+  {
+    "filename": "clean-0035.png",
+    "detected_as": "lsb.rgb",
+    "confidence": 100.0,
+    "file_analysis": {
+      "total_bytes": 1137906,
+      "image_format": "PNG",
+      "image_mode": "RGB"
+    },
+    "lsb_patterns": {
+      "R": {
+        "ones": 508913,
+        "zeros": 539663,
+        "one_ratio": 0.4853372573852539
+      },
+      "G": {
+        "ones": 603291,
+        "zeros": 445285,
+        "one_ratio": 0.575343132019043
+      },
+      "B": {
+        "ones": 564577,
+        "zeros": 483999,
+        "one_ratio": 0.5384225845336914
+      }
+    }
+  },
+  {
+    "filename": "clean-0021.png",
+    "detected_as": "lsb.rgb",
+    "confidence": 100.0,
+    "file_analysis": {
+      "total_bytes": 1196562,
+      "image_format": "PNG",
+      "image_mode": "RGB"
+    },
+    "lsb_patterns": {
+      "R": {
+        "ones": 566386,
+        "zeros": 482190,
+        "one_ratio": 0.5401477813720703
+      },
+      "G": {
+        "ones": 601032,
+        "zeros": 447544,
+        "one_ratio": 0.5731887817382812
+      },
+      "B": {
+        "ones": 604454,
+        "zeros": 444122,
+        "one_ratio": 0.5764522552490234
+      }
+    }
+  },
+  {
+    "filename": "clean-0347.png",
+    "detected_as": "lsb.rgb",
+    "confidence": 100.0,
+    "file_analysis": {
+      "total_bytes": 130605,
+      "image_format": "PNG",
+      "image_mode": "RGB"
+    },
+    "lsb_patterns": {
+      "R": {
+        "ones": 33290,
+        "zeros": 32246,
+        "one_ratio": 0.507965087890625
+      },
+      "G": {
+        "ones": 33238,
+        "zeros": 32298,
+        "one_ratio": 0.507171630859375
+      },
+      "B": {
+        "ones": 33146,
+        "zeros": 32390,
+        "one_ratio": 0.505767822265625
+      }
+    }
+  }
+]
