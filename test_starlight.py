@@ -1,258 +1,324 @@
 #!/usr/bin/env python3
+"""
+scan_datasets.py - Comprehensive dataset scanning script
+Loops through all submission datasets and validation set to provide accuracy summaries.
+Directly calls scanner functions to preserve progress bars and real-time output.
+"""
+
 import os
-import glob
-import re
-import subprocess
-import argparse
+import sys
 import json
+import argparse
+from pathlib import Path
 from collections import defaultdict
-from tqdm import tqdm # Import tqdm for progress bar
-import random # Import random for sampling
 
-# --- Configuration ---
-# The root directory for the dataset submissions
-DATASET_ROOT = 'datasets'
-# The maximum number of files to sample from each submission directory for testing.
-# Set to None or a very large number to test all files.
-SAMPLE_SIZE = 30
-# Common image extensions to find all files
-IMAGE_FILE_PATTERN = '*{ext}'
-IMAGE_EXTENSIONS = ['png', 'gif', 'jpeg', 'jpg', 'webp', 'bmp']
-# The name of your primary execution script
-EXTRACTOR_SCRIPT = 'scanner.py'
-# The name of the output log file
-TEST_LOG_FILE = 'starlight_test_log.txt'
+# Import scanner module
+from scanner import StarlightScanner
 
-def log_and_print(message, log_file=None, end='\n'):
-    """Prints to console and writes to a log file."""
-    print(message, end=end)
-    if log_file:
-        log_file.write(message + end)
 
-def parse_filename(filename):
-    """
-    Parses the filename format: {payload_name}_{algorithm}_{index}.{ext}
-    Returns a tuple (algorithm, payload_base_name).
-    """
-    try:
-        # Example: 'temporal_causality_warning_png_alpha_186.png'
-        name_no_ext = os.path.splitext(filename)[0]
-        parts = name_no_ext.split('_')
-        
-        if len(parts) >= 3:
-            # The algorithm name is the second-to-last part
-            algorithm = parts[-2].lower()
-            # The payload base name is everything before the algorithm and index
-            payload_base_name = '_'.join(parts[:-2])
-            return algorithm, payload_base_name
-        
-        return None, None
-    except Exception:
-        return None, None
-
-def read_expected_payload(payload_path):
-    """Reads the content of the expected Markdown payload file."""
-    if payload_path and os.path.exists(payload_path):
-        try:
-            with open(payload_path, 'r', encoding='utf-8') as f:
-                return f.read().strip()
-        except Exception as e:
-            return f"ERROR_READING_PAYLOAD: {e}"
-    return ""
-
-def normalize_text(text):
-    """Normalizes text by removing all whitespace and lowercasing."""
-    # Removes all spaces, tabs, newlines, and returns the lowercase string
-    return ''.join(text.split()).lower()
-
-def run_extraction_test(image_path, algorithm, payload_path=None):
-    """
-    Runs the scanner.py script for a specific image and algorithm.
-    Returns a tuple: (result_status, failure_details)
-    """
+def scan_directory_and_parse(scanner, dir_path, dataset_name, show_details=False):
+    """Scan a directory and return parsed results."""
+    if not os.path.isdir(dir_path):
+        print(f"⚠️  Directory not found: {dir_path}")
+        return None
     
-    expected_content = read_expected_payload(payload_path)
-    if expected_content.startswith("ERROR_READING_PAYLOAD"):
-        return "ERROR", expected_content
+    print(f"📁 Scanning {dataset_name}...")
     
-    try:
-        command = [
-            'python3', 
-            EXTRACTOR_SCRIPT, 
-            image_path,
-            '--json'  # Use JSON output for robust parsing
-        ]
-        
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30
-        )
-        
-        try:
-            scan_results = json.loads(result.stdout)
-            if not scan_results:
-                return "ERROR", "Scanner returned empty JSON."
-            
-            scan_result = scan_results[0] # We are scanning a single file
-            
-            if scan_result.get("error"):
-                return "ERROR", f"Scanner returned an error: {scan_result['error']}"
-
-            is_stego = scan_result.get("is_stego", False)
-            predicted_class = scan_result.get("stego_type", "clean").lower()
-            confidence = scan_result.get("confidence", 0.0)
-            extracted_text = scan_result.get("extracted_message", "")
-
-        except (json.JSONDecodeError, IndexError) as e:
-            return "ERROR", f"Failed to parse scanner JSON output: {e}\nOutput was:\n{result.stdout}"
-
-        # --- Evaluate Detection Result ---
-        if not is_stego:
-            return "FAILURE", f"Detected as clean but expected {algorithm}."
-        
-        # The scanner uses 'lsb.rgb' or 'raw', but the test might expect 'lsb' or 'eoi'
-        if (algorithm == 'lsb' and predicted_class == 'lsb.rgb') or \
-           (algorithm == 'eoi' and predicted_class == 'raw'):
-            pass # This is a valid mapping
-        elif predicted_class != algorithm:
-            return "FAILURE", f"Detected as {predicted_class} (confidence: {confidence:.2%}) but expected {algorithm}."
-        
-        # --- Evaluate Extraction Result ---
-        if expected_content:
-            normalized_expected = normalize_text(expected_content)
-            expected_len = len(normalized_expected)
-            
-            if extracted_text:
-                normalized_extracted = normalize_text(extracted_text)
-                extracted_len = len(normalized_extracted)
-                
-                # Success criterion: Extracted length must be within 20% tolerance of expected length.
-                min_len = expected_len * 0.80
-                max_len = expected_len * 1.20
-
-                if min_len <= extracted_len <= max_len:
-                    return "SUCCESS", f"Detected {predicted_class} (conf: {confidence:.2%}) and extracted content length is similar."
-                else:
-                    details = (f"Detected {predicted_class} (conf: {confidence:.2%}) but content length validation failed. "
-                               f"Expected range: [{min_len:.0f} - {max_len:.0f}] chars. "
-                               f"Actual: {extracted_len} chars. Expected: {expected_len} chars.")
-                    return "FAILURE", details
-            else:
-                return "FAILURE", f"Detected {predicted_class} (conf: {confidence:.2%}) but no message was extracted."
+    # Call scanner directly - progress bar will show naturally
+    results = scanner.scan_directory(dir_path, quiet=False)
+    
+    if not results:
+        print(f"   ⚠️  No results returned")
+        return None
+    
+    # Parse results
+    total_files = len(results)
+    detected_files = [r for r in results if r.get("is_stego")]
+    clean_files = [r for r in results if not r.get("is_stego") and "error" not in r]
+    errors = [r for r in results if "error" in r]
+    
+    detected_count = len(detected_files)
+    error_count = len(errors)
+    
+    # Calculate percentage
+    rate = (detected_count * 100.0 / total_files) if total_files > 0 else 0.0
+    
+    # Show details if requested
+    if show_details:
+        print(f"   📊 Total files: {total_files}")
+        print(f"   ✅ Detected: {detected_count}")
+        print(f"   📈 Rate: {rate:.1f}%")
+        if error_count > 0:
+            print(f"   ⚠️  Errors: {error_count}")
         else:
-            # No ground truth payload, so success if extraction happened
-            if extracted_text:
-                return "SUCCESS", f"Detected {predicted_class} (conf: {confidence:.2%}) and extraction performed (no ground truth)."
-            else:
-                return "FAILURE", f"Detected {predicted_class} (conf: {confidence:.2%}) but no message was extracted."
+            print(f"   ✅ No errors")
+        
+        # Show detected files if any
+        if detected_files:
+            print(f"   🔍 Detected files:")
+            for i, r in enumerate(detected_files[:10]):
+                filename = os.path.basename(r['file_path'])
+                stego_type = r.get('stego_type', 'unknown')
+                confidence = r.get('confidence', 0)
+                print(f"     - {filename} ({stego_type}, {confidence:.1%})")
+            if len(detected_files) > 10:
+                print(f"     ... and {len(detected_files) - 10} more")
+        print()
+    
+    return {
+        "dataset_name": dataset_name,
+        "total_files": total_files,
+        "detected": detected_count,
+        "rate": rate,
+        "errors": error_count,
+        "results": results,
+        "detected_files": detected_files
+    }
 
-    except FileNotFoundError:
-        return "ERROR", f"Could not find {EXTRACTOR_SCRIPT}."
-    except subprocess.TimeoutExpired:
-        return "ERROR", f"Process timed out after 30 seconds."
-    except Exception as e:
-        return "ERROR", f"An unexpected error occurred: {e}"
+
+def calculate_fp_rate_by_type(clean_results):
+    """Calculate false positive rate grouped by steganography type."""
+    # Collect false positives by type they were misidentified as
+    fp_by_type = defaultdict(lambda: {"count": 0, "total": 0})
+    
+    for scan_data in clean_results:
+        results = scan_data.get("results", [])
+        total_scanned = len(results)
+        fp_count = len(scan_data.get("detected_files", []))
+        
+        # For each detected file in the clean directory, track what type it was misidentified as
+        for detected in scan_data.get("detected_files", []):
+            stego_type = detected.get("stego_type", "unknown")
+            fp_by_type[stego_type]["count"] += 1
+        
+        # Add total files to each type's count for averaging
+        if fp_count > 0:
+            for detected in scan_data.get("detected_files", []):
+                stego_type = detected.get("stego_type", "unknown")
+                fp_by_type[stego_type]["total"] += total_scanned
+    
+    # Calculate rates
+    fp_rates = {}
+    for stego_type, data in fp_by_type.items():
+        rate = (data["count"] * 100.0 / data["total"]) if data["total"] > 0 else 0.0
+        fp_rates[stego_type] = {
+            "false_positives": data["count"],
+            "total_clean_files": data["total"],
+            "rate": rate
+        }
+    
+    return fp_rates
+
+
+def print_summary_table(title, results_list, metric_name):
+    """Print a summary table for results."""
+    print()
+    print(f"{title}:")
+    print("┌─────────────────────────────────┬─────────┬─────────────┬───────────┬─────────┐")
+    
+    if "False Pos" in metric_name:
+        print("│ Dataset                         │ Files   │ False Pos   │ Rate (%)  │ Errors  │")
+    else:
+        print("│ Dataset                         │ Files   │ Detected    │ Rate (%)  │ Errors  │")
+    
+    print("├─────────────────────────────────┼─────────┼─────────────┼───────────┼─────────┤")
+    
+    for item in results_list:
+        dataset = item["dataset_name"][:31].ljust(31)
+        total = item["total_files"]
+        detected = item["detected"]
+        rate = item["rate"]
+        errors = item["errors"]
+        print(f"│ {dataset} │ {total:7d} │ {detected:11d} │ {rate:9.1f} │ {errors:7d} │")
+    
+    print("└─────────────────────────────────┴─────────┴─────────────┴───────────┴─────────┘")
+
+
+def print_fp_rate_by_type_table(fp_rates):
+    """Print false positive rate breakdown by steganography type."""
+    if not fp_rates:
+        return
+    
+    print()
+    print("❌ FALSE POSITIVE RATE BY STEGANOGRAPHY TYPE:")
+    print("┌──────────────┬─────────────────┬────────────────┬───────────┐")
+    print("│ Stego Type   │ False Positives │ Total Scanned  │ Rate (%)  │")
+    print("├──────────────┼─────────────────┼────────────────┼───────────┤")
+    
+    for stego_type in sorted(fp_rates.keys()):
+        data = fp_rates[stego_type]
+        fp_count = data["false_positives"]
+        total = data["total_clean_files"]
+        rate = data["rate"]
+        stego_type_str = stego_type[:12].ljust(12)
+        print(f"│ {stego_type_str} │ {fp_count:15d} │ {total:14d} │ {rate:9.1f} │")
+    
+    print("└──────────────┴─────────────────┴────────────────┴───────────┘")
+
 
 def main():
-    """Main function to discover and run all tests."""
+    parser = argparse.ArgumentParser(
+        description="Scan datasets and provide comprehensive accuracy summaries"
+    )
+    parser.add_argument(
+        "-m", "--model",
+        default="models/detector_balanced.onnx",
+        help="Path to ONNX or PyTorch model file (default: models/detector_balanced.onnx)"
+    )
+    parser.add_argument(
+        "-d", "--details",
+        action="store_true",
+        help="Show detailed file-by-file results"
+    )
+    parser.add_argument(
+        "-w", "--workers",
+        type=int,
+        default=None,
+        help="Number of parallel workers (default: CPU count)"
+    )
     
-    overall_results = defaultdict(lambda: defaultdict(int))
-    total_files = 0
+    args = parser.parse_args()
     
-    # Open log file
-    try:
-        log_file = open(TEST_LOG_FILE, 'w', encoding='utf-8')
-    except Exception as e:
-        print(f"ERROR: Could not open log file {TEST_LOG_FILE}: {e}")
-        log_file = None
+    # Set workers to CPU count if not specified
+    if args.workers is None:
+        args.workers = os.cpu_count() or 8
+    
+    # Check if model exists
+    if not os.path.isfile(args.model):
+        print(f"Error: Model file not found: {args.model}")
+        sys.exit(1)
+    
+    print("=" * 60)
+    print("🔍 Project Starlight - Dataset Scanning Tool")
+    print("=" * 60)
+    print(f"Model: {args.model}")
+    print(f"Workers: {args.workers}")
+    print(f"Details: {args.details}")
+    print()
+    
+    # Initialize scanner
+    scanner = StarlightScanner(args.model, num_workers=args.workers, quiet=False)
+    
+    # Arrays to store results
+    clean_results = []
+    stego_results = []
+    
+    print("🔍 Discovering datasets...")
+    print()
+    
+    # Find all submission directories
+    datasets_path = Path("datasets")
+    submission_dirs = sorted(datasets_path.glob("*_submission_*"))
+    
+    if not submission_dirs:
+        print("⚠️  No submission directories found in datasets/")
+    
+    for submission_dir in submission_dirs:
+        dataset_name = submission_dir.name
         
-    log_and_print("Starting Starlight Extractor tests...", log_file=log_file)
-    
-    # Iterate through all possible submission directories
-    submission_root_dirs = glob.glob(f'{DATASET_ROOT}/*_submission_2025')
-    
-    if not submission_root_dirs:
-        log_and_print(f"No submission root directories found matching pattern: {DATASET_ROOT}/*_submission_2025", log_file)
-        # Close log file before returning
-        if log_file: log_file.close()
-        return
-
-    for root_dir in submission_root_dirs:
-        stego_dir = os.path.join(root_dir, 'stego')
+        # Scan clean directory
+        clean_scan = scan_directory_and_parse(
+            scanner,
+            submission_dir / "clean",
+            f"{dataset_name} (clean)",
+            args.details
+        )
+        if clean_scan:
+            clean_results.append(clean_scan)
         
-        # 1. Discover all image files in the stego directory
-        stego_files = []
-        for ext in IMAGE_EXTENSIONS:
-            stego_files.extend(glob.glob(os.path.join(stego_dir, IMAGE_FILE_PATTERN.format(ext=ext))))
-        
-        # --- Random Sampling Logic ---
-        initial_file_count = len(stego_files)
-        global SAMPLE_SIZE 
-        if SAMPLE_SIZE is not None and initial_file_count > SAMPLE_SIZE:
-            log_and_print(f"\nSampling {SAMPLE_SIZE} files from {initial_file_count} in {os.path.basename(root_dir)}...", log_file)
-            stego_files = random.sample(stego_files, SAMPLE_SIZE)
-        else:
-             log_and_print(f"\nProcessing all {initial_file_count} files in: {os.path.basename(root_dir)}", log_file)
-
-        # Use tqdm for progress bar
-        for image_path in tqdm(stego_files, desc=f"Testing {os.path.basename(root_dir)}"):
-            total_files += 1
-            stego_filename = os.path.basename(image_path)
-            
-            # 2. Infer Algorithm and Payload Name from the filename
-            algorithm, payload_base_name = parse_filename(stego_filename)
-            
-            if not algorithm:
-                # Log the skip
-                log_file.write(f"TEST RESULT: [UNKNOWN] SKIPPED | File: {stego_filename} | Details: Filename parsing failed.\n")
-                overall_results['unknown']['SKIPPED'] += 1
-                continue
-            
-            # 3. Determine the clean path and payload path
-            clean_dir = os.path.join(root_dir, 'clean')
-
-            clean_path = os.path.join(clean_dir, stego_filename)
-            payload_path = os.path.join(root_dir, f'{payload_base_name}.md')
-
-            # 4. Run the test and record the result
-            result, failure_details = run_extraction_test(image_path, algorithm, payload_path=payload_path)
-            
-            # --- Log individual test result ---
-            log_message = f"TEST RESULT: [{algorithm.upper()}] {result:7s} | File: {stego_filename} | Details: {failure_details}"
-            if log_file:
-                 log_file.write(log_message + '\n')
-            # ---------------------------------
-
-            overall_results[algorithm][result] += 1
-
-    # 5. Print Overall Test Summary (Logged and Printed)
-    log_and_print("\n" + "="*70, log_file)
-    log_and_print(f"FINAL STARLIGHT EXTRACTOR PERFORMANCE SUMMARY ({total_files} files tested)", log_file)
-    log_and_print("="*70, log_file)
+        # Scan stego directory
+        stego_scan = scan_directory_and_parse(
+            scanner,
+            submission_dir / "stego",
+            f"{dataset_name} (stego)",
+            args.details
+        )
+        if stego_scan:
+            stego_results.append(stego_scan)
     
-    for algo, results in overall_results.items():
-        total_attempted = sum(v for k, v in results.items() if k != 'SKIPPED')
-        successes = results['SUCCESS']
-        skipped = results['SKIPPED']
-        failures = results['FAILURE'] + results['ERROR']
+    # Also scan validation set if it exists
+    val_path = datasets_path / "val"
+    if val_path.is_dir():
+        val_clean_scan = scan_directory_and_parse(
+            scanner,
+            val_path / "clean",
+            "validation (clean)",
+            args.details
+        )
+        if val_clean_scan:
+            clean_results.append(val_clean_scan)
         
-        if total_attempted > 0:
-            success_rate = (successes / total_attempted) * 100
-            status = "✅ PASS" if success_rate >= 70 else "⚠️ MIXED" if success_rate > 30 else "❌ FAIL"
-            log_and_print(f"[{algo.upper()}] {status} | Attempted: {total_attempted}, Success Rate: {success_rate:.2f}% ({successes}/{total_attempted}) | Skipped: {skipped}", log_file)
-        elif skipped > 0:
-            log_and_print(f"[{algo.upper()}]: All tests skipped ({skipped}).", log_file)
-        else:
-            log_and_print(f"[{algo.upper()}]: No files found for this algorithm.", log_file)
+        val_stego_scan = scan_directory_and_parse(
+            scanner,
+            val_path / "stego",
+            "validation (stego)",
+            args.details
+        )
+        if val_stego_scan:
+            stego_results.append(val_stego_scan)
+    
+    # Print summary tables
+    print()
+    print("=" * 60)
+    print("📊 SUMMARY RESULTS")
+    print("=" * 60)
+    
+    if clean_results:
+        print_summary_table("🧹 CLEAN DIRECTORIES (False Positives)", clean_results, "False Pos")
+    
+    if stego_results:
+        print_summary_table("🎯 STEGO DIRECTORIES (Detection)", stego_results, "Detected")
+    
+    # Calculate overall statistics
+    print()
+    print("📈 OVERALL PERFORMANCE:")
+    
+    total_clean_files = sum(r["total_files"] for r in clean_results)
+    total_clean_fps = sum(r["detected"] for r in clean_results)
+    total_stego_files = sum(r["total_files"] for r in stego_results)
+    total_stego_detected = sum(r["detected"] for r in stego_results)
+    
+    overall_fp_rate = (total_clean_fps * 100.0 / total_clean_files) if total_clean_files > 0 else 0.0
+    overall_detection_rate = (total_stego_detected * 100.0 / total_stego_files) if total_stego_files > 0 else 0.0
+    
+    print("┌─────────────────────────────────┬───────────┬─────────────┐")
+    print("│ Metric                          │ Count     │ Rate (%)    │")
+    print("├─────────────────────────────────┼───────────┼─────────────┤")
+    print(f"│ Total Clean Files               │ {total_clean_files:9d} │ {overall_fp_rate:11.2f} │")
+    print(f"│ Total Stego Files               │ {total_stego_files:9d} │ {overall_detection_rate:11.2f} │")
+    print("├─────────────────────────────────┼───────────┼─────────────┤")
+    print(f"│ False Positives (Clean)         │ {total_clean_fps:9d} │ {overall_fp_rate:11.2f} │")
+    print(f"│ True Positives (Stego)          │ {total_stego_detected:9d} │ {overall_detection_rate:11.2f} │")
+    print("└─────────────────────────────────┴───────────┴─────────────┘")
+    
+    # Calculate and print false positive rate by steganography type
+    fp_rates = calculate_fp_rate_by_type(clean_results)
+    if fp_rates:
+        print_fp_rate_by_type_table(fp_rates)
+    
+    # Performance assessment
+    print()
+    print("🎯 PERFORMANCE ASSESSMENT:")
+    
+    if overall_fp_rate < 1.0:
+        print("✅ \033[32mFalse positive rate: EXCELLENT (< 1%)\033[0m")
+    elif overall_fp_rate < 5.0:
+        print("✅ \033[33mFalse positive rate: GOOD (< 5%)\033[0m")
+    else:
+        print("❌ \033[31mFalse positive rate: NEEDS IMPROVEMENT (> 5%)\033[0m")
+    
+    if overall_detection_rate > 95.0:
+        print("✅ \033[32mDetection rate: EXCELLENT (> 95%)\033[0m")
+    elif overall_detection_rate > 85.0:
+        print("✅ \033[33mDetection rate: GOOD (> 85%)\033[0m")
+    else:
+        print("❌ \033[31mDetection rate: NEEDS IMPROVEMENT (< 85%)\033[0m")
+    
+    print()
+    print("=" * 60)
+    print("✅ Scan completed successfully!")
+    print("=" * 60)
 
-    # Close the log file
-    if log_file:
-        log_file.close()
-        print(f"\nDetailed test results also written to {TEST_LOG_FILE}")
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

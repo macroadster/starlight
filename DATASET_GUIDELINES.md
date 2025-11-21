@@ -57,15 +57,15 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
 ### Option 2: Provide Clean Images and `data_generator.py`
 
   - **What to Submit**:
-      - Clean images in `datasets/[username]_submission_[year]/clean/`.
+      - Clean images in `datasets/[username]_submission_[year]/clean/` (any naming convention).
       - A Python script (`data_generator.py`) in `datasets/[username]_submission_[year]/` to generate stego images.
       - Optional: Any markdown seed file (e.g., `[payload_name].md`) for payload content.
   - **Script Requirements**:
       - Python 3.8+, using necessary libraries.
-      - Run from `datasets/[username]_submission_[year]/`, reading from `./clean/`, saving to `./stego/` with identical filenames.
+      - Run from `datasets/[username]_submission_[year]/`, reading from `./clean/`, saving to `./stego/`.
       - Must identify all `.md` seed files in `./` (if used) and **generate a separate batch of stego images for each file, using the markdown filename to label the output images**.
       - **The script must document the steganography algorithm, parameters, and image format/quality settings used**.
-      - Follow the filename naming convention specified above.
+      - **Clean images can use any naming convention; stego images must follow the filename naming convention specified above**.
 
 -----
 
@@ -89,7 +89,7 @@ Start with one image pair for testing, or scale to thousands. Markdown seed file
     ```
     datasets/
     └── [username]_submission_[year]/    # e.g., datasets/grok_submission_2025/
-        ├── clean/                      # Clean images (e.g., payload_alpha_001.png)
+        ├── clean/                      # Clean images (any naming for Option 2, convention for Option 1/3)
         ├── stego/                      # Tainted images (e.g., payload_alpha_001.png)
         ├── sample_seed.md              # Optional markdown seed files
         └── data_generator.py           # Script for Options 2 or 3

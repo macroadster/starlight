@@ -13,12 +13,20 @@ from PIL import Image
 from pathlib import Path
 from tqdm import tqdm
 import json
+import os
 
 class AdvancedStegoChecker:
     """Check for steganography using multiple detection methods"""
     
+    # Supported image extensions
+    IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.tif', '.ico'}
+    
     def __init__(self, dataset_root='datasets'):
         self.dataset_root = Path(dataset_root)
+    
+    def _is_image_file(self, path):
+        """Check if file is a supported image type"""
+        return path.suffix.lower() in self.IMAGE_EXTENSIONS
     
     def check_file_metadata(self, clean_path, stego_path):
         """Check file-level differences (size, EXIF, EOI)"""
@@ -80,21 +88,24 @@ class AdvancedStegoChecker:
         if clean_img.mode != 'RGBA' or stego_img.mode != 'RGBA':
             return None
         
-        clean_array = np.array(clean_img)
-        stego_array = np.array(stego_img)
-        
-        # Compare alpha channels only
-        clean_alpha = clean_array[:, :, 3]
-        stego_alpha = stego_array[:, :, 3]
-        
-        alpha_diff = np.abs(clean_alpha.astype(np.int32) - stego_alpha.astype(np.int32))
-        
-        return {
-            'alpha_changed_pixels': int(np.sum(alpha_diff > 0)),
-            'alpha_mean_diff': float(np.mean(alpha_diff)),
-            'alpha_max_diff': int(np.max(alpha_diff)),
-            'alpha_percent_changed': float(np.sum(alpha_diff > 0) / alpha_diff.size * 100)
-        }
+        try:
+            clean_array = np.array(clean_img)
+            stego_array = np.array(stego_img)
+            
+            # Compare alpha channels only
+            clean_alpha = clean_array[:, :, 3]
+            stego_alpha = stego_array[:, :, 3]
+            
+            alpha_diff = np.abs(clean_alpha.astype(np.int32) - stego_alpha.astype(np.int32))
+            
+            return {
+                'alpha_changed_pixels': int(np.sum(alpha_diff > 0)),
+                'alpha_mean_diff': float(np.mean(alpha_diff)),
+                'alpha_max_diff': int(np.max(alpha_diff)),
+                'alpha_percent_changed': float(np.sum(alpha_diff > 0) / alpha_diff.size * 100)
+            }
+        except Exception as e:
+            return None
     
     def check_palette_indices(self, clean_path, stego_path):
         """Check for palette index steganography (GIF/BMP)"""
@@ -102,22 +113,35 @@ class AdvancedStegoChecker:
             clean_img = Image.open(clean_path)
             stego_img = Image.open(stego_path)
             
-            if clean_img.mode != 'P' or stego_img.mode != 'P':
+            # Check if image has a palette
+            if not hasattr(clean_img, 'palette') or clean_img.palette is None:
                 return None
+            if not hasattr(stego_img, 'palette') or stego_img.palette is None:
+                return None
+            
+            # Convert to palette mode if not already
+            if clean_img.mode != 'P':
+                clean_img = clean_img.convert('P')
+            if stego_img.mode != 'P':
+                stego_img = stego_img.convert('P')
             
             # Get palette indices directly
             clean_indices = np.array(clean_img)
             stego_indices = np.array(stego_img)
             
+            if clean_indices.shape != stego_indices.shape:
+                return None
+            
             index_diff = np.abs(clean_indices.astype(np.int32) - stego_indices.astype(np.int32))
+            changed_count = int(np.sum(index_diff > 0))
             
             return {
-                'palette_changed_indices': int(np.sum(index_diff > 0)),
+                'palette_changed_indices': changed_count,
                 'palette_mean_diff': float(np.mean(index_diff)),
                 'palette_max_diff': int(np.max(index_diff)),
-                'palette_percent_changed': float(np.sum(index_diff > 0) / index_diff.size * 100)
+                'palette_percent_changed': float(changed_count / index_diff.size * 100)
             }
-        except:
+        except Exception as e:
             return None
     
     def comprehensive_check(self, clean_path, stego_path):
@@ -163,31 +187,34 @@ class AdvancedStegoChecker:
                 result['details']['palette'] = palette_result
             
             # 5. Check RGB pixels (standard LSB/DCT)
-            clean_array = np.array(clean_img.convert('RGB'))
-            stego_array = np.array(stego_img.convert('RGB'))
-            
-            if clean_array.shape == stego_array.shape:
-                pixel_diff = np.abs(clean_array.astype(np.int32) - stego_array.astype(np.int32))
-                mean_diff = np.mean(pixel_diff)
-                max_diff = np.max(pixel_diff)
-                changed_pixels = np.sum(pixel_diff > 0)
+            try:
+                clean_array = np.array(clean_img.convert('RGB'))
+                stego_array = np.array(stego_img.convert('RGB'))
                 
-                result['details']['pixels'] = {
-                    'mean_diff': float(mean_diff),
-                    'max_diff': int(max_diff),
-                    'changed_pixels': int(changed_pixels),
-                    'percent_changed': float(changed_pixels / pixel_diff.size * 100)
-                }
-                
-                if changed_pixels > 0:
-                    result['has_steganography'] = True
+                if clean_array.shape == stego_array.shape:
+                    pixel_diff = np.abs(clean_array.astype(np.int32) - stego_array.astype(np.int32))
+                    mean_diff = np.mean(pixel_diff)
+                    max_diff = np.max(pixel_diff)
+                    changed_pixels = np.sum(pixel_diff > 0)
                     
-                    if max_diff <= 1:
-                        result['stego_methods'].append('RGB LSB')
-                    elif max_diff <= 20:
-                        result['stego_methods'].append('RGB DCT/frequency domain')
-                    else:
-                        result['stego_methods'].append('RGB unknown method')
+                    result['details']['pixels'] = {
+                        'mean_diff': float(mean_diff),
+                        'max_diff': int(max_diff),
+                        'changed_pixels': int(changed_pixels),
+                        'percent_changed': float(changed_pixels / pixel_diff.size * 100)
+                    }
+                    
+                    if changed_pixels > 0:
+                        result['has_steganography'] = True
+                        
+                        if max_diff <= 1:
+                            result['stego_methods'].append('RGB LSB')
+                        elif max_diff <= 20:
+                            result['stego_methods'].append('RGB DCT/frequency domain')
+                        else:
+                            result['stego_methods'].append('RGB unknown method')
+            except Exception as e:
+                pass
             
             # If no steganography detected but files are different
             if not result['has_steganography'] and file_diff.get('file_size_diff', 0) != 0:
@@ -198,6 +225,54 @@ class AdvancedStegoChecker:
             result['error'] = str(e)
         
         return result
+    
+    def find_stego_file(self, clean_path, stego_dir, clean_files=None, stego_files_list=None):
+        """Find corresponding stego file, handling both Option 1/3 (identical names) and Option 2 (arbitrary clean names)"""
+        stem = clean_path.stem
+        
+        # First try: exact stem match (Option 1 and 3)
+        for ext in self.IMAGE_EXTENSIONS:
+            test_path = stego_dir / (stem + ext)
+            if test_path.exists():
+                return test_path
+        
+        # Second try: case-insensitive exact match (Option 1 and 3)
+        if stego_files_list is None:
+            stego_files_dict = {f.stem.lower(): f for f in stego_dir.iterdir() if self._is_image_file(f)}
+        else:
+            stego_files_dict = {f.stem.lower(): f for f in stego_files_list if self._is_image_file(f)}
+        
+        if stem.lower() in stego_files_dict:
+            return stego_files_dict[stem.lower()]
+        
+        # Third try: Option 2 - clean files have arbitrary names, stego files follow convention
+        # We need to match by index/position since there's no naming relationship
+        if clean_files is not None and stego_files_list is not None:
+            # Find the index of the current clean file
+            try:
+                clean_index = clean_files.index(clean_path)
+                if clean_index < len(stego_files_list):
+                    return stego_files_list[clean_index]
+            except (ValueError, IndexError):
+                pass
+        
+        # Fourth try: fallback to base name matching (legacy heuristic)
+        if stego_files_list is None:
+            stego_files_iter = [f for f in stego_dir.iterdir() if self._is_image_file(f)]
+        else:
+            stego_files_iter = stego_files_list
+            
+        for stego_file in stego_files_iter:
+            if self._is_image_file(stego_file):
+                # Extract base name (before any number)
+                stego_stem = stego_file.stem
+                clean_stem = stem
+                
+                # Simple heuristic: if they're similar, consider it a match
+                if stego_stem.rstrip('0123456789') == clean_stem.rstrip('0123456789'):
+                    return stego_file
+        
+        return None
     
     def check_submission(self, submission_dir):
         """Check all pairs in a submission"""
@@ -220,18 +295,19 @@ class AdvancedStegoChecker:
         }
         
         print(f"\nChecking {submission_dir.name}...")
-        clean_files = list(clean_dir.glob('*.*'))
         
-        for clean_path in tqdm(clean_files):
+        # Find all image files in clean directory
+        clean_files = [f for f in clean_dir.iterdir() if self._is_image_file(f)]
+        clean_files = sorted(clean_files)
+        
+        # Pre-compute stego files list for position-based matching
+        stego_files = sorted([f for f in stego_dir.iterdir() if self._is_image_file(f)])
+        
+        for clean_path in tqdm(clean_files, desc=f"  {submission_dir.name}"):
             results['statistics']['total'] += 1
             
-            # Find corresponding stego
-            stego_path = None
-            for ext in ['.png', '.bmp', '.jpg', '.jpeg', '.webp', '.gif']:
-                test_path = stego_dir / (clean_path.stem + ext)
-                if test_path.exists():
-                    stego_path = test_path
-                    break
+            # Find corresponding stego file
+            stego_path = self.find_stego_file(clean_path, stego_dir, clean_files, stego_files)
             
             if stego_path is None:
                 results['statistics']['errors'] += 1
@@ -261,8 +337,13 @@ class AdvancedStegoChecker:
         print("Advanced Steganography Checker - Project Starlight")
         print("="*60)
         
-        submission_dirs = [d for d in self.dataset_root.glob('*') 
-                          if d.is_dir() and not d.name.startswith('_')]
+        # Find all submission directories (including val)
+        submission_dirs = []
+        for item in self.dataset_root.iterdir():
+            if item.is_dir() and not item.name.startswith('.'):
+                submission_dirs.append(item)
+        
+        submission_dirs = sorted(submission_dirs)
         
         all_results = []
         
