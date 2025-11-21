@@ -208,7 +208,11 @@ def load_unified_input(path):
     if img.mode == 'RGBA':
         alpha_plane = np.array(img.split()[-1])
         alpha_std_dev = alpha_plane.std() / 255.0 # Normalize
-        alpha = torch.from_numpy((alpha_plane & 1).astype(np.float32)).unsqueeze(0)
+        
+        full_alpha = torch.from_numpy(alpha_plane.astype(np.float32) / 255.0).unsqueeze(0)
+        lsb_alpha = torch.from_numpy((alpha_plane & 1).astype(np.float32)).unsqueeze(0)
+        
+        alpha = torch.cat([full_alpha, lsb_alpha], dim=0)
         alpha = transforms.CenterCrop((256, 256))(alpha)
         
         # Full mode: complete alpha analysis
@@ -216,7 +220,7 @@ def load_unified_input(path):
         alpha_bytes = np.packbits(alpha_lsb.flatten())
         alpha_content_features = _calculate_content_features(alpha_bytes)
     else:
-        alpha = torch.zeros(1, 256, 256)
+        alpha = torch.zeros(2, 256, 256)
         alpha_content_features = torch.zeros(3, dtype=torch.float32)
 
     # --- Palette Path ---
