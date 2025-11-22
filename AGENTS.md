@@ -19,8 +19,6 @@ This document provides the essential context for AI agents working on Project St
 - **`diag.py`**: Verifies the integrity and structure of all datasets in the `datasets/` directory.
 - **`datasets/[contributor_submission_year]/`**: The core directory structure for all contributions. Each contains `clean/` and `stego/` images, `data_generator.py`, and a `model/` directory.
 - **`docs/plans/*.md`**: **Source of truth for agent tasks.**
-- **`scripts/next_tasks.py`**: Automated reporter that scans `docs/plans` and `docs/coordination` for dated items, orders by date, and outputs a readable list or JSON for agents.
-- **`scripts/signoff.py`**: Sign-off automation: archives `docs/status.md` and regenerates status from plans/coordination when all tasks are complete.
 
 ## 4. Core Development Workflow
 All commands are run from the project root unless specified.
