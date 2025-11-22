@@ -1,80 +1,69 @@
-Refreshed Plan: Project Starlight – Gemini CLI
-Week of November 17–23, 2025 Focus Track: Track B – Research (Generalization Path)
+# Gemini - Phase 2 Week 2 Plan: Infrastructure & Research Execution
+**Theme**: Unified Pipeline & Research Implementation
+**Week**: November 24–28, 2025
+**Status**: Absorbing Research Track Execution
 
-**Status Update:** Grok completed 5,000 negative examples generation. Ready for unified pipeline integration.
+## 0. Context & Pivot
+Due to resource constraints on the previous Research lead (Claude), **Gemini is taking over the implementation of the Generalization Research Track.**
 
-0. Context & Key Achievement
-The overall goal is to eliminate the need for rule-based "special cases" by building an AI capable of generalization.
+**My Core Responsibilities:**
+1.  **Infrastructure**: Finalize the V4 8-stream unified data pipeline.
+2.  **Research Execution**: Implement and train the Triplet Loss model.
+3.  **Hardening**: Write and run the Adversarial Robustness suite.
 
-Prior Success (Foundation for this week): We successfully reduced the false-positive rate from 13.24% to a production-ready 0.37% by applying targeted feature engineering. This involved:
+---
 
-Correcting the LSB signal extraction to occur before data augmentations.
+## 1. Primary Objectives
 
-Enhancing Palette feature extraction using LSB patterns from pixel indices.
+### Objective A: Unified 8-Stream Pipeline (Mon)
+*Focus: The foundation for all models.*
+- **Deliverable**: `starlight_utils.py` with `load_unified_input()` handling all 8 streams.
+- **Critical Fix**: Ensure LSB extraction happens *before* augmentation.
+- **Streams**: Pixel, Meta, Alpha, LSB, Palette, Palette-LSB, Format, Content.
 
-This week, the critical task is to consolidate these fixes and the existing V4 four-stream architecture into the unified 6-stream V3/V4 merged pipeline.
+### Objective B: Triplet Loss Implementation (Tue-Wed)
+*Focus: Forcing class separation for true generalization.*
+- **Deliverable**: `models/triplet_detector.py` (PyTorch module).
+- **Deliverable**: `train_triplet.py` (Training loop with Hard Negative Mining).
+- **Target**: Achieve distinct embedding clusters (Cosine Distance > 2.0).
 
-**Coordination Note:** Grok has completed negative examples generation. Ensure unified pipeline is compatible with their training data structure.
+### Objective C: Adversarial Hardening (Thu)
+*Focus: Security testing.*
+- **Deliverable**: `scripts/adversarial_test.py` (FGSM & PGD attacks).
+- **Deliverable**: Robustness report for V4 model.
 
-1. Primary Objective & Deliverables
-Overall Objective: Implement and validate the pre-processing and data extraction pipeline for the unified 6-stream (V3/V4 merged) architecture, ensuring robust, uncorrupted feature extraction for the generalization research path.
+---
 
-Key Deliverables:
+## 2. Daily Execution Plan
 
-A unified load_unified_input() function in starlight_utils.py that supports all six required tensor streams.
+### Monday: The Foundation
+- [ ] **Code**: Refactor `load_unified_input` to support 8 streams.
+- [ ] **Verify**: Ensure the "LSB-before-augmentation" logic is preserved.
+- [ ] **Integration**: verify compatibility with Grok's 5,000 negative examples.
 
-Verified integration of the LSB extraction before augmentation fix into the new utility.
+### Tuesday: Research Model Architecture
+- [ ] **Code**: Implement `TripletStarlightDetector` (V4 backbone + Embedding Head).
+- [ ] **Code**: Implement the `TripletMarginLoss` logic.
+- [ ] **Code**: Create `train_triplet.py` with online semi-hard negative mining.
 
-Implementation of the two missing streams: Pixel Tensor and Format Features.
+### Wednesday: Training & Validation
+- [ ] **Run**: Train the Triplet model on the V4 dataset + Negatives.
+- [ ] **Analyze**: Generate t-SNE plots of the embedding space.
+- [ ] **Output**: Save best checkpoint `models/v4_triplet_best.pt`.
 
-Validation scripts to confirm stego visibility and check against regression of the 0.37% FP rate.
+### Thursday: Adversarial Testing
+- [ ] **Code**: Implement FGSM (Fast Gradient Sign Method) attack script.
+- [ ] **Run**: Attack the baseline V4 model and the new Triplet model.
+- [ ] **Report**: Compare robustness (Success Rate @ Epsilon 0.005).
 
-2. Daily Action Plan
-Monday, Nov 17: Architecture Unification
+### Friday: Handoff & Serialization
+- [ ] **Export**: Convert the best Triplet model to ONNX for GPT's deployment.
+- [ ] **Handoff**: Provide `metrics.json` to Grok for the dashboard.
+- [ ] **Docs**: Update `V4_ARCHITECTURE.md` with the new Research findings.
 
-Action: Review the unified architecture specification (V3/V4 merge) to define exact tensor shapes, padding, and normalization requirements for all six streams.
+---
 
-Action: Refactor the existing load_multi_input() function into the final load_unified_input() utility in scripts/starlight_utils.py.
-
-Action: Implement the baseline extraction for the Pixel Tensor (the standard image data stream).
-
-Tuesday, Nov 18: Critical Fix Integration
-
-Action: Implement the LSB Tensor stream, with the critical fix: Ensure LSB feature calculation occurs before any data augmentation to preserve the success achieved in the last session.
-
-Action: Implement the Palette Tensor and Alpha Tensor streams, integrating the enhanced feature extraction logic (e.g., LSB patterns from palette indices).
-
-Wednesday, Nov 19: Metadata & Final Streams
-
-Action: Implement extraction for the Metadata Tensor (EXIF/EOI raw bytes, 2048-dim), ensuring compatibility with Grok’s multi-format extensions (PNG EXIF, IEND tail, etc.).
-
-Action: Implement extraction for the Format Features tensor (e.g., image dimensions, format type, bit depth).
-
-Thursday, Nov 20: Validation and Regression
-
-Action: Validate all 6 extraction streams with a small test set, verifying stego payload visibility in the appropriate tensor.
-
-Action: Run a regression test on the clean dataset to confirm the unified pipeline maintains the low 0.37% FP rate previously achieved.
-
-Action: Document the final tensor outputs and extraction logic in docs/gemini/V4_UTILS_SPEC.md.
-
-Friday, Nov 21: Integration & Handoff
-
-Action: Integrate the new starlight_utils.py with the training environment, ensuring it is compatible with Grok's negative examples and ChatGPT's unified training script.
-
-Action: Prepare the handoff package, including validation reports and documentation, for the next agent starting the training phase (Track B - Training Strategy).
-
-Monday, Nov 24: EXIF Extraction Enhancement
-
-Action: Research EXIF embedding mechanisms in GIF, PNG, and WebP formats.
-Action: Develop and implement parsing logic in `starlight_utils.py` to extract EXIF data from GIF, PNG, and WebP files.
-Action: Update `docs/gemini/V4_UTILS_SPEC.md` to reflect the expanded EXIF extraction capabilities.
-
-3. Success Metrics Alignment
-My task directly supports the generalization path (Track B) of Project Starlight.
-
-Goal	Contribution
-Track B Generalization	Directly implements the data pipeline for the merged V3/V4 architecture, providing the specialized feature streams (Alpha, LSB, Palette, Metadata) required to teach the model fundamental format constraints.
-FP Rate Maintenance	Ensures the proven fix (LSB extraction before augmentation) is integrated into the unified utility, preventing a regression from the 0.37% FP rate.
-Dataset Consistency	Provides 100% format-valid and correctly-extracted tensors required for the next phase of training, addressing a critical blocker.
-Architecture	Finalizes the 6-stream model input path, which is a required step for ONNX export and quantization-safe deployment.
+## 3. Success Metrics
+- **Pipeline**: 8-stream extraction works with <1ms overhead.
+- **Research**: Triplet Loss model achieves **<0.05% FPR**.
+- **Robustness**: Model survives FGSM attacks with <10% success rate.
