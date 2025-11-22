@@ -1,4 +1,4 @@
-# ChatGPT Submission 2025 - Next Steps Plan
+# Starlight - Next Steps Plan
 
 ## ✅ Completed Achievements
 - **Model Training**: Successfully trained to 74.64% validation accuracy
@@ -10,22 +10,22 @@
 ## 🎯 Next Steps
 
 ### 1. Model Performance Enhancement
-- [ ] **Hyperparameter Optimization**: Experiment with learning rates (0.0001-0.01), batch sizes (16-64)
-- [ ] **Data Augmentation**: Add random flips, rotations, color jittering to improve generalization
-- [ ] **Architecture Improvements**: Consider deeper CNN or attention mechanisms
-- [ ] **Ensemble Methods**: Combine multiple models for better accuracy
+- [x] **Hyperparameter Optimization**: Experiment with learning rates (0.0001-0.01), batch sizes (16-64)
+- [x] **Data Augmentation**: Add random flips, rotations, color jittering to improve generalization
+- [x] **Architecture Improvements**: Consider deeper CNN or attention mechanisms
+- [x] **Ensemble Methods**: Combine multiple models for better accuracy (Slow and removed)
 - **Target**: Achieve >85% validation accuracy
 
 ### 2. Dataset Expansion
-- [ ] **Additional Algorithms**: Implement more steganography techniques (F5, OutGuess, etc.)
-- [ ] **Real-world Images**: Include natural photographs beyond synthetic samples
-- [ ] **Balanced Dataset**: Ensure equal representation across all steganography types
-- [ ] **Cross-validation**: Implement k-fold validation for robust performance metrics
+- [x] **Additional Algorithms**: Implement more steganography techniques (F5, OutGuess, etc.)
+- [x] **Real-world Images**: Include natural photographs beyond synthetic samples
+- [x] **Balanced Dataset**: Ensure equal representation across all steganography types
+- [x] **Cross-validation**: Implement k-fold validation for robust performance metrics
 
 ### 3. Advanced Feature Engineering
 - [ ] **Frequency Domain Analysis**: Add DCT/DWT features for JPEG steganography detection
-- [ ] **Statistical Features**: Implement chi-square, RS analysis for LSB detection
-- [ ] **Deep Feature Extraction**: Use pre-trained networks (ResNet, EfficientNet) as feature extractors
+- [x] **Statistical Features**: Implement chi-square, RS analysis for LSB detection
+- [x] **Deep Feature Extraction**: Use pre-trained networks (ResNet, EfficientNet) as feature extractors (Tried both and not useful at all)
 - [ ] **Multi-scale Analysis**: Analyze images at different resolutions
 
 ### 4. Production Deployment
@@ -131,6 +131,6 @@
 
 ---
 
-**Last Updated**: 2025-11-05  
+**Last Updated**: 2025-11-16
 **Status**: Phase 1 - Performance Enhancement  
-**Next Review**: 2025-11-12
+**Next Review**: 2025-11-22
