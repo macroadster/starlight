@@ -8,6 +8,7 @@ import logging  # For logging outputs to file
 import json
 from pathlib import Path
 import random
+import shutil  # For copying files
 
 
 def generate_clean_image(
@@ -358,12 +359,9 @@ def generate_rgb_no_alpha(output_dir, count=10):
     """
     Generate RGB images that should NOT be detected as alpha steganography
     """
-    output_subdir = os.path.join(output_dir, 'rgb_no_alpha')
-    os.makedirs(output_subdir, exist_ok=True)
-
     sizes = [(128, 128), (256, 256), (512, 512)]
 
-    for i in range(count):
+    for i in tqdm(range(count), desc="Clean (rgb_no_alpha)"):
         size = random.choice(sizes)
         img_type = i % 5
 
@@ -372,38 +370,35 @@ def generate_rgb_no_alpha(output_dir, count=10):
             img = Image.new('RGB', size, color)
         elif img_type == 1:
             data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
-            img = Image.fromarray(data, mode='RGB')
+            img = Image.fromarray(data)
         elif img_type == 2:
             data = np.zeros((size[1], size[0], 3), dtype=np.uint8)
             for y in range(size[1]):
                 for x in range(size[0]):
                     data[y, x] = [int(255 * x / size[0]), int(255 * y / size[1]), 128]
-            img = Image.fromarray(data, mode='RGB')
+            img = Image.fromarray(data)
         elif img_type == 3:
             data = np.zeros((size[1], size[0], 3), dtype=np.uint8)
             for y in range(size[1]):
                 for x in range(size[0]):
                     data[y, x] = [(x * y) % 256, (x + y) % 256, (x - y) % 256]
-            img = Image.fromarray(data, mode='RGB')
+            img = Image.fromarray(data)
         else:
             data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
             data[::10, :] = [255, 0, 0]
             data[:, ::10] = [0, 255, 0]
-            img = Image.fromarray(data, mode='RGB')
+            img = Image.fromarray(data)
 
-        img.save(os.path.join(output_subdir, f'rgb_no_alpha_{i:04d}.png'))
+        img.save(os.path.join(output_dir, f'rgb_no_alpha_{i:04d}.png'))
 
 
 def generate_uniform_alpha(output_dir, count=10):
     """
     Generate RGBA images with uniform alpha (no hidden data)
     """
-    output_subdir = os.path.join(output_dir, 'uniform_alpha')
-    os.makedirs(output_subdir, exist_ok=True)
-
     sizes = [(128, 128), (256, 256), (512, 512)]
 
-    for i in range(count):
+    for i in tqdm(range(count), desc="Clean (uniform_alpha)"):
         size = random.choice(sizes)
         rgb_data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
         alpha_values = [0, 128, 255]
@@ -411,97 +406,105 @@ def generate_uniform_alpha(output_dir, count=10):
         rgba_data = np.zeros((size[1], size[0], 4), dtype=np.uint8)
         rgba_data[:, :, :3] = rgb_data
         rgba_data[:, :, 3] = alpha
-        img = Image.fromarray(rgba_data, mode='RGBA')
-        img.save(os.path.join(output_subdir, f'uniform_alpha_{i:04d}_{alpha}.png'))
+        img = Image.fromarray(rgba_data)
+        img.save(os.path.join(output_dir, f'uniform_alpha_{i:04d}.png'))
 
 
 def generate_natural_noise(output_dir, count=10):
     """
     Generate images with natural LSB variation (simulating dithered GIF)
     """
-    output_subdir = os.path.join(output_dir, 'natural_noise')
-    os.makedirs(output_subdir, exist_ok=True)
-
     sizes = [(128, 128), (256, 256), (512, 512)]
 
-    for i in range(count):
+    for i in tqdm(range(count), desc="Clean (natural_noise)"):
         size = random.choice(sizes)
         # Create base image
         base_data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
         # Add natural noise to LSB
         noise = np.random.randint(0, 2, (size[1], size[0], 3), dtype=np.uint8)
         data = base_data & 0xFE | noise  # Set LSB to noise
-        img = Image.fromarray(data, mode='RGB')
-        img.save(os.path.join(output_subdir, f'natural_noise_{i:04d}.png'))
+        img = Image.fromarray(data)
+        img.save(os.path.join(output_dir, f'natural_noise_{i:04d}.png'))
 
 
 def generate_repetitive_patterns(output_dir, count=10):
     """
     Generate images with repetitive hex patterns
     """
-    output_subdir = os.path.join(output_dir, 'repetitive_patterns')
-    os.makedirs(output_subdir, exist_ok=True)
-
     sizes = [(128, 128), (256, 256), (512, 512)]
 
-    for i in range(count):
+    for i in tqdm(range(count), desc="Clean (repetitive_patterns)"):
         size = random.choice(sizes)
         data = np.zeros((size[1], size[0], 3), dtype=np.uint8)
         pattern = [0xAA, 0x55, 0xFF, 0x00][i % 4]
         for y in range(size[1]):
             for x in range(size[0]):
                 data[y, x] = [pattern] * 3
-        img = Image.fromarray(data, mode='RGB')
-        img.save(os.path.join(output_subdir, f'pattern_{i:04d}.png'))
+        img = Image.fromarray(data)
+        img.save(os.path.join(output_dir, f'repetitive_patterns_{i:04d}.png'))
 
 
-def generate_negatives(output_dir, count=10):
+def generate_negatives(clean_dir, stego_dir, count=10, methods=["exif", "lsb", "eoi"]):
     """
-    Generate all types of negative examples and create manifest.jsonl with metadata
+    Generate clean and stego pairs for negative examples (special cases)
     """
-    negatives_dir = output_dir
-    manifest_path = os.path.join(negatives_dir, 'manifest.jsonl')
+    os.makedirs(clean_dir, exist_ok=True)
+    os.makedirs(stego_dir, exist_ok=True)
 
-    # Generate images
-    generate_rgb_no_alpha(negatives_dir, count)
-    generate_uniform_alpha(negatives_dir, count)
-    generate_natural_noise(negatives_dir, count)
-    generate_repetitive_patterns(negatives_dir, count)
+    categories = [
+        ('rgb_no_alpha', generate_rgb_no_alpha),
+        ('uniform_alpha', generate_uniform_alpha),
+        ('natural_noise', generate_natural_noise),
+        ('repetitive_patterns', generate_repetitive_patterns),
+    ]
 
-    # Collect all generated files and create manifest
-    with open(manifest_path, 'w') as f:
-        for subdir in ['rgb_no_alpha', 'uniform_alpha', 'natural_noise', 'repetitive_patterns']:
-            subdir_path = os.path.join(negatives_dir, subdir)
-            if os.path.exists(subdir_path):
-                for filename in os.listdir(subdir_path):
-                    if filename.endswith('.png'):
-                        category = subdir.replace('_', ' ')
-                        record = {
-                            'filename': filename,
-                            'category': category,
-                            'method_constraint': f'{category} constraint',
-                            'expected_behavior': 'clean',
-                            'format_type': 'PNG',
-                            'generation_method': 'synthetic',
-                            'validation_status': 'verified_clean',
-                            'metadata': {
-                                'original_source': 'grok_submission_2025',
-                                'generation_params': {
-                                    'size': '512x512',
-                                    'category': category,
-                                },
-                                'extraction_results': {
-                                    'alpha_lsb': None,
-                                    'palette_lsb': None,
-                                    'lsb_rgb': None,
-                                    'exif': None,
-                                    'eoi': None,
-                                },
-                                'quality_score': 0.9,
-                                'notes': f"Negative example: {category}"
-                            }
-                        }
-                        f.write(json.dumps(record) + '\n')
+    payload = "negative example payload"
+
+    for category_name, generate_func in categories:
+        # Generate clean images
+        generate_func(clean_dir, count)
+
+        # For each method, generate stego versions
+        for method in methods:
+            for i in tqdm(range(count), desc=f"Stego ({category_name}, {method})"):
+                clean_filename = f'{category_name}_{i:04d}.png'
+                clean_path = os.path.join(clean_dir, clean_filename)
+                stego_filename = f'{category_name}_{method}_{i:04d}.png'
+                stego_path = os.path.join(stego_dir, stego_filename)
+
+                # Copy clean to stego
+                shutil.copy(clean_path, stego_path)
+
+                # Embed payload based on method
+                category_type = "unknown"
+                technique = "unknown"
+                if method == "lsb":
+                    embed_lsb(clean_path, stego_path, payload=payload, payload_size=0.4)
+                    category_type = "pixel"
+                    technique = "lsb.rgb"
+                elif method == "exif":
+                    add_exif_metadata(stego_path, payload)
+                    category_type = "metadata"
+                    technique = "exif"
+                elif method == "eoi":
+                    embed_eoi(stego_path, payload)
+                    category_type = "eoi"
+                    technique = "raw"
+
+                # Create JSON sidecar
+                json_path = stego_path + ".json"
+                embedding_data = {
+                    "category": category_type,
+                    "technique": technique,
+                    "ai42": False,
+                    "bit_order": "lsb-first",
+                }
+                sidecar_content = {
+                    "embedding": embedding_data,
+                    "clean_file": clean_filename,
+                }
+                with open(json_path, "w") as f:
+                    json.dump(sidecar_content, f, indent=2)
 
 
 def generate_images(num_images=5, methods=["exif", "lsb", "eoi"], payload_size=0.4):
@@ -522,6 +525,7 @@ def generate_images(num_images=5, methods=["exif", "lsb", "eoi"], payload_size=0
         - Labels images with seed basename and algorithm (e.g., sample_seed_eoi_001.jpeg).
         - If no seeds, generates a random batch labeled 'random' (no payload for verification).
         - Verifies payloads: LSB extraction, EXIF UserComment, EOI tail.
+        - Also generates clean and stego pairs for negative examples (special cases).
         - Uses tqdm for progress feedback.
     Args:
         num_images (int): Pairs per seed batch (default: 5; override via --limit or NUM_IMAGES env var).
@@ -682,11 +686,7 @@ if __name__ == "__main__":
         default=0.4,
         help="Bits per pixel for PNG LSB embedding (higher eases detection).",
     )
-    parser.add_argument(
-        "--negatives",
-        action="store_true",
-        help="Generate negative examples instead of stego pairs.",
-    )
+
     args = parser.parse_args()
 
     methods = [m.strip().lower() for m in args.methods.split(",")]
@@ -698,16 +698,11 @@ if __name__ == "__main__":
     )
 
     try:
-        if args.negatives:
-            negatives_dir = "negatives"
-            os.makedirs(negatives_dir, exist_ok=True)
-            generate_negatives(negatives_dir, args.limit)
-            print("Negative examples generation completed.")
-        else:
-            generate_images(
-                num_images=args.limit, methods=methods, payload_size=args.payload_size
-            )
-            print("Image generation completed. Check generation.log for details.")
+        generate_images(
+            num_images=args.limit, methods=methods, payload_size=args.payload_size
+        )
+        generate_negatives("./clean", "./stego", args.limit, methods)
+        print("Image generation completed. Check generation.log for details.")
     except Exception as e:
         logging.error(f"Error: {str(e)}")
         print("Error occurred. Check generation.log for details.")
