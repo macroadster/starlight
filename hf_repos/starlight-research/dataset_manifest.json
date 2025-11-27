@@ -1,0 +1,13 @@
+{
+  "version": "v3",
+  "status": "placeholder",
+  "description": "V3 dataset manifest - under development",
+  "datasets": [
+    {
+      "name": "balanced_training_v3",
+      "status": "planned",
+      "description": "Balanced dataset for V3 model training"
+    }
+  ],
+  "note": "This is a placeholder manifest for the research repository. Actual V3 datasets will be added during development."
+}
