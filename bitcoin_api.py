@@ -19,6 +19,7 @@ import io
 import os
 import tempfile
 import hashlib
+import json
 from contextlib import asynccontextmanager
 
 # Configure logging
@@ -251,6 +252,56 @@ if FASTAPI_AVAILABLE:
         stego_methods: List[str] = Field(..., description="Supported steganography methods")
         max_image_size: int = Field(..., description="Maximum image size in bytes")
         endpoints: Dict[str, str] = Field(..., description="Available endpoints")
+    
+    class BlockScanRequest(BaseModel):
+        block_height: int = Field(..., ge=0, description="Block height to scan")
+        scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
+    
+    class BlockScanInscription(BaseModel):
+        tx_id: str = Field(..., description="Transaction ID")
+        input_index: int = Field(..., description="Input index")
+        content_type: str = Field(..., description="Content type")
+        content: str = Field(..., description="Content")
+        size_bytes: int = Field(..., ge=0, description="Size in bytes")
+        file_name: str = Field(..., description="File name")
+        file_path: str = Field(..., description="File path")
+        scan_result: Optional[ScanResult] = Field(None, description="Scan result")
+    
+    class BlockScanResponse(BaseModel):
+        block_height: int = Field(..., description="Block height")
+        block_hash: str = Field(..., description="Block hash")
+        timestamp: int = Field(..., description="Block timestamp")
+        total_inscriptions: int = Field(..., description="Total inscriptions")
+        images_scanned: int = Field(..., description="Images scanned")
+        stego_detected: int = Field(..., description="Steganography detected")
+        processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
+        inscriptions: List[BlockScanInscription] = Field(..., description="Inscription scan results")
+        request_id: str = Field(..., description="Unique request ID")
+    
+    class BlockScanRequest(BaseModel):
+        block_height: int = Field(..., ge=0, description="Block height to scan")
+        scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
+    
+    class BlockScanInscription(BaseModel):
+        tx_id: str = Field(..., description="Transaction ID")
+        input_index: int = Field(..., description="Input index")
+        content_type: str = Field(..., description="Content type")
+        content: str = Field(..., description="Content")
+        size_bytes: int = Field(..., ge=0, description="Size in bytes")
+        file_name: str = Field(..., description="File name")
+        file_path: str = Field(..., description="File path")
+        scan_result: Optional[ScanResult] = Field(None, description="Scan result")
+    
+    class BlockScanResponse(BaseModel):
+        block_height: int = Field(..., description="Block height")
+        block_hash: str = Field(..., description="Block hash")
+        timestamp: int = Field(..., description="Block timestamp")
+        total_inscriptions: int = Field(..., description="Total inscriptions")
+        images_scanned: int = Field(..., description="Images scanned")
+        stego_detected: int = Field(..., description="Steganography detected")
+        processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
+        inscriptions: List[BlockScanInscription] = Field(..., description="Inscription scan results")
+        request_id: str = Field(..., description="Unique request ID")
 
 # Global instances
 bitcoin_client = BitcoinNodeClient()
@@ -282,17 +333,29 @@ async def scan_image_async(image_data: bytes, options: ScanOptions, request_id: 
                 # Use Starlight scanner
                 result = scanner_instance.scan_file(temp_path)
                 
-                # Convert to ScanResult format
-                scan_result = ScanResult(
-                    is_stego=result.get("is_stego", False),
-                    stego_probability=result.get("stego_probability", 0.0),
-                    stego_type=result.get("stego_type"),
-                    confidence=result.get("confidence", 0.0),
-                    prediction="stego" if result.get("is_stego") else "clean",
-                    method_id=result.get("method_id"),
-                    extracted_message=result.get("extracted_message") if options.extract_message else None,
-                    extraction_error=result.get("extraction_error")
-                )
+                 # Convert to ScanResult format
+                if FASTAPI_AVAILABLE:
+                    scan_result = ScanResult(
+                        is_stego=result.get("is_stego", False),
+                        stego_probability=result.get("stego_probability", 0.0),
+                        stego_type=result.get("stego_type"),
+                        confidence=result.get("confidence", 0.0),
+                        prediction="stego" if result.get("is_stego") else "clean",
+                        method_id=result.get("method_id"),
+                        extracted_message=result.get("extracted_message") if options.extract_message else None,
+                        extraction_error=result.get("extraction_error")
+                    )
+                else:
+                    scan_result = {
+                        "is_stego": result.get("is_stego", False),
+                        "stego_probability": result.get("stego_probability", 0.0),
+                        "stego_type": result.get("stego_type"),
+                        "confidence": result.get("confidence", 0.0),
+                        "prediction": "stego" if result.get("is_stego") else "clean",
+                        "method_id": result.get("method_id"),
+                        "extracted_message": result.get("extracted_message") if options.extract_message else None,
+                        "extraction_error": result.get("extraction_error")
+                    }
                 
                 # Apply confidence threshold
                 if scan_result.stego_probability < options.confidence_threshold:
@@ -829,6 +892,174 @@ if FASTAPI_AVAILABLE:
             }
         )
 
+# Block scanning endpoint
+@app.post("/scan/block", response_model=BlockScanResponse, tags=["Scanning"])
+async def scan_block(
+    request: BlockScanRequest,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_api_key)
+):
+    """Scan a Bitcoin block for steganography in all inscriptions"""
+    start_time = datetime.utcnow()
+    request_id = str(uuid.uuid4())
+    
+    try:
+        # Find block directory
+        block_dir = f"blocks/{request.block_height}_00000000"
+        if not os.path.exists(block_dir):
+            raise HTTPException(status_code=404, detail=f"Block {request.block_height} not found")
+        
+        # Load block data
+        block_json_path = os.path.join(block_dir, "block.json")
+        if not os.path.exists(block_json_path):
+            raise HTTPException(status_code=404, detail=f"Block data not found for height {request.block_height}")
+        
+        with open(block_json_path, 'r') as f:
+            block_data = json.load(f)
+        
+        # Load existing inscriptions if available
+        inscriptions_json_path = os.path.join(block_dir, "inscriptions.json")
+        existing_inscriptions = {}
+        if os.path.exists(inscriptions_json_path):
+            with open(inscriptions_json_path, 'r') as f:
+                existing_inscriptions = json.load(f)
+        
+        # Scan images in block
+        images_dir = os.path.join(block_dir, "images")
+        scanned_inscriptions = []
+        images_scanned = 0
+        stego_detected = 0
+        
+        if os.path.exists(images_dir):
+            image_files = [f for f in os.listdir(images_dir) 
+                          if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'))]
+            
+            for image_file in image_files:
+                image_path = os.path.join(images_dir, image_file)
+                try:
+                    # Scan image
+                    scan_result = await scan_image_async(
+                        open(image_path, 'rb').read(),
+                        request.scan_options,
+                        request_id
+                    )
+                    
+                    # Get inscription info
+                    inscription_info = None
+                    for insc in existing_inscriptions.get("inscriptions", []):
+                        if insc.get("file_name") == image_file:
+                            inscription_info = insc
+                            break
+                    
+                    if not inscription_info:
+                        # Create basic inscription info
+                        inscription_info = {
+                            "tx_id": f"unknown_{image_file}",
+                            "input_index": 0,
+                            "content_type": f"image/{image_file.split('.')[-1]}",
+                            "content": f"Image file: {image_file}",
+                            "size_bytes": os.path.getsize(image_path),
+                            "file_name": image_file,
+                            "file_path": f"images/{image_file}"
+                        }
+                    
+                    # Add scan result to inscription
+                    if FASTAPI_AVAILABLE and hasattr(scan_result, 'dict'):
+                        inscription_info["scan_result"] = scan_result.dict()
+                    else:
+                        inscription_info["scan_result"] = scan_result
+                    
+                    scanned_inscriptions.append(inscription_info)
+                    images_scanned += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error scanning image {image_file}: {e}")
+                    # Add inscription without scan result
+                    scanned_inscriptions.append({
+                        "tx_id": f"unknown_{image_file}",
+                        "input_index": 0,
+                        "content_type": f"image/{image_file.split('.')[-1]}",
+                        "content": f"Image file: {image_file}",
+                        "size_bytes": os.path.getsize(image_path),
+                        "file_name": image_file,
+                        "file_path": f"images/{image_file}",
+                        "scan_result": None,
+                        "error": str(e)
+                    })
+                    images_scanned += 1
+        
+        # Update block data with scan results
+        updated_block_data = block_data.copy()
+        updated_block_data["stego_detected"] = stego_detected
+        updated_block_data["images_scanned"] = images_scanned
+        updated_block_data["scan_timestamp"] = int(start_time.timestamp())
+        
+        # Save updated block data
+        with open(block_json_path, 'w') as f:
+            json.dump(updated_block_data, f, indent=2)
+        
+        # Update inscriptions with scan results
+        updated_inscriptions = existing_inscriptions.copy()
+        updated_inscriptions["inscriptions"] = scanned_inscriptions
+        
+        with open(inscriptions_json_path, 'w') as f:
+            json.dump(updated_inscriptions, f, indent=2)
+        
+        # Update global inscriptions JSON
+        global_inscriptions_path = "blocks/global_inscriptions.json"
+        global_inscriptions = {}
+        
+        if os.path.exists(global_inscriptions_path):
+            with open(global_inscriptions_path, 'r') as f:
+                global_inscriptions = json.load(f)
+        
+        block_key = f"{request.block_height}_{block_data.get('hash', 'unknown')}"
+        global_inscriptions[block_key] = {
+            "hash": block_data.get("hash", "unknown"),
+            "height": request.block_height,
+            "image_count": images_scanned,
+            "inscriptions": scanned_inscriptions,
+            "timestamp": block_data.get("timestamp", 0),
+            "stego_detected": stego_detected,
+            "scan_timestamp": int(start_time.timestamp())
+        }
+        
+        with open(global_inscriptions_path, 'w') as f:
+            json.dump(global_inscriptions, f, indent=2)
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+        
+        if FASTAPI_AVAILABLE:
+            return BlockScanResponse(
+                block_height=request.block_height,
+                block_hash=block_data.get("hash", "unknown"),
+                timestamp=block_data.get("timestamp", 0),
+                total_inscriptions=len(scanned_inscriptions),
+                images_scanned=images_scanned,
+                stego_detected=stego_detected,
+                processing_time_ms=processing_time,
+                inscriptions=scanned_inscriptions,
+                request_id=request_id
+            )
+        else:
+            return {
+                "block_height": request.block_height,
+                "block_hash": block_data.get("hash", "unknown"),
+                "timestamp": block_data.get("timestamp", 0),
+                "total_inscriptions": len(scanned_inscriptions),
+                "images_scanned": images_scanned,
+                "stego_detected": stego_detected,
+                "processing_time_ms": processing_time,
+                "inscriptions": scanned_inscriptions,
+                "request_id": request_id
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error scanning block {request.block_height}: {e}")
+        raise HTTPException(status_code=500, detail=f"Block scan failed: {str(e)}")
+
 # Root endpoint
 @app.get("/", tags=["Root"])
 async def root():
@@ -843,6 +1074,7 @@ async def root():
             "scan_transaction": "/scan/transaction",
             "scan_image": "/scan/image",
             "batch_scan": "/scan/batch",
+            "scan_block": "/scan/block",
             "extract": "/extract",
             "get_transaction": "/transaction/{txid}"
         },
