@@ -1,0 +1,8 @@
+image_path,stego_probability,predicted_method,is_steganography
+datasets/chatgpt_submission_2025/clean/clean-0001.png,0.05,lsb,False
+datasets/chatgpt_submission_2025/clean/clean-0002.png,0.03,alpha,False
+datasets/chatgpt_submission_2025/stego/lsb/sample_seed_lsb_100.png,0.95,lsb,True
+datasets/chatgpt_submission_2025/stego/alpha/sample_seed_alpha_100.png,0.92,alpha,True
+datasets/chatgpt_submission_2025/stego/palette/sample_seed_palette_100.gif,0.88,palette,True
+datasets/chatgpt_submission_2025/stego/exif/sample_seed_exif_100.jpg,0.98,exif,True
+datasets/chatgpt_submission_2025/stego/eoi/sample_seed_eoi_100.jpg,0.97,eoi,True

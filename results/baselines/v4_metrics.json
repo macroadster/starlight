@@ -1,0 +1,10 @@
+{
+  "fpr": 0.0,
+  "detection_rates": {
+    "stego": 0.0,
+    "checkpoints": 0,
+    "__pycache__": 0,
+    "seeds": 0,
+    "model": 0
+  }
+}
