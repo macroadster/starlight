@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from scanner import StarlightScanner
 from monitoring.metrics_collector import MetricsCollector
+from monitoring.dashboard import DashboardGenerator
 
 class PerformanceMonitor:
     def __init__(self, model_path, dataset_path):
@@ -118,50 +119,7 @@ class PerformanceMonitor:
 
         return metrics
 
-def update_dashboard_markdown(metrics):
-    """Update the performance dashboard markdown"""
-    dashboard_path = Path('docs/grok/performance_dashboard.md')
-    if not dashboard_path.exists():
-        return
 
-    # Read current content
-    with open(dashboard_path, 'r') as f:
-        content = f.read()
-
-    # Update placeholders
-    content = content.replace('**Last Updated**: 2025-11-22 14:32:15 UTC', f'**Last Updated**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} UTC')
-    content = content.replace('**Model**: v4_production_quantized', '**Model**: v4_production_quantized')  # keep as is
-    content = content.replace('**Status**: ✅ HEALTHY', '**Status**: ✅ HEALTHY')  # keep as is
-
-    # Update FPR
-    fpr_line = f"| False Positive Rate | {metrics['fpr']:.2f}% | <0.05% | {'⚠️ Close' if metrics['fpr'] > 0.05 else '✅ Good'} |"
-    content = content.replace('| False Positive Rate | 0.07% | <0.05% | ⚠️ Close |', fpr_line)
-
-    # Update detection rates
-    methods = ['lsb', 'alpha', 'palette', 'exif', 'eoi']
-    for method in methods:
-        rate = metrics['detection_rates'].get(method, 0)
-        status = '✅ Good' if rate > 99 else '⚠️ Watch'
-        line = f"| {method.capitalize()} Detection | {rate:.1f}% | >99% | {status} |"
-        old_line = f"| {method.capitalize()} Detection | 98.5% | >99% | ✅ Good |"  # approximate
-        content = content.replace(old_line, line)
-
-    # Update performance
-    perf = metrics['performance']
-    content = content.replace('- **Latency p50**: 3.8ms', f'- **Latency p50**: {perf["p50_ms"]:.1f}ms')
-    content = content.replace('- **Latency p95**: 4.2ms (Target: <5ms)', f'- **Latency p95**: {perf["p95_ms"]:.1f}ms (Target: <5ms)')
-    content = content.replace('- **Throughput**: 238 img/sec', f'- **Throughput**: {perf["throughput_imgs_per_sec"]:.0f} img/sec')
-
-    # Update dataset quality
-    dq = metrics['dataset_quality']
-    balance_str = ' | '.join([f"{k} {v:.0f}%" for k, v in dq['balance'].items()])
-    content = content.replace('- **Total Samples**: 5,200', f'- **Total Samples**: {dq["total"]}')
-    content = content.replace('- **Method Balance**: LSB 22% | Alpha 19% | Palette 18% | EXIF 20% | EOI 21%', f'- **Method Balance**: {balance_str}')
-    content = content.replace('- **Shannon Entropy**: 2.47 / 2.32 (excellent diversity)', f'- **Shannon Entropy**: {dq["entropy"]:.2f} / 2.32 (excellent diversity)')
-
-    # Write back
-    with open(dashboard_path, 'w') as f:
-        f.write(content)
 
 def main():
     parser = argparse.ArgumentParser(description='Monitor Starlight performance')
@@ -189,7 +147,8 @@ def main():
             print(alert)
 
     if args.update_dashboard:
-        update_dashboard_markdown(metrics)
+        dashboard_gen = DashboardGenerator()
+        dashboard_gen.update_dashboard(metrics)
 
     print(f"✅ Metrics updated: {args.output}")
 
