@@ -1,0 +1,15 @@
+{
+  "lsb_patterns": {
+    "count": 24,
+    "probability_range": "0.001307 - 0.048875",
+    "grouped_by_prob": 4,
+    "likely_cause": "Weak steganographic signal or sparse payload"
+  },
+  "alpha_patterns": {
+    "count": 6,
+    "all_same_probability": false,
+    "probability": 0.24784445762634277,
+    "unique_images": 6,
+    "likely_cause": "Possible edge case at model threshold"
+  }
+}

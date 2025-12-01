@@ -1,0 +1,371 @@
+{
+  "completely_missed_count": 30,
+  "completely_missed": [
+    {
+      "filename": "humanity_echo_lsb_012.png",
+      "full_path": "datasets/val/stego/humanity_echo_lsb_012.png",
+      "probability": 0.02209051139652729,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_echo_lsb_007.png",
+      "full_path": "datasets/val/stego/humanity_echo_lsb_007.png",
+      "probability": 0.001307341386564076,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_echo_lsb_011.png",
+      "full_path": "datasets/val/stego/humanity_echo_lsb_011.png",
+      "probability": 0.04887542501091957,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_bridge_lsb_008.png",
+      "full_path": "datasets/val/stego/humanity_bridge_lsb_008.png",
+      "probability": 0.018223684281110764,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_journey_lsb_012.png",
+      "full_path": "datasets/val/stego/humanity_journey_lsb_012.png",
+      "probability": 0.02209051139652729,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dream_lsb_012.png",
+      "full_path": "datasets/val/stego/humanity_dream_lsb_012.png",
+      "probability": 0.02209051139652729,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_light_lsb_008.png",
+      "full_path": "datasets/val/stego/humanity_light_lsb_008.png",
+      "probability": 0.018223684281110764,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dream_lsb_007.png",
+      "full_path": "datasets/val/stego/humanity_dream_lsb_007.png",
+      "probability": 0.001307341386564076,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_journey_lsb_007.png",
+      "full_path": "datasets/val/stego/humanity_journey_lsb_007.png",
+      "probability": 0.001307341386564076,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_journey_lsb_011.png",
+      "full_path": "datasets/val/stego/humanity_journey_lsb_011.png",
+      "probability": 0.04887542501091957,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dream_lsb_011.png",
+      "full_path": "datasets/val/stego/humanity_dream_lsb_011.png",
+      "probability": 0.04887542501091957,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dawn_lsb_007.png",
+      "full_path": "datasets/val/stego/humanity_dawn_lsb_007.png",
+      "probability": 0.001307341386564076,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_journey_alpha_007.png",
+      "full_path": "datasets/val/stego/humanity_journey_alpha_007.png",
+      "probability": 0.24784445762634277,
+      "predicted_method": 0,
+      "ground_truth_method": "alpha",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dawn_lsb_012.png",
+      "full_path": "datasets/val/stego/humanity_dawn_lsb_012.png",
+      "probability": 0.02209051139652729,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dawn_lsb_011.png",
+      "full_path": "datasets/val/stego/humanity_dawn_lsb_011.png",
+      "probability": 0.04887542501091957,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_echo_alpha_007.png",
+      "full_path": "datasets/val/stego/humanity_echo_alpha_007.png",
+      "probability": 0.24784596264362335,
+      "predicted_method": 0,
+      "ground_truth_method": "alpha",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_light_alpha_007.png",
+      "full_path": "datasets/val/stego/humanity_light_alpha_007.png",
+      "probability": 0.2478763610124588,
+      "predicted_method": 0,
+      "ground_truth_method": "alpha",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_bridge_alpha_007.png",
+      "full_path": "datasets/val/stego/humanity_bridge_alpha_007.png",
+      "probability": 0.24784472584724426,
+      "predicted_method": 0,
+      "ground_truth_method": "alpha",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dawn_alpha_007.png",
+      "full_path": "datasets/val/stego/humanity_dawn_alpha_007.png",
+      "probability": 0.24787645041942596,
+      "predicted_method": 0,
+      "ground_truth_method": "alpha",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dawn_lsb_008.png",
+      "full_path": "datasets/val/stego/humanity_dawn_lsb_008.png",
+      "probability": 0.018223684281110764,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dream_alpha_007.png",
+      "full_path": "datasets/val/stego/humanity_dream_alpha_007.png",
+      "probability": 0.24784351885318756,
+      "predicted_method": 0,
+      "ground_truth_method": "alpha",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_light_lsb_012.png",
+      "full_path": "datasets/val/stego/humanity_light_lsb_012.png",
+      "probability": 0.02209051139652729,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_light_lsb_007.png",
+      "full_path": "datasets/val/stego/humanity_light_lsb_007.png",
+      "probability": 0.001307341386564076,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_dream_lsb_008.png",
+      "full_path": "datasets/val/stego/humanity_dream_lsb_008.png",
+      "probability": 0.018223684281110764,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_journey_lsb_008.png",
+      "full_path": "datasets/val/stego/humanity_journey_lsb_008.png",
+      "probability": 0.018223684281110764,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_light_lsb_011.png",
+      "full_path": "datasets/val/stego/humanity_light_lsb_011.png",
+      "probability": 0.04887542501091957,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_bridge_lsb_011.png",
+      "full_path": "datasets/val/stego/humanity_bridge_lsb_011.png",
+      "probability": 0.04887542501091957,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_echo_lsb_008.png",
+      "full_path": "datasets/val/stego/humanity_echo_lsb_008.png",
+      "probability": 0.018223684281110764,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_bridge_lsb_012.png",
+      "full_path": "datasets/val/stego/humanity_bridge_lsb_012.png",
+      "probability": 0.02209051139652729,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    },
+    {
+      "filename": "humanity_bridge_lsb_007.png",
+      "full_path": "datasets/val/stego/humanity_bridge_lsb_007.png",
+      "probability": 0.001307341386564076,
+      "predicted_method": 2,
+      "ground_truth_method": "lsb.rgb",
+      "reason": "Model confidence too low or method misclassified"
+    }
+  ],
+  "by_method": {
+    "lsb.rgb": [
+      {
+        "filename": "humanity_echo_lsb_012.png",
+        "probability": 0.02209051139652729
+      },
+      {
+        "filename": "humanity_echo_lsb_007.png",
+        "probability": 0.001307341386564076
+      },
+      {
+        "filename": "humanity_echo_lsb_011.png",
+        "probability": 0.04887542501091957
+      },
+      {
+        "filename": "humanity_bridge_lsb_008.png",
+        "probability": 0.018223684281110764
+      },
+      {
+        "filename": "humanity_journey_lsb_012.png",
+        "probability": 0.02209051139652729
+      },
+      {
+        "filename": "humanity_dream_lsb_012.png",
+        "probability": 0.02209051139652729
+      },
+      {
+        "filename": "humanity_light_lsb_008.png",
+        "probability": 0.018223684281110764
+      },
+      {
+        "filename": "humanity_dream_lsb_007.png",
+        "probability": 0.001307341386564076
+      },
+      {
+        "filename": "humanity_journey_lsb_007.png",
+        "probability": 0.001307341386564076
+      },
+      {
+        "filename": "humanity_journey_lsb_011.png",
+        "probability": 0.04887542501091957
+      },
+      {
+        "filename": "humanity_dream_lsb_011.png",
+        "probability": 0.04887542501091957
+      },
+      {
+        "filename": "humanity_dawn_lsb_007.png",
+        "probability": 0.001307341386564076
+      },
+      {
+        "filename": "humanity_dawn_lsb_012.png",
+        "probability": 0.02209051139652729
+      },
+      {
+        "filename": "humanity_dawn_lsb_011.png",
+        "probability": 0.04887542501091957
+      },
+      {
+        "filename": "humanity_dawn_lsb_008.png",
+        "probability": 0.018223684281110764
+      },
+      {
+        "filename": "humanity_light_lsb_012.png",
+        "probability": 0.02209051139652729
+      },
+      {
+        "filename": "humanity_light_lsb_007.png",
+        "probability": 0.001307341386564076
+      },
+      {
+        "filename": "humanity_dream_lsb_008.png",
+        "probability": 0.018223684281110764
+      },
+      {
+        "filename": "humanity_journey_lsb_008.png",
+        "probability": 0.018223684281110764
+      },
+      {
+        "filename": "humanity_light_lsb_011.png",
+        "probability": 0.04887542501091957
+      },
+      {
+        "filename": "humanity_bridge_lsb_011.png",
+        "probability": 0.04887542501091957
+      },
+      {
+        "filename": "humanity_echo_lsb_008.png",
+        "probability": 0.018223684281110764
+      },
+      {
+        "filename": "humanity_bridge_lsb_012.png",
+        "probability": 0.02209051139652729
+      },
+      {
+        "filename": "humanity_bridge_lsb_007.png",
+        "probability": 0.001307341386564076
+      }
+    ],
+    "alpha": [
+      {
+        "filename": "humanity_journey_alpha_007.png",
+        "probability": 0.24784445762634277
+      },
+      {
+        "filename": "humanity_echo_alpha_007.png",
+        "probability": 0.24784596264362335
+      },
+      {
+        "filename": "humanity_light_alpha_007.png",
+        "probability": 0.2478763610124588
+      },
+      {
+        "filename": "humanity_bridge_alpha_007.png",
+        "probability": 0.24784472584724426
+      },
+      {
+        "filename": "humanity_dawn_alpha_007.png",
+        "probability": 0.24787645041942596
+      },
+      {
+        "filename": "humanity_dream_alpha_007.png",
+        "probability": 0.24784351885318756
+      }
+    ]
+  }
+}
