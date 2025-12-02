@@ -1,8 +1,8 @@
 # Starlight Bitcoin Steganography Scanning API Specification
 
-**Version**: 1.0  
+**Version**: 1.1  
 **Format**: OpenAPI 3.0  
-**Updated**: November 26, 2025  
+**Updated**: December 1, 2025  
 
 ---
 
@@ -68,7 +68,9 @@ API information and capabilities.
     "scan_tx": "/scan/transaction",
     "scan_image": "/scan/image",
     "batch_scan": "/scan/batch",
-    "extract": "/extract"
+    "scan_block": "/scan/block",
+    "extract": "/extract",
+    "inscribe": "/inscribe"
   }
 }
 ```
@@ -245,6 +247,64 @@ Scan multiple transactions or images in a batch.
 
 ---
 
+### Block Scanning
+
+#### POST /scan/block
+Scan a locally-synced block folder for inscription images and return per-image stego results (used by Stargate for offline batch processing).
+
+**SLA**: Depends on block size; synchronous call—queue/worker recommended for production.
+
+**Request Body**:
+```json
+{
+  "block_height": 815000,
+  "scan_options": {
+    "extract_message": true,
+    "confidence_threshold": 0.5,
+    "include_metadata": true
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "block_height": 815000,
+  "block_hash": "0000000000000000000123456789abcdef",
+  "timestamp": 1701427200,
+  "total_inscriptions": 32,
+  "images_scanned": 32,
+  "stego_detected": 1,
+  "processing_time_ms": 4100,
+  "inscriptions": [
+    {
+      "tx_id": "abc123...",
+      "input_index": 0,
+      "content_type": "image/png",
+      "content": "Image file: insc-0001.png",
+      "size_bytes": 20480,
+      "file_name": "insc-0001.png",
+      "file_path": "images/insc-0001.png",
+      "scan_result": {
+        "is_stego": true,
+        "stego_probability": 0.92,
+        "stego_type": "alpha",
+        "confidence": 0.94,
+        "prediction": "stego"
+      }
+    }
+  ],
+  "request_id": "7c1f8b4c-1fd1-4e2d-9f1f-2a6b1d35b521"
+}
+```
+
+Notes:
+- Expects block data on disk (e.g., `blocks/{height}_*/images/*.png` with `block.json`).
+- `stego_detected` increments when any inscription `scan_result.is_stego` is true.
+- Prefer asynchronous job submission for large blocks.
+
+---
+
 ### Message Extraction
 
 #### POST /extract
@@ -280,6 +340,38 @@ Extract hidden messages from a steganographic image.
   "request_id": "req_extract_789"
 }
 ```
+
+---
+
+### Inscription Preparation
+
+#### POST /inscribe
+Embed a text payload into an image and save it to disk for Stargate to broadcast via OP_RETURN/Ordinals (no on-chain write here).
+
+**SLA**: <2s
+
+**Request**: `multipart/form-data`
+- `image` (file, required) – cover image (<=10MB)
+- `message` (string, required) – UTF-8 text payload to embed
+- `method` (string, optional, default `alpha`) – one of `alpha|lsb|palette|exif|eoi`
+
+**Response**:
+```json
+{
+  "request_id": "c5c2cf9a-27c3-4c28-b2d8-9bba2b4a6a11",
+  "method": "alpha",
+  "message_length": 42,
+  "output_file": "inscriptions/pending/20241201T120000Z_ab12cd34_cover.png",
+  "image_bytes": 58213,
+  "status": "pending_upload",
+  "note": "Ready for Stargate uploader to broadcast via OP_RETURN or Ordinals"
+}
+```
+
+Notes:
+- Output directory defaults to `inscriptions/pending` (override via `STARLIGHT_INSCRIPTION_OUTBOX`).
+- Stargate should poll the outbox and perform the on-chain inscription.
+- Auth: Bearer token required (except /health and /info).
 
 ---
 
@@ -400,6 +492,14 @@ Get transaction details and available images.
 | `SCAN_FAILED` | 500 | Steganography scan failed |
 | `EXTRACTION_FAILED` | 500 | Message extraction failed |
 | `BITCOIN_NODE_ERROR` | 503 | Bitcoin node unavailable |
+
+---
+
+## 🛰️ Stargate Integration Notes (Production Readiness)
+- Prefer async workers for `/scan/block`; store results in Postgres JSONB for flexible querying. Example schema: `CREATE TABLE block_scans (block_height INT PRIMARY KEY, block_hash TEXT, scanned_at TIMESTAMPTZ, payload JSONB, stego_detected INT, images_scanned INT);`
+- Index JSONB for hot fields: `CREATE INDEX ON block_scans USING GIN (payload jsonb_path_ops);` plus btree on `(block_height)` and `(scanned_at)`.
+- Upstream extraction logic should handle dedupe/retries per `block_hash`; treat `stego_detected` as a derived column from the payload.
+- Inscription flow: Stargate watches `inscriptions/pending`, uploads the file, records resulting txid back into its own table keyed by `output_file`.
 
 ---
 

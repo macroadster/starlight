@@ -8,6 +8,8 @@ pydantic>=2.5.0
 # Image Processing
 Pillow>=10.0.0
 numpy>=1.24.0
+tqdm>=4.66.0
+python-multipart>=0.0.6
 
 # Machine Learning (for scanner integration)
 torch>=2.0.0
