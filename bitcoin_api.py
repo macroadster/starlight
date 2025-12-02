@@ -20,11 +20,19 @@ import os
 import tempfile
 import hashlib
 import json
+from pathlib import Path
+import requests
 from contextlib import asynccontextmanager
+import glob
+
+from PIL import Image
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Default blocks directory (overridable via env)
+BLOCKS_DIR = os.environ.get("BLOCKS_DIR", "blocks")
 
 # Check if FastAPI is available
 FASTAPI_AVAILABLE = False
@@ -108,6 +116,14 @@ try:
 except ImportError as e:
     SCANNER_AVAILABLE = False
     logger.error(f"Could not import Starlight scanner: {e}")
+
+# Stego embedding helpers (re-use existing tool functions when available)
+try:
+    from scripts.stego_tool import embed_alpha, embed_lsb, embed_palette, embed_exif, embed_eoi
+    STEGO_HELPERS_AVAILABLE = True
+except Exception as e:
+    STEGO_HELPERS_AVAILABLE = False
+    logger.warning(f"stego_tool helpers unavailable: {e}")
 
 # Bitcoin integration (stub for now - would integrate with actual Bitcoin node)
 class BitcoinNodeClient:
@@ -252,31 +268,15 @@ if FASTAPI_AVAILABLE:
         stego_methods: List[str] = Field(..., description="Supported steganography methods")
         max_image_size: int = Field(..., description="Maximum image size in bytes")
         endpoints: Dict[str, str] = Field(..., description="Available endpoints")
-    
-    class BlockScanRequest(BaseModel):
-        block_height: int = Field(..., ge=0, description="Block height to scan")
-        scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
-    
-    class BlockScanInscription(BaseModel):
-        tx_id: str = Field(..., description="Transaction ID")
-        input_index: int = Field(..., description="Input index")
-        content_type: str = Field(..., description="Content type")
-        content: str = Field(..., description="Content")
-        size_bytes: int = Field(..., ge=0, description="Size in bytes")
-        file_name: str = Field(..., description="File name")
-        file_path: str = Field(..., description="File path")
-        scan_result: Optional[ScanResult] = Field(None, description="Scan result")
-    
-    class BlockScanResponse(BaseModel):
-        block_height: int = Field(..., description="Block height")
-        block_hash: str = Field(..., description="Block hash")
-        timestamp: int = Field(..., description="Block timestamp")
-        total_inscriptions: int = Field(..., description="Total inscriptions")
-        images_scanned: int = Field(..., description="Images scanned")
-        stego_detected: int = Field(..., description="Steganography detected")
-        processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
-        inscriptions: List[BlockScanInscription] = Field(..., description="Inscription scan results")
+
+    class InscribeResponse(BaseModel):
         request_id: str = Field(..., description="Unique request ID")
+        method: str = Field(..., description="Embedding method used")
+        message_length: int = Field(..., description="Length of embedded message in bytes")
+        output_file: str = Field(..., description="Relative path to saved inscribed image")
+        image_bytes: int = Field(..., description="Size of inscribed image in bytes")
+        status: str = Field(..., description="Inscribe status (pending upload)")
+        note: str = Field(..., description="Next step hint for Stargate uploader")
     
     class BlockScanRequest(BaseModel):
         block_height: int = Field(..., ge=0, description="Block height to scan")
@@ -306,6 +306,8 @@ if FASTAPI_AVAILABLE:
 # Global instances
 bitcoin_client = BitcoinNodeClient()
 scanner_instance = None
+INSCRIPTION_OUTBOX = Path(os.environ.get("STARLIGHT_INSCRIPTION_OUTBOX", "inscriptions/pending"))
+INSCRIPTION_OUTBOX.mkdir(parents=True, exist_ok=True)
 
 # Initialize scanner if available
 if SCANNER_AVAILABLE:
@@ -388,13 +390,39 @@ async def scan_image_async(image_data: bytes, options: ScanOptions, request_id: 
             extraction_error=str(e)
         )
 
+
+def embed_message_to_image(image_bytes: bytes, method: str, message: str) -> bytes:
+    """Embed a UTF-8 message into an image using the selected stego method."""
+    if not STEGO_HELPERS_AVAILABLE:
+        raise RuntimeError("Stego helpers are unavailable; cannot inscribe message.")
+    method_map = {
+        "alpha": embed_alpha,
+        "lsb": embed_lsb,
+        "palette": embed_palette,
+        "exif": embed_exif,
+        "eoi": embed_eoi
+    }
+    method_key = method.lower()
+    if method_key not in method_map:
+        raise ValueError(f"Unsupported method '{method}'. Supported: {', '.join(sorted(method_map.keys()))}")
+    cover = Image.open(io.BytesIO(image_bytes))
+    stego_img = method_map[method_key](cover, message.encode("utf-8"))
+    buf = io.BytesIO()
+    stego_img.save(buf, format="PNG")
+    return buf.getvalue()
+
 # Dependency for API key authentication
 async def verify_api_key(authorization: str = Header(None)):
     """Verify API key for protected endpoints"""
     if not FASTAPI_AVAILABLE:
         return "demo-api-key"
     
+    required_key = os.environ.get("STARGATE_API_KEY", "demo-api-key")
+
     if authorization is None:
+        # Allow missing header if explicit bypass is configured
+        if os.environ.get("ALLOW_ANONYMOUS_SCAN", "false").lower() == "true":
+            return "anonymous"
         raise HTTPException(status_code=401, detail="Authorization header required")
     
     if not authorization.startswith("Bearer "):
@@ -402,7 +430,7 @@ async def verify_api_key(authorization: str = Header(None)):
     
     api_key = authorization.split(" ")[1]
     # Simple validation (replace with proper JWT verification in production)
-    if api_key != "demo-api-key":
+    if api_key != required_key:
         raise HTTPException(status_code=403, detail="Invalid API key")
     
     return api_key
@@ -472,7 +500,8 @@ async def api_info():
                 "scan_tx": "/scan/transaction",
                 "scan_image": "/scan/image",
                 "batch_scan": "/scan/batch",
-                "extract": "/extract"
+                "extract": "/extract",
+                "inscribe": "/inscribe"
             }
         )
     else:
@@ -487,7 +516,8 @@ async def api_info():
                 "scan_tx": "/scan/transaction",
                 "scan_image": "/scan/image", 
                 "batch_scan": "/scan/batch",
-                "extract": "/extract"
+                "extract": "/extract",
+                "inscribe": "/inscribe"
             }
         }
 
@@ -620,6 +650,75 @@ async def scan_image(
     except Exception as e:
         logger.error(f"Error scanning image: {e}")
         raise HTTPException(status_code=500, detail=f"Image scan failed: {str(e)}")
+
+
+# Inscription preparation endpoint (embed text into image and save for Stargate upload)
+@app.post("/inscribe", response_model=InscribeResponse, tags=["Inscribe"])
+async def inscribe_image(
+    image: UploadFile = File(...),
+    message: str = Form(...),
+    method: str = Form("alpha"),
+    api_key: str = Depends(verify_api_key)
+):
+    """Embed a text message into an image and save it for Stargate to broadcast."""
+    request_id = str(uuid.uuid4())
+    try:
+        if not message:
+            raise HTTPException(status_code=400, detail="Message is required for inscription")
+        image_bytes = await image.read()
+        if len(image_bytes) > 10485760:
+            raise HTTPException(status_code=413, detail="Image too large")
+        try:
+            stego_bytes = embed_message_to_image(image_bytes, method, message)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except RuntimeError as re:
+            raise HTTPException(status_code=503, detail=str(re))
+
+        safe_name = os.path.basename(image.filename) or "inscribe.png"
+
+        # Optional direct handoff to Stargate via REST
+        ingest_url = os.environ.get("STARGATE_INGEST_URL")
+        ingest_token = os.environ.get("STARGATE_INGEST_TOKEN", "")
+        ingest_result = None
+        if ingest_url:
+            try:
+                payload = {
+                    "id": request_id,
+                    "filename": safe_name,
+                    "method": method,
+                    "message_length": len(message.encode("utf-8")),
+                    "image_base64": base64.b64encode(stego_bytes).decode("utf-8"),
+                    # Include the embedded message so Stargate can surface it in pending UI
+                    "metadata": {"embedded_message": message},
+                }
+                headers = {"Content-Type": "application/json"}
+                if ingest_token:
+                    headers["X-Ingest-Token"] = ingest_token
+                resp = requests.post(ingest_url, json=payload, headers=headers, timeout=10)
+                ingest_result = {"status_code": resp.status_code, "response": resp.text}
+            except Exception as e:
+                ingest_result = {"error": str(e)}
+
+        response_payload = {
+            "request_id": request_id,
+            "method": method,
+            "message_length": len(message.encode("utf-8")),
+            "output_file": safe_name,
+            "image_bytes": len(stego_bytes),
+            "status": "ingested" if ingest_result else "pending_upload",
+            "note": "Ingested to Stargate via REST" if ingest_result else "No ingest URL configured",
+            "ingest": ingest_result,
+        }
+        if FASTAPI_AVAILABLE:
+            return InscribeResponse(**response_payload)
+        return response_payload
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error embedding inscription: {e}")
+        raise HTTPException(status_code=500, detail=f"Inscribe failed: {str(e)}")
 
 # Batch scanning endpoint
 @app.post("/scan/batch", response_model=BatchScanResponse, tags=["Scanning"])
@@ -902,20 +1001,22 @@ async def scan_block(
     """Scan a Bitcoin block for steganography in all inscriptions"""
     start_time = datetime.utcnow()
     request_id = str(uuid.uuid4())
+    blocks_dir = os.environ.get("BLOCKS_DIR") or globals().get("BLOCKS_DIR", "blocks")
     
     try:
-        # Find block directory
-        block_dir = f"blocks/{request.block_height}_00000000"
-        if not os.path.exists(block_dir):
+        # Find block directory (hash suffix unknown; glob for match)
+        pattern = os.path.join(blocks_dir, f"{request.block_height}_*")
+        matches = glob.glob(pattern)
+        if not matches:
             raise HTTPException(status_code=404, detail=f"Block {request.block_height} not found")
+        block_dir = matches[0]
         
         # Load block data
         block_json_path = os.path.join(block_dir, "block.json")
-        if not os.path.exists(block_json_path):
-            raise HTTPException(status_code=404, detail=f"Block data not found for height {request.block_height}")
-        
-        with open(block_json_path, 'r') as f:
-            block_data = json.load(f)
+        block_data = {}
+        if os.path.exists(block_json_path):
+            with open(block_json_path, 'r') as f:
+                block_data = json.load(f)
         
         # Load existing inscriptions if available
         inscriptions_json_path = os.path.join(block_dir, "inscriptions.json")
@@ -966,8 +1067,12 @@ async def scan_block(
                     # Add scan result to inscription
                     if FASTAPI_AVAILABLE and hasattr(scan_result, 'dict'):
                         inscription_info["scan_result"] = scan_result.dict()
+                        if getattr(scan_result, "is_stego", False):
+                            stego_detected += 1
                     else:
                         inscription_info["scan_result"] = scan_result
+                        if isinstance(scan_result, dict) and scan_result.get("is_stego"):
+                            stego_detected += 1
                     
                     scanned_inscriptions.append(inscription_info)
                     images_scanned += 1
@@ -1006,7 +1111,7 @@ async def scan_block(
             json.dump(updated_inscriptions, f, indent=2)
         
         # Update global inscriptions JSON
-        global_inscriptions_path = "blocks/global_inscriptions.json"
+        global_inscriptions_path = os.path.join(blocks_dir, "global_inscriptions.json")
         global_inscriptions = {}
         
         if os.path.exists(global_inscriptions_path):
@@ -1028,12 +1133,20 @@ async def scan_block(
             json.dump(global_inscriptions, f, indent=2)
         
         processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+        block_hash = (
+            block_data.get("block_hash")
+            or block_data.get("BlockHash")
+            or block_data.get("block_header", {}).get("Hash")
+            or block_data.get("hash")
+            or os.path.basename(block_dir).split("_")[1]
+        )
+        block_timestamp = block_data.get("timestamp", 0)
         
         if FASTAPI_AVAILABLE:
             return BlockScanResponse(
                 block_height=request.block_height,
-                block_hash=block_data.get("hash", "unknown"),
-                timestamp=block_data.get("timestamp", 0),
+                block_hash=block_hash or "unknown",
+                timestamp=block_timestamp,
                 total_inscriptions=len(scanned_inscriptions),
                 images_scanned=images_scanned,
                 stego_detected=stego_detected,
@@ -1044,8 +1157,8 @@ async def scan_block(
         else:
             return {
                 "block_height": request.block_height,
-                "block_hash": block_data.get("hash", "unknown"),
-                "timestamp": block_data.get("timestamp", 0),
+                "block_hash": block_hash or "unknown",
+                "timestamp": block_timestamp,
                 "total_inscriptions": len(scanned_inscriptions),
                 "images_scanned": images_scanned,
                 "stego_detected": stego_detected,
@@ -1076,6 +1189,7 @@ async def root():
             "batch_scan": "/scan/batch",
             "scan_block": "/scan/block",
             "extract": "/extract",
+            "inscribe": "/inscribe",
             "get_transaction": "/transaction/{txid}"
         },
         "documentation": "/docs",
