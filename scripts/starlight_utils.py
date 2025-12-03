@@ -4,6 +4,23 @@ from PIL import Image
 import struct
 import torchvision.transforms as transforms
 import time
+from pathlib import Path
+
+def get_submission_dirs(base_path="datasets"):
+    """
+    Finds all submission dataset directories within the base path.
+    A submission directory is any non-hidden subdirectory.
+    """
+    base = Path(base_path)
+    if not base.is_dir():
+        return []
+    
+    submission_dirs = []
+    for item in base.iterdir():
+        if item.is_dir() and not item.name.startswith('.'):
+            submission_dirs.append(item)
+    
+    return sorted(submission_dirs)
 
 def _find_gif_end_pos(raw_bytes):
     """

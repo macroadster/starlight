@@ -333,17 +333,13 @@ class AdvancedStegoChecker:
     
     def check_all(self):
         """Check entire dataset"""
+        from scripts.starlight_utils import get_submission_dirs
         print("="*60)
         print("Advanced Steganography Checker - Project Starlight")
         print("="*60)
         
         # Find all submission directories (including val)
-        submission_dirs = []
-        for item in self.dataset_root.iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
-                submission_dirs.append(item)
-        
-        submission_dirs = sorted(submission_dirs)
+        submission_dirs = get_submission_dirs(self.dataset_root)
         
         all_results = []
         
