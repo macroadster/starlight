@@ -32,7 +32,7 @@ source venv/bin/activate  # Linux/Mac
 # or venv\Scripts\activate  # Windows
 
 # Install dependencies
-pip install -r bitcoin_api_requirements.txt
+pip install -r requirements.txt
 ```
 
 ### 2. Model Setup

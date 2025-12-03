@@ -1,6 +1,0 @@
-torch>=2.0
-torchvision
-albumentations
-opencv-python-headless
-tqdm
-scikit-image

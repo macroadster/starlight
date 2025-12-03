@@ -14,7 +14,7 @@ To immediately begin generating datasets, training the model, and running detect
 
 ```bash
 cd starlight
-pip install -r bitcoin_api_requirements.txt
+pip install -r requirements.txt
 ./scripts/run_api_dev.sh  # defaults: PORT=8080, BLOCKS_DIR=./blocks
 # Docs: http://localhost:8080/docs  (OpenAPI), health: http://localhost:8080/health
 # Metrics: http://localhost:8080/metrics (Prometheus)
