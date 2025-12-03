@@ -1,25 +1,54 @@
-FROM python:3.12-slim
+# ---- Builder Stage ----
+FROM python:3.12 AS builder
 
-# Set working directory
-WORKDIR /app
+# Set working directory for the virtual environment
+WORKDIR /opt/venv
 
-# Install system dependencies
+# Create a virtual environment
+RUN python3 -m venv .
+
+# Activate the virtual environment
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install build dependencies
+# We still need these to build certain packages
 RUN apt-get update && apt-get install -y \
-    curl \
+    build-essential \
+    pkg-config \
+    libjpeg-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY bitcoin_api_requirements.txt .
+# Copy the API-specific requirements file
+COPY requirements.api.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r bitcoin_api_requirements.txt
+# Install packages into the virtual environment
+RUN pip install --no-cache-dir -r requirements.api.txt
+
+
+# ---- Final Stage ----
+FROM python:3.12-slim
+
+# Set working directory in the final image
+WORKDIR /app
+
+# Copy the virtual environment from the builder stage
+COPY --from=builder /opt/venv /opt/venv
+
+# Activate the virtual environment
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install runtime system dependencies that are needed by the packages
+RUN apt-get update && apt-get install -y \
+    curl \
+    libjpeg-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy application code
 COPY *.py ./
 COPY models/ ./models/
 COPY scripts/ ./scripts/
 
-# Create non-root user
+# Create non-root user and set permissions
 RUN useradd -m -u 1000 starlight && chown -R starlight:starlight /app
 USER starlight
 

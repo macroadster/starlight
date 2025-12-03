@@ -9,7 +9,10 @@ import os
 import onnxruntime as ort
 import numpy as np
 from PIL import Image
-import jpegio as jio   # pip install jpegio
+try:
+    import jpegio as jio
+except ImportError:
+    jio = None
 
 class StarlightModel:
     def __init__(self,
@@ -46,6 +49,8 @@ class StarlightModel:
         if cfg["mode"] in ["RGB", "RGBA", "P"]:
             return self._preprocess_rgb(img_path, cfg)
         elif cfg["mode"] == "DCT":
+            if jio is None:
+                raise ImportError("jpegio is not installed. DCT-based models cannot be used.")
             # For DCT images, convert to RGB
             return self._preprocess_rgb(img_path, cfg)
         elif cfg["mode"] == "EXIF":
@@ -88,6 +93,8 @@ class StarlightModel:
         return np.expand_dims(arr, 0)
 
     def _preprocess_dct(self, img_path):
+        if jio is None:
+            raise ImportError("jpegio is not installed. DCT-based models cannot be used.")
         jpeg = jio.read(img_path)
         coeffs = jpeg.coef_blocks[0]
         coeffs = (coeffs - coeffs.mean()) / (coeffs.std() + 1e-8)
