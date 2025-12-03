@@ -12,7 +12,6 @@ This API integrates with the existing Starlight scanner to provide:
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timedelta
 import uuid
-import asyncio
 import logging
 import base64
 import io
@@ -26,6 +25,7 @@ from contextlib import asynccontextmanager
 import glob
 
 from PIL import Image
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,79 +34,14 @@ logger = logging.getLogger(__name__)
 # Default blocks directory (overridable via env)
 BLOCKS_DIR = os.environ.get("BLOCKS_DIR", "blocks")
 
-# Check if FastAPI is available
-FASTAPI_AVAILABLE = False
 try:
     from fastapi import FastAPI, HTTPException, Depends, Query, Header, BackgroundTasks, File, UploadFile, Form
     from fastapi.responses import JSONResponse
     from pydantic import BaseModel, Field
-    FASTAPI_AVAILABLE = True
-except ImportError:
-    logger.warning("FastAPI not available - running in stub mode")
-    
-    # Create stub classes for development
-    class BaseModel:
-        def __init__(self, **kwargs):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-    
-    class Field:
-        def __init__(self, default=None, **kwargs):
-            self.default = default
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-    
-    class FastAPI:
-        def __init__(self, **kwargs):
-            self.title = kwargs.get('title', 'Stub API')
-            self.version = kwargs.get('version', '1.0.0')
-        
-        def get(self, path, **kwargs):
-            def decorator(func):
-                return func
-            return decorator
-        
-        def post(self, path, **kwargs):
-            def decorator(func):
-                return func
-            return decorator
-    
-    class HTTPException(Exception):
-        def __init__(self, status_code: int, detail: str):
-            self.status_code = status_code
-            self.detail = detail
-            super().__init__(detail)
-    
-    def Depends(dependency):
-        return dependency
-    
-    def Query(default=None, **kwargs):
-        return default
-    
-    def Header(default=None):
-        return default
-    
-    class BackgroundTasks:
-        def add_task(self, func, *args, **kwargs):
-            func(*args, **kwargs)
-    
-    class File:
-        def __init__(self, default=None, **kwargs):
-            self.default = default
-    
-    class UploadFile:
-        def __init__(self, filename=None, file=None):
-            self.filename = filename
-            self.file = file
-    
-    class Form:
-        def __init__(self, default=None, **kwargs):
-            self.default = default
-    
-    class JSONResponse:
-        def __init__(self, status_code=200, content=None):
-            self.status_code = status_code
-            self.content = content or {}
+except ImportError as exc:  # pragma: no cover - FastAPI is required for this service
+    raise RuntimeError(
+        "FastAPI dependencies are required. Install with `pip install -r bitcoin_api_requirements.txt`."
+    ) from exc
 
 # Import scanner components
 try:
@@ -166,142 +101,152 @@ class BitcoinNodeClient:
         return 856789
 
 # Pydantic models for request/response validation
-class ScanOptions:
-    def __init__(self, **kwargs):
-        self.extract_message = kwargs.get('extract_message', True)
-        self.confidence_threshold = kwargs.get('confidence_threshold', 0.5)
-        self.include_metadata = kwargs.get('include_metadata', True)
+class ScanOptions(BaseModel):
+    extract_message: bool = Field(default=True, description="Extract hidden messages if stego detected")
+    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0, description="Minimum confidence threshold")
+    include_metadata: bool = Field(default=True, description="Include detailed metadata in response")
 
-if FASTAPI_AVAILABLE:
-    class ScanOptions(BaseModel):
-        extract_message: bool = Field(default=True, description="Extract hidden messages if stego detected")
-        confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0, description="Minimum confidence threshold")
-        include_metadata: bool = Field(default=True, description="Include detailed metadata in response")
-    
-    class TransactionScanRequest(BaseModel):
-        transaction_id: str = Field(..., pattern=r'^[a-fA-F0-9]{64}$', description="64-character hex transaction ID")
-        extract_images: bool = Field(default=True, description="Extract images from transaction")
-        scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
-    
-    class ScanResult(BaseModel):
-        is_stego: bool = Field(..., description="Whether steganography was detected")
-        stego_probability: float = Field(..., ge=0.0, le=1.0, description="Steganography probability")
-        stego_type: Optional[str] = Field(None, description="Type of steganography detected")
-        confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence")
-        prediction: str = Field(..., pattern="^(stego|clean)$", description="Model prediction")
-        method_id: Optional[int] = Field(None, description="Steganography method ID")
-        extracted_message: Optional[str] = Field(None, description="Extracted hidden message")
-        extraction_error: Optional[str] = Field(None, description="Error during message extraction")
-    
-    class ImageScanResult(BaseModel):
-        index: int = Field(..., description="Image index in transaction")
-        size_bytes: int = Field(..., ge=0, description="Image size in bytes")
-        format: str = Field(..., description="Image format")
-        scan_result: ScanResult = Field(..., description="Scanning result")
-    
-    class TransactionScanResponse(BaseModel):
-        transaction_id: str = Field(..., description="Transaction ID")
-        block_height: int = Field(..., description="Block height")
-        timestamp: str = Field(..., description="Transaction timestamp")
-        scan_results: Dict[str, Any] = Field(..., description="Summary of scan results")
-        images: List[ImageScanResult] = Field(..., description="Individual image scan results")
-        request_id: str = Field(..., description="Unique request ID")
-    
-    class DirectImageScanResponse(BaseModel):
-        scan_result: ScanResult = Field(..., description="Scanning result")
-        image_info: Dict[str, Any] = Field(..., description="Image information")
-        processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
-        request_id: str = Field(..., description="Unique request ID")
-    
-    class BatchItem(BaseModel):
-        type: str = Field(..., pattern="^(transaction|image)$", description="Item type")
-        transaction_id: Optional[str] = Field(None, description="Transaction ID for transaction type")
-        image_data: Optional[str] = Field(None, description="Base64 image data for image type")
-    
-    class BatchScanRequest(BaseModel):
-        items: List[BatchItem] = Field(..., min_items=1, max_items=50, description="Items to scan")
-        scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
-    
-    class BatchItemResult(BaseModel):
-        item_id: str = Field(..., description="Item identifier")
-        type: str = Field(..., description="Item type")
-        status: str = Field(..., pattern="^(completed|failed)$", description="Processing status")
-        stego_detected: bool = Field(..., description="Whether steganography was detected")
-        images_with_stego: int = Field(..., ge=0, description="Number of images with steganography")
-        total_images: int = Field(..., ge=0, description="Total number of images")
-        error: Optional[str] = Field(None, description="Error message if failed")
-    
-    class BatchScanResponse(BaseModel):
-        batch_id: str = Field(..., description="Batch processing ID")
-        total_items: int = Field(..., description="Total items in batch")
-        processed_items: int = Field(..., description="Successfully processed items")
-        stego_detected: int = Field(..., description="Items with steganography detected")
-        processing_time_ms: float = Field(..., ge=0, description="Total processing time")
-        results: List[BatchItemResult] = Field(..., description="Individual item results")
-        request_id: str = Field(..., description="Unique request ID")
-    
-    class ExtractionResult(BaseModel):
-        message_found: bool = Field(..., description="Whether a message was found")
-        message: Optional[str] = Field(None, description="Extracted message")
-        method_used: Optional[str] = Field(None, description="Steganography method used")
-        method_confidence: Optional[float] = Field(None, description="Confidence in method detection")
-        extraction_details: Dict[str, Any] = Field(..., description="Extraction details")
-    
-    class ExtractResponse(BaseModel):
-        extraction_result: ExtractionResult = Field(..., description="Extraction result")
-        image_info: Dict[str, Any] = Field(..., description="Image information")
-        processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
-        request_id: str = Field(..., description="Unique request ID")
-    
-    class HealthResponse(BaseModel):
-        status: str = Field(..., description="Service health status")
-        timestamp: str = Field(..., description="Current timestamp")
-        version: str = Field(..., description="API version")
-        scanner: Dict[str, Any] = Field(..., description="Scanner status")
-        bitcoin: Dict[str, Any] = Field(..., description="Bitcoin node status")
-    
-    class InfoResponse(BaseModel):
-        name: str = Field(..., description="API name")
-        version: str = Field(..., description="API version")
-        description: str = Field(..., description="API description")
-        supported_formats: List[str] = Field(..., description="Supported image formats")
-        stego_methods: List[str] = Field(..., description="Supported steganography methods")
-        max_image_size: int = Field(..., description="Maximum image size in bytes")
-        endpoints: Dict[str, str] = Field(..., description="Available endpoints")
 
-    class InscribeResponse(BaseModel):
-        request_id: str = Field(..., description="Unique request ID")
-        method: str = Field(..., description="Embedding method used")
-        message_length: int = Field(..., description="Length of embedded message in bytes")
-        output_file: str = Field(..., description="Relative path to saved inscribed image")
-        image_bytes: int = Field(..., description="Size of inscribed image in bytes")
-        status: str = Field(..., description="Inscribe status (pending upload)")
-        note: str = Field(..., description="Next step hint for Stargate uploader")
-    
-    class BlockScanRequest(BaseModel):
-        block_height: int = Field(..., ge=0, description="Block height to scan")
-        scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
-    
-    class BlockScanInscription(BaseModel):
-        tx_id: str = Field(..., description="Transaction ID")
-        input_index: int = Field(..., description="Input index")
-        content_type: str = Field(..., description="Content type")
-        content: str = Field(..., description="Content")
-        size_bytes: int = Field(..., ge=0, description="Size in bytes")
-        file_name: str = Field(..., description="File name")
-        file_path: str = Field(..., description="File path")
-        scan_result: Optional[ScanResult] = Field(None, description="Scan result")
-    
-    class BlockScanResponse(BaseModel):
-        block_height: int = Field(..., description="Block height")
-        block_hash: str = Field(..., description="Block hash")
-        timestamp: int = Field(..., description="Block timestamp")
-        total_inscriptions: int = Field(..., description="Total inscriptions")
-        images_scanned: int = Field(..., description="Images scanned")
-        stego_detected: int = Field(..., description="Steganography detected")
-        processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
-        inscriptions: List[BlockScanInscription] = Field(..., description="Inscription scan results")
-        request_id: str = Field(..., description="Unique request ID")
+class TransactionScanRequest(BaseModel):
+    transaction_id: str = Field(..., pattern=r"^[a-fA-F0-9]{64}$", description="64-character hex transaction ID")
+    extract_images: bool = Field(default=True, description="Extract images from transaction")
+    scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
+
+
+class ScanResult(BaseModel):
+    is_stego: bool = Field(..., description="Whether steganography was detected")
+    stego_probability: float = Field(..., ge=0.0, le=1.0, description="Steganography probability")
+    stego_type: Optional[str] = Field(None, description="Type of steganography detected")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence")
+    prediction: str = Field(..., pattern="^(stego|clean)$", description="Model prediction")
+    method_id: Optional[int] = Field(None, description="Steganography method ID")
+    extracted_message: Optional[str] = Field(None, description="Extracted hidden message")
+    extraction_error: Optional[str] = Field(None, description="Error during message extraction")
+
+
+class ImageScanResult(BaseModel):
+    index: int = Field(..., description="Image index in transaction")
+    size_bytes: int = Field(..., ge=0, description="Image size in bytes")
+    format: str = Field(..., description="Image format")
+    scan_result: ScanResult = Field(..., description="Scanning result")
+
+
+class TransactionScanResponse(BaseModel):
+    transaction_id: str = Field(..., description="Transaction ID")
+    block_height: int = Field(..., description="Block height")
+    timestamp: str = Field(..., description="Transaction timestamp")
+    scan_results: Dict[str, Any] = Field(..., description="Summary of scan results")
+    images: List[ImageScanResult] = Field(..., description="Individual image scan results")
+    request_id: str = Field(..., description="Unique request ID")
+
+
+class DirectImageScanResponse(BaseModel):
+    scan_result: ScanResult = Field(..., description="Scanning result")
+    image_info: Dict[str, Any] = Field(..., description="Image information")
+    processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
+    request_id: str = Field(..., description="Unique request ID")
+
+
+class BatchItem(BaseModel):
+    type: str = Field(..., pattern="^(transaction|image)$", description="Item type")
+    transaction_id: Optional[str] = Field(None, description="Transaction ID for transaction type")
+    image_data: Optional[str] = Field(None, description="Base64 image data for image type")
+
+
+class BatchScanRequest(BaseModel):
+    items: List[BatchItem] = Field(..., min_items=1, max_items=50, description="Items to scan")
+    scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
+
+
+class BatchItemResult(BaseModel):
+    item_id: str = Field(..., description="Item identifier")
+    type: str = Field(..., description="Item type")
+    status: str = Field(..., pattern="^(completed|failed)$", description="Processing status")
+    stego_detected: bool = Field(..., description="Whether steganography was detected")
+    images_with_stego: int = Field(..., ge=0, description="Number of images with steganography")
+    total_images: int = Field(..., ge=0, description="Total number of images")
+    error: Optional[str] = Field(None, description="Error message if failed")
+
+
+class BatchScanResponse(BaseModel):
+    batch_id: str = Field(..., description="Batch processing ID")
+    total_items: int = Field(..., description="Total items in batch")
+    processed_items: int = Field(..., description="Successfully processed items")
+    stego_detected: int = Field(..., description="Items with steganography detected")
+    processing_time_ms: float = Field(..., ge=0, description="Total processing time")
+    results: List[BatchItemResult] = Field(..., description="Individual item results")
+    request_id: str = Field(..., description="Unique request ID")
+
+
+class ExtractionResult(BaseModel):
+    message_found: bool = Field(..., description="Whether a message was found")
+    message: Optional[str] = Field(None, description="Extracted message")
+    method_used: Optional[str] = Field(None, description="Steganography method used")
+    method_confidence: Optional[float] = Field(None, description="Confidence in method detection")
+    extraction_details: Dict[str, Any] = Field(..., description="Extraction details")
+
+
+class ExtractResponse(BaseModel):
+    extraction_result: ExtractionResult = Field(..., description="Extraction result")
+    image_info: Dict[str, Any] = Field(..., description="Image information")
+    processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
+    request_id: str = Field(..., description="Unique request ID")
+
+
+class HealthResponse(BaseModel):
+    status: str = Field(..., description="Service health status")
+    timestamp: str = Field(..., description="Current timestamp")
+    version: str = Field(..., description="API version")
+    scanner: Dict[str, Any] = Field(..., description="Scanner status")
+    bitcoin: Dict[str, Any] = Field(..., description="Bitcoin node status")
+
+
+class InfoResponse(BaseModel):
+    name: str = Field(..., description="API name")
+    version: str = Field(..., description="API version")
+    description: str = Field(..., description="API description")
+    supported_formats: List[str] = Field(..., description="Supported image formats")
+    stego_methods: List[str] = Field(..., description="Supported steganography methods")
+    max_image_size: int = Field(..., description="Maximum image size in bytes")
+    endpoints: Dict[str, str] = Field(..., description="Available endpoints")
+
+
+class InscribeResponse(BaseModel):
+    request_id: str = Field(..., description="Unique request ID")
+    method: str = Field(..., description="Embedding method used")
+    message_length: int = Field(..., description="Length of embedded message in bytes")
+    output_file: str = Field(..., description="Relative path to saved inscribed image")
+    image_bytes: int = Field(..., description="Size of inscribed image in bytes")
+    status: str = Field(..., description="Inscribe status (pending upload)")
+    note: str = Field(..., description="Next step hint for Stargate uploader")
+
+
+class BlockScanRequest(BaseModel):
+    block_height: int = Field(..., ge=0, description="Block height to scan")
+    scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
+
+
+class BlockScanInscription(BaseModel):
+    tx_id: str = Field(..., description="Transaction ID")
+    input_index: int = Field(..., description="Input index")
+    content_type: str = Field(..., description="Content type")
+    content: str = Field(..., description="Content")
+    size_bytes: int = Field(..., ge=0, description="Size in bytes")
+    file_name: str = Field(..., description="File name")
+    file_path: str = Field(..., description="File path")
+    scan_result: Optional[ScanResult] = Field(None, description="Scan result")
+
+
+class BlockScanResponse(BaseModel):
+    block_height: int = Field(..., description="Block height")
+    block_hash: str = Field(..., description="Block hash")
+    timestamp: int = Field(..., description="Block timestamp")
+    total_inscriptions: int = Field(..., description="Total inscriptions")
+    images_scanned: int = Field(..., description="Images scanned")
+    stego_detected: int = Field(..., description="Steganography detected")
+    processing_time_ms: float = Field(..., ge=0, description="Processing time in milliseconds")
+    inscriptions: List[BlockScanInscription] = Field(..., description="Inscription scan results")
+    request_id: str = Field(..., description="Unique request ID")
 
 # Global instances
 bitcoin_client = BitcoinNodeClient()
@@ -309,6 +254,17 @@ scanner_instance = None
 INSCRIPTION_OUTBOX = Path(os.environ.get("STARLIGHT_INSCRIPTION_OUTBOX", "inscriptions/pending"))
 INSCRIPTION_OUTBOX.mkdir(parents=True, exist_ok=True)
 
+# Metrics
+REQUEST_COUNT = Counter(
+    "starlight_request_total",
+    "Total requests",
+    ["endpoint", "status"],
+)
+REQUEST_LATENCY = Histogram(
+    "starlight_request_duration_seconds",
+    "Request latency seconds",
+    ["endpoint"],
+)
 # Initialize scanner if available
 if SCANNER_AVAILABLE:
     try:
@@ -336,28 +292,16 @@ async def scan_image_async(image_data: bytes, options: ScanOptions, request_id: 
                 result = scanner_instance.scan_file(temp_path)
                 
                  # Convert to ScanResult format
-                if FASTAPI_AVAILABLE:
-                    scan_result = ScanResult(
-                        is_stego=result.get("is_stego", False),
-                        stego_probability=result.get("stego_probability", 0.0),
-                        stego_type=result.get("stego_type"),
-                        confidence=result.get("confidence", 0.0),
-                        prediction="stego" if result.get("is_stego") else "clean",
-                        method_id=result.get("method_id"),
-                        extracted_message=result.get("extracted_message") if options.extract_message else None,
-                        extraction_error=result.get("extraction_error")
-                    )
-                else:
-                    scan_result = {
-                        "is_stego": result.get("is_stego", False),
-                        "stego_probability": result.get("stego_probability", 0.0),
-                        "stego_type": result.get("stego_type"),
-                        "confidence": result.get("confidence", 0.0),
-                        "prediction": "stego" if result.get("is_stego") else "clean",
-                        "method_id": result.get("method_id"),
-                        "extracted_message": result.get("extracted_message") if options.extract_message else None,
-                        "extraction_error": result.get("extraction_error")
-                    }
+                scan_result = ScanResult(
+                    is_stego=result.get("is_stego", False),
+                    stego_probability=result.get("stego_probability", 0.0),
+                    stego_type=result.get("stego_type"),
+                    confidence=result.get("confidence", 0.0),
+                    prediction="stego" if result.get("is_stego") else "clean",
+                    method_id=result.get("method_id"),
+                    extracted_message=result.get("extracted_message") if options.extract_message else None,
+                    extraction_error=result.get("extraction_error"),
+                )
                 
                 # Apply confidence threshold
                 if scan_result.stego_probability < options.confidence_threshold:
@@ -414,9 +358,6 @@ def embed_message_to_image(image_bytes: bytes, method: str, message: str) -> byt
 # Dependency for API key authentication
 async def verify_api_key(authorization: str = Header(None)):
     """Verify API key for protected endpoints"""
-    if not FASTAPI_AVAILABLE:
-        return "demo-api-key"
-    
     required_key = os.environ.get("STARGATE_API_KEY", "demo-api-key")
 
     if authorization is None:
@@ -450,6 +391,20 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+@app.middleware("http")
+async def metrics_middleware(request, call_next):
+    start = datetime.utcnow()
+    response = await call_next(request)
+    endpoint = request.url.path
+    status = getattr(response, "status_code", 500)
+    try:
+        REQUEST_COUNT.labels(endpoint=endpoint, status=status).inc()
+        REQUEST_LATENCY.labels(endpoint=endpoint).observe(
+            (datetime.utcnow() - start).total_seconds()
+        )
+    except Exception as e:
+        logger.debug(f"metrics middleware skipped: {e}")
+    return response
 
 # Health endpoints
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
@@ -468,58 +423,37 @@ async def health_check():
         "block_height": await bitcoin_client.get_block_height()
     }
     
-    if FASTAPI_AVAILABLE:
-        return HealthResponse(
-            status="healthy" if scanner_instance and bitcoin_client.connected else "degraded",
-            timestamp=datetime.utcnow().isoformat(),
-            version="1.0.0",
-            scanner=scanner_status,
-            bitcoin=bitcoin_status
-        )
-    else:
-        return {
-            "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.0.0",
-            "scanner": scanner_status,
-            "bitcoin": bitcoin_status
-        }
+    return HealthResponse(
+        status="healthy" if scanner_instance and bitcoin_client.connected else "degraded",
+        timestamp=datetime.utcnow().isoformat(),
+        version="1.0.0",
+        scanner=scanner_status,
+        bitcoin=bitcoin_status,
+    )
 
 @app.get("/info", response_model=InfoResponse, tags=["Info"])
 async def api_info():
     """API information and capabilities"""
-    if FASTAPI_AVAILABLE:
-        return InfoResponse(
-            name="Starlight Bitcoin Steganography Scanner",
-            version="1.0.0",
-            description="AI-powered steganography detection for Bitcoin transaction images",
-            supported_formats=["png", "jpg", "jpeg", "gif", "bmp", "webp"],
-            stego_methods=["alpha", "palette", "lsb.rgb", "exif", "raw"],
-            max_image_size=10485760,  # 10MB
-            endpoints={
-                "scan_tx": "/scan/transaction",
-                "scan_image": "/scan/image",
-                "batch_scan": "/scan/batch",
-                "extract": "/extract",
-                "inscribe": "/inscribe"
-            }
-        )
-    else:
-        return {
-            "name": "Starlight Bitcoin Steganography Scanner",
-            "version": "1.0.0",
-            "description": "AI-powered steganography detection for Bitcoin transaction images",
-            "supported_formats": ["png", "jpg", "jpeg", "gif", "bmp", "webp"],
-            "stego_methods": ["alpha", "palette", "lsb.rgb", "exif", "raw"],
-            "max_image_size": 10485760,
-            "endpoints": {
-                "scan_tx": "/scan/transaction",
-                "scan_image": "/scan/image", 
-                "batch_scan": "/scan/batch",
-                "extract": "/extract",
-                "inscribe": "/inscribe"
-            }
-        }
+    return InfoResponse(
+        name="Starlight Bitcoin Steganography Scanner",
+        version="1.0.0",
+        description="AI-powered steganography detection for Bitcoin transaction images",
+        supported_formats=["png", "jpg", "jpeg", "gif", "bmp", "webp"],
+        stego_methods=["alpha", "palette", "lsb.rgb", "exif", "raw"],
+        max_image_size=10485760,  # 10MB
+        endpoints={
+            "scan_tx": "/scan/transaction",
+            "scan_image": "/scan/image",
+            "batch_scan": "/scan/batch",
+            "extract": "/extract",
+            "inscribe": "/inscribe",
+        },
+    )
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 # Transaction scanning endpoint
 @app.post("/scan/transaction", response_model=TransactionScanResponse, tags=["Scanning"])
@@ -566,25 +500,15 @@ async def scan_transaction(
             "stego_detected": stego_detected,
             "processing_time_ms": processing_time
         }
-        
-        if FASTAPI_AVAILABLE:
-            return TransactionScanResponse(
-                transaction_id=request.transaction_id,
-                block_height=tx_data["block_height"],
-                timestamp=tx_data["timestamp"],
-                scan_results=scan_summary,
-                images=images,
-                request_id=request_id
-            )
-        else:
-            return {
-                "transaction_id": request.transaction_id,
-                "block_height": tx_data["block_height"],
-                "timestamp": tx_data["timestamp"],
-                "scan_results": scan_summary,
-                "images": images,
-                "request_id": request_id
-            }
+
+        return TransactionScanResponse(
+            transaction_id=request.transaction_id,
+            block_height=tx_data["block_height"],
+            timestamp=tx_data["timestamp"],
+            scan_results=scan_summary,
+            images=images,
+            request_id=request_id,
+        )
     
     except Exception as e:
         logger.error(f"Error scanning transaction {request.transaction_id}: {e}")
@@ -629,21 +553,13 @@ async def scan_image(
         }
         
         processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-        
-        if FASTAPI_AVAILABLE:
-            return DirectImageScanResponse(
-                scan_result=scan_result,
-                image_info=image_info,
-                processing_time_ms=processing_time,
-                request_id=request_id
-            )
-        else:
-            return {
-                "scan_result": scan_result,
-                "image_info": image_info,
-                "processing_time_ms": processing_time,
-                "request_id": request_id
-            }
+
+        return DirectImageScanResponse(
+            scan_result=scan_result,
+            image_info=image_info,
+            processing_time_ms=processing_time,
+            request_id=request_id,
+        )
     
     except HTTPException:
         raise
@@ -710,9 +626,7 @@ async def inscribe_image(
             "note": "Ingested to Stargate via REST" if ingest_result else "No ingest URL configured",
             "ingest": ingest_result,
         }
-        if FASTAPI_AVAILABLE:
-            return InscribeResponse(**response_payload)
-        return response_payload
+        return InscribeResponse(**response_payload)
 
     except HTTPException:
         raise
@@ -798,27 +712,16 @@ async def scan_batch(
                 ))
         
         processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-        
-        if FASTAPI_AVAILABLE:
-            return BatchScanResponse(
-                batch_id=batch_id,
-                total_items=len(request.items),
-                processed_items=len([r for r in results if r.status == "completed"]),
-                stego_detected=stego_count,
-                processing_time_ms=processing_time,
-                results=results,
-                request_id=request_id
-            )
-        else:
-            return {
-                "batch_id": batch_id,
-                "total_items": len(request.items),
-                "processed_items": len([r for r in results if r.status == "completed"]),
-                "stego_detected": stego_count,
-                "processing_time_ms": processing_time,
-                "results": results,
-                "request_id": request_id
-            }
+
+        return BatchScanResponse(
+            batch_id=batch_id,
+            total_items=len(request.items),
+            processed_items=len([r for r in results if r.status == "completed"]),
+            stego_detected=stego_count,
+            processing_time_ms=processing_time,
+            results=results,
+            request_id=request_id,
+        )
     
     except Exception as e:
         logger.error(f"Error in batch scan: {e}")
@@ -879,21 +782,13 @@ async def extract_message(
             }
             
             processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            if FASTAPI_AVAILABLE:
-                return ExtractResponse(
-                    extraction_result=extraction_result,
-                    image_info=image_info,
-                    processing_time_ms=processing_time,
-                    request_id=request_id
-                )
-            else:
-                return {
-                    "extraction_result": extraction_result,
-                    "image_info": image_info,
-                    "processing_time_ms": processing_time,
-                    "request_id": request_id
-                }
+
+            return ExtractResponse(
+                extraction_result=extraction_result,
+                image_info=image_info,
+                processing_time_ms=processing_time,
+                request_id=request_id,
+            )
         
         finally:
             # Clean up temporary file
@@ -961,35 +856,35 @@ async def get_transaction(
         raise HTTPException(status_code=500, detail=f"Transaction lookup failed: {str(e)}")
 
 # Error handlers
-if FASTAPI_AVAILABLE:
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request, exc):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "error": {
-                    "code": f"HTTP_{exc.status_code}",
-                    "message": exc.detail,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "request_id": str(uuid.uuid4())
-                }
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": f"HTTP_{exc.status_code}",
+                "message": exc.detail,
+                "timestamp": datetime.utcnow().isoformat(),
+                "request_id": str(uuid.uuid4()),
             }
-        )
-    
-    @app.exception_handler(Exception)
-    async def general_exception_handler(request, exc):
-        logger.error(f"Unhandled exception: {exc}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": {
-                    "code": "INTERNAL_ERROR",
-                    "message": "Internal server error",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "request_id": str(uuid.uuid4())
-                }
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    logger.error(f"Unhandled exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Internal server error",
+                "timestamp": datetime.utcnow().isoformat(),
+                "request_id": str(uuid.uuid4()),
             }
-        )
+        },
+    )
 
 # Block scanning endpoint
 @app.post("/scan/block", response_model=BlockScanResponse, tags=["Scanning"])
@@ -1065,14 +960,10 @@ async def scan_block(
                         }
                     
                     # Add scan result to inscription
-                    if FASTAPI_AVAILABLE and hasattr(scan_result, 'dict'):
-                        inscription_info["scan_result"] = scan_result.dict()
-                        if getattr(scan_result, "is_stego", False):
-                            stego_detected += 1
-                    else:
-                        inscription_info["scan_result"] = scan_result
-                        if isinstance(scan_result, dict) and scan_result.get("is_stego"):
-                            stego_detected += 1
+                    scan_payload = scan_result.dict()
+                    inscription_info["scan_result"] = scan_payload
+                    if scan_payload.get("is_stego"):
+                        stego_detected += 1
                     
                     scanned_inscriptions.append(inscription_info)
                     images_scanned += 1
@@ -1141,31 +1032,18 @@ async def scan_block(
             or os.path.basename(block_dir).split("_")[1]
         )
         block_timestamp = block_data.get("timestamp", 0)
-        
-        if FASTAPI_AVAILABLE:
-            return BlockScanResponse(
-                block_height=request.block_height,
-                block_hash=block_hash or "unknown",
-                timestamp=block_timestamp,
-                total_inscriptions=len(scanned_inscriptions),
-                images_scanned=images_scanned,
-                stego_detected=stego_detected,
-                processing_time_ms=processing_time,
-                inscriptions=scanned_inscriptions,
-                request_id=request_id
-            )
-        else:
-            return {
-                "block_height": request.block_height,
-                "block_hash": block_hash or "unknown",
-                "timestamp": block_timestamp,
-                "total_inscriptions": len(scanned_inscriptions),
-                "images_scanned": images_scanned,
-                "stego_detected": stego_detected,
-                "processing_time_ms": processing_time,
-                "inscriptions": scanned_inscriptions,
-                "request_id": request_id
-            }
+
+        return BlockScanResponse(
+            block_height=request.block_height,
+            block_hash=block_hash or "unknown",
+            timestamp=block_timestamp,
+            total_inscriptions=len(scanned_inscriptions),
+            images_scanned=images_scanned,
+            stego_detected=stego_detected,
+            processing_time_ms=processing_time,
+            inscriptions=scanned_inscriptions,
+            request_id=request_id,
+        )
     
     except HTTPException:
         raise
@@ -1194,44 +1072,13 @@ async def root():
         },
         "documentation": "/docs",
         "timestamp": datetime.utcnow().isoformat(),
-        "fastapi_available": FASTAPI_AVAILABLE,
         "scanner_available": SCANNER_AVAILABLE
     }
 
 # Main execution for development
 if __name__ == "__main__":
-    if FASTAPI_AVAILABLE:
-        try:
-            import uvicorn
-            uvicorn.run(app, host="0.0.0.0", port=8080)
-        except ImportError:
-            logger.error("uvicorn not available - cannot run server")
-    else:
-        logger.info("FastAPI not available - this is a stub implementation")
-        logger.info("To run the full API, install: pip install fastapi uvicorn pydantic")
-        
-        # Test the stub functionality
-        print("\n=== Starlight Bitcoin Scanning API Stub Test ===")
-        
-        async def test_stub():
-            health = await health_check()
-            print(f"Health status: {health['status']}")
-            print(f"Scanner loaded: {health['scanner']['model_loaded']}")
-            print(f"Bitcoin node connected: {health['bitcoin']['node_connected']}")
-            
-            print("\nTesting transaction scan...")
-            try:
-                tx_request = TransactionScanRequest(
-                    transaction_id="f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16"
-                )
-                result = await scan_transaction(tx_request, BackgroundTasks(), "demo-key")
-                print(f"Transaction scanned: {result['transaction_id']}")
-                print(f"Images found: {result['scan_results']['images_found']}")
-                print(f"Stego detected: {result['scan_results']['stego_detected']}")
-            except Exception as e:
-                print(f"Transaction scan test failed: {e}")
-        
-        asyncio.run(test_stub())
-        
-        print("\n=== Stub test completed ===")
-        print("Install FastAPI dependencies for full functionality")
+    try:
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8080)
+    except ImportError:
+        logger.error("uvicorn not available - cannot run server")

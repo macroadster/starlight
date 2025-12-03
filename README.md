@@ -10,6 +10,18 @@ The blockchain, beginning with the **Bitcoin Genesis Block**, serves as a living
 
 To immediately begin generating datasets, training the model, and running detection, please refer to the comprehensive instructions in the [**USAGE.md**](USAGE.md) file.
 
+## Local API dev (no containers)
+
+```bash
+cd starlight
+pip install -r bitcoin_api_requirements.txt
+./scripts/run_api_dev.sh  # defaults: PORT=8080, BLOCKS_DIR=./blocks
+# Docs: http://localhost:8080/docs  (OpenAPI), health: http://localhost:8080/health
+# Metrics: http://localhost:8080/metrics (Prometheus)
+```
+
+Environment overrides: `STARGATE_API_KEY` (defaults to `demo-api-key`), `ALLOW_ANONYMOUS_SCAN=true` for local testing, `BLOCKS_DIR` for cached blocks.
+
 ---
 
 ## The Opportunity: Ensuring Digital Integrity
