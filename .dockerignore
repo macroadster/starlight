@@ -1,0 +1,38 @@
+# Git version control
+.git
+.gitignore
+
+# Docker
+.dockerignore
+Dockerfile
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Datasets
+datasets/
+
+# Documentation
+docs/
+*.md
+
+# Large files and artifacts
+checkpoints/
+results/
+experiments/
+*.onnx
+*.pth
+*.pt
+*.log
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

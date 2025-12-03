@@ -129,6 +129,10 @@ CMD ["uvicorn", "bitcoin_api:app", "--host", "0.0.0.0", "--port", "8080"]
 Build and run:
 
 ```bash
+# To prevent large directories like 'datasets' from being included
+# in the build context, ensure you have a .dockerignore file.
+# See the root .dockerignore file for an example.
+#
 # Build image
 docker build -t starlight-bitcoin-api .
 
