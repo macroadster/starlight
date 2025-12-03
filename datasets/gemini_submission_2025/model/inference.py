@@ -4,7 +4,10 @@ from PIL import Image
 import os
 import json
 from typing import Dict, Any
-import jpegio as jio  # pip install jpegio
+try:
+    import jpegio as jio
+except ImportError:
+    jio = None
 import argparse
 
 # --- CONFIGURATION ---
@@ -40,6 +43,8 @@ class StarlightModel:
         elif config["mode"] == "RGBA":
             return self._preprocess_rgba(img_path, config)
         elif config["mode"] == "DCT":
+            if jio is None:
+                raise ImportError("jpegio is not installed. DCT-based models cannot be used.")
             return self._preprocess_dct(img_path)
         elif config["mode"] == "EXIF":
             return self._preprocess_exif(img_path)
@@ -63,6 +68,8 @@ class StarlightModel:
         return arr
 
     def _preprocess_dct(self, img_path):
+        if jio is None:
+            raise ImportError("jpegio is not installed. DCT-based models cannot be used.")
         jpeg = jio.read(img_path)
         coeffs = jpeg.coef_blocks[0]
         coeffs = (coeffs - coeffs.mean()) / (coeffs.std() + 1e-8)

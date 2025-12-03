@@ -1,25 +1,20 @@
-# Starlight Project Consolidated Requirements
+# Starlight Bitcoin Scanning API Requirements
 
 # Core API Framework
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.5.0
+python-multipart
+tqdm
 
 # Image Processing
 Pillow>=10.0.0
 numpy>=1.24.0
-tqdm>=4.66.0
-python-multipart>=0.0.6
-opencv-python-headless
-albumentations>=1.0.0
-scikit-image>=0.18.0
 
 # Machine Learning (for scanner integration)
 torch>=2.0.0
 torchvision>=0.15.0
 onnxruntime>=1.16.0
-onnx>=1.14.0
-scikit-learn>=1.2.2
 
 # HTTP Client for Bitcoin API
 httpx>=0.25.0
@@ -28,13 +23,6 @@ requests>=2.31.0
 
 # Background Processing
 asyncio-throttle>=1.0.2
-
-# Development and Testing
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-
-# Optional: Bitcoin Core Integration
-python-bitcoinlib>=0.11.0
 
 # Monitoring and Logging
 structlog>=23.2.0
