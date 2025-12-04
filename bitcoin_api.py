@@ -19,6 +19,8 @@ import os
 import tempfile
 import hashlib
 import json
+import hmac
+import time
 from pathlib import Path
 import requests
 from contextlib import asynccontextmanager
@@ -33,6 +35,33 @@ logger = logging.getLogger(__name__)
 
 # Default blocks directory (overridable via env)
 BLOCKS_DIR = os.environ.get("BLOCKS_DIR", "blocks")
+STARGATE_STEGO_CALLBACK_URL = os.environ.get("STARGATE_STEGO_CALLBACK_URL", "")
+STARGATE_STEGO_CALLBACK_SECRET = os.environ.get("STARGATE_STEGO_CALLBACK_SECRET", "")
+
+
+def send_stargate_callback(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Send scan results to Stargate callback API when configured."""
+    if not STARGATE_STEGO_CALLBACK_URL:
+        return {"skipped": True}
+
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if STARGATE_STEGO_CALLBACK_SECRET:
+            signature = hmac.new(
+                STARGATE_STEGO_CALLBACK_SECRET.encode("utf-8"),
+                body,
+                hashlib.sha256,
+            ).hexdigest()
+            headers["X-Starlight-Signature"] = signature
+
+        resp = requests.post(
+            STARGATE_STEGO_CALLBACK_URL, data=body, headers=headers, timeout=10
+        )
+        return {"status_code": resp.status_code, "response": resp.text}
+    except Exception as exc:  # pragma: no cover - network issues are runtime concerns
+        logger.warning("Stargate stego callback failed: %s", exc)
+        return {"error": str(exc)}
 
 try:
     from fastapi import FastAPI, HTTPException, Depends, Query, Header, BackgroundTasks, File, UploadFile, Form
@@ -964,6 +993,24 @@ async def scan_block(
                     inscription_info["scan_result"] = scan_payload
                     if scan_payload.get("is_stego"):
                         stego_detected += 1
+
+                    callback_payload = {
+                        "request_id": request_id,
+                        "block_height": request.block_height,
+                        "tx_id": inscription_info.get("tx_id"),
+                        "file_name": inscription_info.get("file_name"),
+                        "content_type": inscription_info.get("content_type"),
+                        "size_bytes": inscription_info.get("size_bytes"),
+                        "scan_result": scan_payload,
+                        "metadata": {
+                            "scanner": "starlight-api",
+                            "scanned_at": int(time.time()),
+                            "source": "scan_block",
+                        },
+                    }
+                    callback_result = send_stargate_callback(callback_payload)
+                    if callback_result and not callback_result.get("skipped"):
+                        inscription_info["stargate_callback"] = callback_result
                     
                     scanned_inscriptions.append(inscription_info)
                     images_scanned += 1
