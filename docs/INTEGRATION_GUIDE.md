@@ -10,6 +10,7 @@
   - `/inscribe` embeds text into an image.  
   - If `STARGATE_INGEST_URL` is set (e.g. `http://stargate-backend:3001/api/ingest-inscription`), it POSTs the stego image as base64 with metadata (includes the embedded message) and optional `X-Ingest-Token`.  
   - `/scan/block` reads blocks from `BLOCKS_DIR` (mounted PVC, default `/data/blocks`) and scans inscriptions.
+  - If `STARGATE_STEGO_CALLBACK_URL` is set, each image scan result posts to Stargate’s `/api/stego/callback` with HMAC header `X-Starlight-Signature` when `STARGATE_STEGO_CALLBACK_SECRET` is provided.
 - **Stargate Backend (Go)**  
   - `/api/ingest-inscription` writes to Postgres table `starlight_ingestions` (JSONB metadata).  
   - `/api/pending-transactions` reads `starlight_ingestions`, materializes images to `/data/uploads/<id>_<filename>`, and returns pending items (including embedded text).  
@@ -39,6 +40,7 @@ No watcher/symlink flow is required anymore.
 - Starlight API (behind cluster DNS `starlight-api:8080` or port-forward):  
   - `POST /inscribe` (requires `Authorization: Bearer $STARGATE_API_KEY`)  
   - `POST /scan/block` (`{"block_height":926058}`) reads from `$BLOCKS_DIR`
+  - `POST /api/stego/callback` (in Stargate) is the target for scan results when callback envs are set
 - Stargate Backend:  
   - `POST /api/inscribe` (frontend entry)  
   - `POST /api/ingest-inscription` (Starlight → Stargate ingestion), header `X-Ingest-Token` if configured  
@@ -56,6 +58,8 @@ No watcher/symlink flow is required anymore.
   - `STARGATE_PROXY_BASE=http://starlight-api:8080`  
   - `STARGATE_INGEST_URL=http://stargate-backend:3001/api/ingest-inscription`  
   - `STARGATE_INGEST_TOKEN` (optional)  
+  - `STARGATE_STEGO_CALLBACK_URL=http://stargate-backend:3001/api/stego/callback` (optional; posts scan results)  
+  - `STARGATE_STEGO_CALLBACK_SECRET` (optional HMAC key for `X-Starlight-Signature`)  
   - `BLOCKS_DIR=/data/blocks` (starlight-api)  
   - `UPLOADS_DIR=/data/uploads` (backend)
 
