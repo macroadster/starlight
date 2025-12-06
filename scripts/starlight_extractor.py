@@ -51,15 +51,16 @@ def extract_message_lsb_first(bits, max_length=24576):
     bits_after_hint = bits[len(hint_bits):]
     
     # Look for null terminator (0x00 in LSB-first = '00000000')
+    # Find terminator on byte boundaries only to avoid false positives
     terminator_bits = '00000000'
-    terminator_index = bits_after_hint.find(terminator_bits)
+    terminator_index = -1
+    for i in range(0, len(bits_after_hint), 8):
+        if bits_after_hint[i:i+8] == terminator_bits:
+            terminator_index = i
+            break
     
     if terminator_index == -1:
         return None, bits
-    
-    # Align to byte boundary
-    if terminator_index % 8 != 0:
-        terminator_index = (terminator_index // 8) * 8
     
     payload_bits = bits_after_hint[:terminator_index]
     
