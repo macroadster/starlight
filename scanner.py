@@ -438,86 +438,73 @@ def _scan_logic(image_path, session, extract_message=False):
 
 
         # Process results
-
         # Use a numerically stable sigmoid to avoid overflow warnings
-
         logit = stego_logits[0][0]
-
         if logit >= 0:
-
             stego_prob = 1 / (1 + np.exp(-logit))
-
         else:
-
             # Use the equivalent alternative form to avoid overflow for large negative logits
-
             stego_prob = np.exp(logit) / (1 + np.exp(logit))
 
-
-
         # When heuristics are disabled, use a simple 0.5 threshold for benchmarking
-
         threshold = 0.5
-
         is_stego = stego_prob > threshold
+        method_val = int(method_id[0])
+        stego_type = METHOD_MAP.get(method_val, "unknown")
+        confidence = float(np.max(method_probs)) if method_probs is not None else None
+        extracted_message = None
+        extraction_error = None
+
+        # Heuristic safety net: if the model says clean but we can decode an AI42 alpha payload, flag it.
+        if (not is_stego) and (not NO_HEURISTICS):
+            try:
+                alpha_extractor = extraction_functions.get("alpha")
+                if alpha_extractor:
+                    msg, _ = alpha_extractor(image_path)
+                    if msg:
+                        is_stego = True
+                        stego_prob = max(stego_prob, 0.99)  # Boost probability to reflect detection
+                        method_val = 0
+                        stego_type = "alpha"
+                        confidence = 1.0
+                        if extract_message:
+                            extracted_message = msg
+            except Exception as e:
+                extraction_error = str(e)
 
         result = {
-
             "file_path": str(image_path),
-
             "is_stego": bool(is_stego),
-
             "stego_probability": float(stego_prob),
-
-            "method_id": int(method_id[0]),
-
+            "method_id": method_val,
         }
 
-
-
         if is_stego:
-
-            stego_type = METHOD_MAP.get(method_id[0], "unknown")
-
             result["stego_type"] = stego_type
+            if confidence is not None:
+                result["confidence"] = confidence
 
-            result["confidence"] = float(np.max(method_probs))
-
-
-
-            if extract_message:
-
+            if extract_message and extracted_message is None:
                 # Handle method name mapping for extractor
-
                 extractor_method_name = stego_type
-
                 if stego_type == "lsb.rgb":
-
                     extractor_method_name = "lsb"
-
                 elif stego_type == "raw":
-
                     extractor_method_name = "eoi"
 
-
-
                 if extractor_method_name in extraction_functions:
-
                     try:
-
                         extractor = extraction_functions[extractor_method_name]
-
                         message, _ = extractor(image_path)
-
                         if message:
-
-                            result["extracted_message"] = message
-
+                            extracted_message = message
                     except Exception as e:
+                        extraction_error = str(e)
 
-                        result["extraction_error"] = str(e)
-
-
+            if extracted_message:
+                result["extracted_message"] = extracted_message
+            if extraction_error:
+                result["extraction_error"] = extraction_error
 
         return result
 

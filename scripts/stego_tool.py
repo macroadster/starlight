@@ -301,12 +301,15 @@ def reconstruct_lsb_first_message_from_bits(bits, max_length=24576):
     if not bits.startswith(hint_bits):
         return None, bits
     bits_after_hint = bits[len(hint_bits):]
+    # Find terminator only on byte boundaries to avoid false positives mid-byte
     terminator_bits = '00000000'
-    terminator_index = bits_after_hint.find(terminator_bits)
+    terminator_index = -1
+    for i in range(0, len(bits_after_hint), 8):
+        if bits_after_hint[i:i+8] == terminator_bits:
+            terminator_index = i
+            break
     if terminator_index == -1:
         return None, bits
-    if terminator_index % 8 != 0:
-        terminator_index = (terminator_index // 8) * 8
     payload_bits = bits_after_hint[:terminator_index]
     if len(payload_bits) == 0:
         return None, bits
