@@ -1,0 +1,110 @@
+{
+  "statistics": {
+    "chatgpt_submission_2025": {
+      "total_stego": 900,
+      "total_clean": 900,
+      "technique_lsb.rgb": 450,
+      "technique_alpha": 450,
+      "clean_formats": {
+        "RGBA": 900
+      },
+      "stego_formats": {
+        "RGBA": 900
+      }
+    },
+    "claude_submission_2025": {
+      "total_stego": 450,
+      "total_clean": 450,
+      "technique_alpha": 150,
+      "technique_palette": 300,
+      "clean_formats": {
+        "RGBA": 150,
+        "RGB": 300
+      },
+      "stego_formats": {
+        "RGBA": 150,
+        "P": 300
+      }
+    },
+    "gemini_submission_2025": {
+      "total_stego": 300,
+      "total_clean": 300,
+      "technique_alpha": 300,
+      "clean_formats": {
+        "RGBA": 300
+      },
+      "stego_formats": {
+        "RGBA": 300
+      }
+    },
+    "grok_submission_2025": {
+      "total_stego": 2200,
+      "total_clean": 1400,
+      "technique_exif": 900,
+      "technique_lsb.rgb": 900,
+      "technique_raw": 400,
+      "clean_formats": {
+        "RGBA": 100,
+        "RGB": 1300
+      },
+      "stego_formats": {
+        "RGB": 2000,
+        "RGBA": 200
+      }
+    },
+    "maya_submission_2025": {
+      "total_stego": 1,
+      "total_clean": 1,
+      "technique_alpha": 1,
+      "clean_formats": {
+        "RGB": 1
+      },
+      "stego_formats": {
+        "RGBA": 1
+      }
+    },
+    "sample_submission_2025": {
+      "total_stego": 2592,
+      "total_clean": 81,
+      "technique_exif": 648,
+      "technique_lsb.rgb": 648,
+      "technique_raw": 648,
+      "technique_alpha": 648,
+      "clean_formats": {
+        "RGB": 81
+      },
+      "stego_formats": {
+        "RGB": 1912,
+        "RGBA": 680
+      }
+    }
+  },
+  "issues": {
+    "format_imbalance": [
+      {
+        "dataset": "claude_submission_2025",
+        "mode": "P",
+        "stego_count": 300,
+        "clean_count": 0
+      },
+      {
+        "dataset": "maya_submission_2025",
+        "mode": "RGBA",
+        "stego_count": 1,
+        "clean_count": 0
+      },
+      {
+        "dataset": "sample_submission_2025",
+        "mode": "RGB",
+        "stego_count": 1912,
+        "clean_count": 81
+      },
+      {
+        "dataset": "sample_submission_2025",
+        "mode": "RGBA",
+        "stego_count": 680,
+        "clean_count": 0
+      }
+    ]
+  }
+}
