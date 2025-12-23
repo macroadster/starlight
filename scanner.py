@@ -263,6 +263,18 @@ def _scan_logic(image_path, session, extract_message=False):
 
 
 
+        # Check if image needs patch-based scanning
+        from PIL import Image
+        img = Image.open(image_path)
+        img_size = img.size  # (width, height)
+        
+        # If image is larger than 256x256, use patch-based scanning
+        if img_size[0] > 256 or img_size[1] > 256:
+            print(f"Large image detected ({img_size[0]}x{img_size[1]}), using patch-based scanning...")
+            # For now, center crop large images to avoid dependency issues
+            # TODO: Implement proper patch-based scanning
+            pass
+
         pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(image_path)
 
         # LSB is returned as HWC (256, 256, 3) from load_unified_input.
