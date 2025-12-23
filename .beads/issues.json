@@ -1,0 +1,15 @@
+[
+  {
+    "title": "Implement patch-based scanning for real-world images",
+    "description": "Enhanced steganography detection for images larger than 256x256 model training size",
+    "status": "done",
+    "target_url": "https://github.com/macroadster/starlight/commit/7cfe828",
+    "github": {
+      "repo": "macroadster/starlight",
+      "owner": "macroadster",
+      "number": null
+    },
+    "labels": ["enhancement", "steganography", "patch-scanning"],
+    "milestones": ["v1.0"]
+  }
+]
