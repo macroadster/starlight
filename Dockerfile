@@ -1,5 +1,5 @@
 # ---- Builder Stage ----
-FROM python:3.12 AS builder
+FROM python:3.12-slim AS builder
 
 # Set working directory for the virtual environment
 WORKDIR /opt/venv
@@ -11,18 +11,19 @@ RUN python3 -m venv .
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Install build dependencies
-# We still need these to build certain packages
 RUN apt-get update && apt-get install -y \
     build-essential \
     pkg-config \
-    libjpeg-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Copy the API-specific requirements file
 COPY requirements.api.txt .
 
-# Install packages into the virtual environment
-RUN pip install --no-cache-dir -r requirements.api.txt
+# Install CPU-only PyTorch (much smaller) and other dependencies
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision \
+    && pip install --no-cache-dir -r requirements.api.txt
 
 
 # ---- Final Stage ----
@@ -37,16 +38,18 @@ COPY --from=builder /opt/venv /opt/venv
 # Activate the virtual environment
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install runtime system dependencies that are needed by the packages
-RUN apt-get update && apt-get install -y \
+# Install ONLY runtime system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    libjpeg-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Copy application code
 COPY *.py ./
-COPY models/ ./models/
 COPY scripts/ ./scripts/
+
+# Copy ONLY ONNX models and metadata (exclude .pth files)
+COPY models_dist/ ./models/
 
 # Create non-root user and set permissions
 RUN useradd -m -u 1000 starlight && chown -R starlight:starlight /app
