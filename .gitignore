@@ -24,4 +24,11 @@ test_images/
 # Ignore generated models directory
 models_dist/
 
+.beads/.gitignore
+.beads/README.md
+.beads/config.yaml
+.gemini/
+.gitattributes
+.grok/
 **/*.log
+experiments
