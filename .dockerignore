@@ -27,12 +27,20 @@ docs/
 checkpoints/
 results/
 experiments/
-*.onnx
 *.pth
 *.pt
+*.pkl
+*.h5
 *.log
 .pytest_cache/
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Additional exclusions
+blocks/
+data/
+hf_repos/
+temp_clean/
+benchmark_results/
