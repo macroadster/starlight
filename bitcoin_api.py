@@ -65,7 +65,7 @@ def send_stargate_callback(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 try:
     from fastapi import FastAPI, HTTPException, Depends, Query, Header, BackgroundTasks, File, UploadFile, Form
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, Response
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - FastAPI is required for this service
     raise RuntimeError(
@@ -82,6 +82,7 @@ except ImportError as e:
     logger.error(f"Could not import Starlight scanner: {e}")
 
 # Stego embedding helpers (re-use existing tool functions when available)
+embed_alpha = embed_lsb = embed_palette = embed_exif = embed_eoi = None
 try:
     from scripts.stego_tool import embed_alpha, embed_lsb, embed_palette, embed_exif, embed_eoi
     STEGO_HELPERS_AVAILABLE = True
@@ -134,6 +135,10 @@ class ScanOptions(BaseModel):
     extract_message: bool = Field(default=True, description="Extract hidden messages if stego detected")
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0, description="Minimum confidence threshold")
     include_metadata: bool = Field(default=True, description="Include detailed metadata in response")
+    enable_patch_scanning: bool = Field(default=True, description="Enable patch-based scanning for large images")
+    patch_size: int = Field(default=256, description="Patch size for large image scanning")
+    patch_stride: int = Field(default=128, description="Stride between patches for overlap")
+    patch_aggregation: str = Field(default="weighted", description="Method to aggregate patch results: 'max', 'avg', or 'weighted'")
 
 
 class TransactionScanRequest(BaseModel):
@@ -183,8 +188,8 @@ class BatchItem(BaseModel):
 
 
 class BatchScanRequest(BaseModel):
-    items: List[BatchItem] = Field(..., min_items=1, max_items=50, description="Items to scan")
-    scan_options: ScanOptions = Field(default_factory=ScanOptions, description="Scanning options")
+    items: List[BatchItem]
+    scan_options: ScanOptions = Field(default_factory=ScanOptions)
 
 
 class BatchItemResult(BaseModel):
@@ -280,8 +285,6 @@ class BlockScanResponse(BaseModel):
 # Global instances
 bitcoin_client = BitcoinNodeClient()
 scanner_instance = None
-INSCRIPTION_OUTBOX = Path(os.environ.get("STARLIGHT_INSCRIPTION_OUTBOX", "inscriptions/pending"))
-INSCRIPTION_OUTBOX.mkdir(parents=True, exist_ok=True)
 
 # Metrics
 REQUEST_COUNT = Counter(
@@ -294,9 +297,11 @@ REQUEST_LATENCY = Histogram(
     "Request latency seconds",
     ["endpoint"],
 )
+
 # Initialize scanner if available
 if SCANNER_AVAILABLE:
     try:
+        from scanner import StarlightScanner
         model_path = "models/detector_balanced.onnx"
         if os.path.exists(model_path):
             scanner_instance = StarlightScanner(model_path, num_workers=4, quiet=True)
@@ -316,7 +321,7 @@ async def scan_image_async(image_data: bytes, options: ScanOptions, request_id: 
             temp_path = temp_file.name
         
         try:
-            if scanner_instance:
+            if scanner_instance is not None:
                 # Use Starlight scanner
                 result = scanner_instance.scan_file(temp_path)
                 
@@ -343,8 +348,12 @@ async def scan_image_async(image_data: bytes, options: ScanOptions, request_id: 
                 return ScanResult(
                     is_stego=False,
                     stego_probability=0.1,
+                    stego_type=None,
                     confidence=0.9,
-                    prediction="clean"
+                    prediction="clean",
+                    method_id=None,
+                    extracted_message=None,
+                    extraction_error=None
                 )
         finally:
             # Clean up temporary file
@@ -358,8 +367,11 @@ async def scan_image_async(image_data: bytes, options: ScanOptions, request_id: 
         return ScanResult(
             is_stego=False,
             stego_probability=0.0,
+            stego_type=None,
             confidence=0.0,
             prediction="clean",
+            method_id=None,
+            extracted_message=None,
             extraction_error=str(e)
         )
 
@@ -379,7 +391,10 @@ def embed_message_to_image(image_bytes: bytes, method: str, message: str) -> byt
     if method_key not in method_map:
         raise ValueError(f"Unsupported method '{method}'. Supported: {', '.join(sorted(method_map.keys()))}")
     cover = Image.open(io.BytesIO(image_bytes))
-    stego_img = method_map[method_key](cover, message.encode("utf-8"))
+    embed_func = method_map[method_key]
+    if embed_func is None:
+        raise RuntimeError(f"Embed function for method '{method}' is not available")
+    stego_img = embed_func(cover, message.encode("utf-8"))
     buf = io.BytesIO()
     stego_img.save(buf, format="PNG")
     return buf.getvalue()
@@ -575,10 +590,11 @@ async def scan_image(
         scan_result = await scan_image_async(image_data, options, request_id)
         
         # Get image info
+        filename = image.filename or "unknown"
         image_info = {
-            "filename": image.filename,
+            "filename": filename,
             "size_bytes": len(image_data),
-            "format": image.filename.split('.')[-1].lower() if '.' in image.filename else 'unknown'
+            "format": filename.split('.')[-1].lower() if '.' in filename else 'unknown'
         }
         
         processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
@@ -620,7 +636,8 @@ async def inscribe_image(
         except RuntimeError as re:
             raise HTTPException(status_code=503, detail=str(re))
 
-        safe_name = os.path.basename(image.filename) or "inscribe.png"
+        filename = image.filename or "inscribe.png"
+        safe_name = os.path.basename(filename) or "inscribe.png"
 
         # Optional direct handoff to Stargate via REST
         ingest_url = os.environ.get("STARGATE_INGEST_URL")
@@ -683,6 +700,8 @@ async def scan_batch(
             try:
                 if item.type == "transaction":
                     # Scan transaction
+                    if item.transaction_id is None:
+                        raise ValueError("Transaction ID is required for transaction type items")
                     tx_data = await bitcoin_client.get_transaction(item.transaction_id)
                     images = await bitcoin_client.extract_images(item.transaction_id)
                     
@@ -700,16 +719,19 @@ async def scan_batch(
                         stego_count += 1
                     
                     results.append(BatchItemResult(
-                        item_id=item.transaction_id,
+                        item_id=item.transaction_id or "unknown",
                         type="transaction",
                         status="completed",
                         stego_detected=item_stego_count > 0,
                         images_with_stego=item_stego_count,
-                        total_images=len(images)
+                        total_images=len(images),
+                        error=None
                     ))
                 
                 elif item.type == "image":
                     # Scan base64 image
+                    if item.image_data is None:
+                        raise ValueError("Image data is required for image type items")
                     image_data = base64.b64decode(item.image_data)
                     scan_result = await scan_image_async(
                         image_data,
@@ -726,7 +748,8 @@ async def scan_batch(
                         status="completed",
                         stego_detected=scan_result.is_stego,
                         images_with_stego=1 if scan_result.is_stego else 0,
-                        total_images=1
+                        total_images=1,
+                        error=None
                     ))
             
             except Exception as e:
@@ -797,6 +820,9 @@ async def extract_message(
                 # Stub response
                 extraction_result = ExtractionResult(
                     message_found=False,
+                    message=None,
+                    method_used=None,
+                    method_confidence=None,
                     extraction_details={
                         "bits_extracted": 0,
                         "encoding": "utf-8",
@@ -804,10 +830,11 @@ async def extract_message(
                     }
                 )
             
+            filename = image.filename or "unknown"
             image_info = {
-                "filename": image.filename,
+                "filename": filename,
                 "size_bytes": len(image_data),
-                "format": image.filename.split('.')[-1].lower() if '.' in image.filename else 'unknown'
+                "format": filename.split('.')[-1].lower() if '.' in filename else 'unknown'
             }
             
             processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
