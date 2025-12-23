@@ -21,4 +21,7 @@ stego/
 checkpoints/
 test_images/
 
+# Ignore generated models directory
+models_dist/
+
 **/*.log
