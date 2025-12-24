@@ -1,0 +1,6 @@
+site_name: AI Research Lab: Starlight MCP Feedback Contest
+
+theme: readthedocs
+
+nav:
+  - Home: index.md
