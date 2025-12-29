@@ -32,3 +32,9 @@ models_dist/
 .grok/
 **/*.log
 experiments
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# Local scratch files
+x.png
