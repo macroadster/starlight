@@ -496,27 +496,22 @@ def _scan_logic(image_path, session, extract_message=False):
             if confidence is not None:
                 result["confidence"] = confidence
 
-            if extract_message and extracted_message is None:
-                # Handle method name mapping for extractor
-                extractor_method_name = stego_type
-                if stego_type == "lsb.rgb":
-                    extractor_method_name = "lsb"
-                elif stego_type == "raw":
-                    extractor_method_name = "eoi"
+        if extract_message and extracted_message is None:
+            try:
+                extracted_message = _extract_message(image_path, stego_type)
+            except Exception as e:
+                extraction_error = str(e)
 
-                if extractor_method_name in extraction_functions:
-                    try:
-                        extractor = extraction_functions[extractor_method_name]
-                        message, _ = extractor(image_path)
-                        if message:
-                            extracted_message = message
-                    except Exception as e:
-                        extraction_error = str(e)
-
-            if extracted_message:
-                result["extracted_message"] = extracted_message
-            if extraction_error:
-                result["extraction_error"] = extraction_error
+        if extracted_message:
+            result["extracted_message"] = extracted_message
+            if not is_stego:
+                result["is_stego"] = True
+                result["stego_probability"] = max(result["stego_probability"], 0.99)
+                result["stego_type"] = stego_type
+                if confidence is not None:
+                    result["confidence"] = confidence
+        if extraction_error:
+            result["extraction_error"] = extraction_error
 
         return result
 
@@ -551,6 +546,29 @@ def scan_batch_worker(image_paths):
     
     return results
 
+def _extract_message(image_path, stego_type):
+    extractor_method_name = stego_type
+    if stego_type == "lsb.rgb":
+        extractor_method_name = "lsb"
+    elif stego_type == "raw":
+        extractor_method_name = "eoi"
+
+    candidates = []
+    if extractor_method_name:
+        candidates.append(extractor_method_name)
+    for fallback in ("lsb", "alpha", "exif", "eoi", "palette"):
+        if fallback not in candidates:
+            candidates.append(fallback)
+
+    for method in candidates:
+        extractor = extraction_functions.get(method)
+        if extractor is None:
+            continue
+        message, _ = extractor(image_path)
+        if message:
+            return message
+    return None
+
 def _process_inference_result(image_path, stego_logits, method_id, method_probs, extract_message=False):
     """Process inference results into final result format."""
     global METHOD_MAP
@@ -574,27 +592,23 @@ def _process_inference_result(image_path, stego_logits, method_id, method_probs,
         "method_id": int(method_id[0]),
     }
 
+    stego_type = METHOD_MAP.get(method_id[0], "unknown")
     if is_stego:
-        stego_type = METHOD_MAP.get(method_id[0], "unknown")
         result["stego_type"] = stego_type
         result["confidence"] = float(np.max(method_probs))
 
-        if extract_message:
-            # Handle method name mapping for extractor
-            extractor_method_name = stego_type
-            if stego_type == "lsb.rgb":
-                extractor_method_name = "lsb"
-            elif stego_type == "raw":
-                extractor_method_name = "eoi"
-
-            if extractor_method_name in extraction_functions:
-                try:
-                    extractor = extraction_functions[extractor_method_name]
-                    message, _ = extractor(image_path)
-                    if message:
-                        result["extracted_message"] = message
-                except Exception as e:
-                    result["extraction_error"] = str(e)
+    if extract_message:
+        try:
+            message = _extract_message(image_path, stego_type)
+            if message:
+                result["extracted_message"] = message
+                if not is_stego:
+                    result["is_stego"] = True
+                    result["stego_probability"] = max(result["stego_probability"], 0.99)
+                    result["stego_type"] = stego_type
+                    result["confidence"] = float(np.max(method_probs))
+        except Exception as e:
+            result["extraction_error"] = str(e)
 
     return result
 
