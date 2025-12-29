@@ -376,7 +376,7 @@ async def scan_image_async(image_data: bytes, options: ScanOptions, request_id: 
         )
 
 
-def embed_message_to_image(image_bytes: bytes, method: str, message: str) -> bytes:
+def embed_message_to_image(image_bytes: bytes, method: str, message: str) -> tuple[bytes, str]:
     """Embed a UTF-8 message into an image using the selected stego method."""
     if not STEGO_HELPERS_AVAILABLE:
         raise RuntimeError("Stego helpers are unavailable; cannot inscribe message.")
@@ -395,9 +395,26 @@ def embed_message_to_image(image_bytes: bytes, method: str, message: str) -> byt
     if embed_func is None:
         raise RuntimeError(f"Embed function for method '{method}' is not available")
     stego_img = embed_func(cover, message.encode("utf-8"))
+    if method_key in ("exif", "eoi"):
+        output_format = "JPEG"
+    elif method_key == "palette":
+        output_format = "GIF"
+    else:
+        output_format = "PNG"
     buf = io.BytesIO()
-    stego_img.save(buf, format="PNG")
-    return buf.getvalue()
+    save_kwargs = {}
+    if output_format == "JPEG":
+        save_kwargs["quality"] = 95
+        exif_bytes = stego_img.info.get("exif_bytes")
+        if exif_bytes:
+            save_kwargs["exif"] = exif_bytes
+    stego_img.save(buf, format=output_format, **save_kwargs)
+    payload = buf.getvalue()
+    if method_key == "eoi":
+        append_data = stego_img.info.get("eoi_append")
+        if append_data:
+            payload += append_data
+    return payload, output_format
 
 # Dependency for API key authentication
 async def verify_api_key(authorization: str = Header(None)):
@@ -630,7 +647,7 @@ async def inscribe_image(
         if len(image_bytes) > 10485760:
             raise HTTPException(status_code=413, detail="Image too large")
         try:
-            stego_bytes = embed_message_to_image(image_bytes, method, message)
+            stego_bytes, output_format = embed_message_to_image(image_bytes, method, message)
         except ValueError as ve:
             raise HTTPException(status_code=400, detail=str(ve))
         except RuntimeError as re:
@@ -638,6 +655,12 @@ async def inscribe_image(
 
         filename = image.filename or "inscribe.png"
         safe_name = os.path.basename(filename) or "inscribe.png"
+        if output_format:
+            ext_map = {"JPEG": ".jpg", "PNG": ".png", "GIF": ".gif"}
+            new_ext = ext_map.get(output_format)
+            if new_ext:
+                base, _ = os.path.splitext(safe_name)
+                safe_name = base + new_ext
 
         # Optional direct handoff to Stargate via REST
         ingest_url = os.environ.get("STARGATE_INGEST_URL")
