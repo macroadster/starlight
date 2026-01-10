@@ -17,8 +17,8 @@ scikit-image>=0.18.0
 # Machine Learning (for scanner integration)
 torch>=2.0.0
 torchvision>=0.15.0
-onnxruntime>=1.16.0
-onnx>=1.14.0
+# onnxruntime>=1.16.0  # TEMPORARILY DISABLED - NO PYTHON 3.14 SUPPORT
+# onnx>=1.14.0  # TEMPORARILY DISABLED - DEPENDS ON ONNXRUNTIME
 scikit-learn>=1.2.2
 
 # HTTP Client for Bitcoin API

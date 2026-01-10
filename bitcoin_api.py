@@ -304,7 +304,7 @@ REQUEST_LATENCY = Histogram(
 if SCANNER_AVAILABLE:
     try:
         from scanner import StarlightScanner
-        model_path = "models/detector_balanced.onnx"
+        model_path = "models/detector_balanced.pth"
         if os.path.exists(model_path):
             scanner_instance = StarlightScanner(model_path, num_workers=4, quiet=True)
             logger.info(f"Scanner initialized with model: {model_path}")
@@ -476,7 +476,7 @@ async def health_check():
     scanner_status = {
         "model_loaded": scanner_instance is not None,
         "model_version": "v4-prod" if scanner_instance else "none",
-        "model_path": "models/detector_balanced.onnx",
+        "model_path": "models/detector_balanced.pth",
         "device": "cpu"  # Would detect actual device
     }
     
