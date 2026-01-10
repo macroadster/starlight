@@ -252,6 +252,7 @@ class InscribeResponse(BaseModel):
     output_file: str = Field(..., description="Relative path to saved inscribed image")
     image_bytes: int = Field(..., description="Size of inscribed image in bytes")
     image_sha256: str = Field(..., description="SHA256 hash of inscribed image for ID tracking")
+    image_base64: str = Field(..., description="Base64-encoded stego-processed image")
     status: str = Field(..., description="Inscribe status (pending upload)")
     note: str = Field(..., description="Next step hint for Stargate uploader")
 
@@ -696,6 +697,7 @@ async def inscribe_image(
             "output_file": safe_name,
             "image_bytes": len(stego_bytes),
             "image_sha256": image_sha256,
+            "image_base64": base64.b64encode(stego_bytes).decode("utf-8"),
             "status": "ingested" if ingest_result else "pending_upload",
             "note": "Ingested to Stargate via REST" if ingest_result else "No ingest URL configured",
             "ingest": ingest_result,
