@@ -1,4 +1,4 @@
-import onnxruntime
+# import onnxruntime  # Disabled - no Python 3.14 support
 import numpy as np
 from PIL import Image
 import argparse
@@ -20,12 +20,13 @@ from scripts.starlight_utils import load_unified_input # Import from trainer.py
 
 # --- Worker-specific globals ---
 SESSION = None
-MODEL_TYPE = None  # 'onnx' or 'pytorch'
+MODEL_TYPE = 'pytorch'  # Only PyTorch supported now
 DEVICE = None  # 'cpu', 'cuda', or 'mps'
 METHOD_MAP = {0: "alpha", 1: "palette", 2: "lsb.rgb", 3: "exif", 4: "raw"}
 NO_HEURISTICS = False # Global flag to disable heuristics for benchmarking
 
 # Legacy model class for older PyTorch models (REMOVED)
+# ONNX support removed due to Python 3.14 compatibility issues
 
 # Import PyTorch model class
 class BalancedStarlightDetector(nn.Module):
@@ -245,13 +246,34 @@ def init_worker(model_path):
         
         SESSION = model
     else:
-        MODEL_TYPE = 'onnx'
-        DEVICE = None
-        # ONNX Runtime optimizations
-        sess_options = onnxruntime.SessionOptions()
-        sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
-        SESSION = onnxruntime.InferenceSession(model_path, sess_options)
+        # ONNX not supported - fallback to PyTorch
+        MODEL_TYPE = 'pytorch'
+        # Check for MPS availability on Mac
+        if torch.backends.mps.is_available():
+            DEVICE = torch.device('mps')
+        elif torch.cuda.is_available():
+            DEVICE = torch.device('cuda')
+        else:
+            DEVICE = torch.device('cpu')
+        
+        # Load PyTorch model with optimizations
+        model = BalancedStarlightDetector()
+        model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        model.to(DEVICE)
+        model.eval()
+        
+        # Optimize for inference
+        if DEVICE.type == 'mps':
+            # MPS-specific optimizations (disable compile due to compatibility issues)
+            pass  # torch.compile has issues with MPS conv2d
+        elif DEVICE.type == 'cuda':
+            # CUDA-specific optimizations
+            with torch.no_grad():
+                for param in model.parameters():
+                    param.requires_grad = False
+            model = torch.jit.script(model)  # TorchScript optimization
+        
+        SESSION = model
 
 def _scan_logic(image_path, session, extract_message=False):
 
@@ -380,72 +402,14 @@ def _scan_logic(image_path, session, extract_message=False):
                 method_probs = method_probs.cpu().numpy()
 
         else:
-
-            # ONNX inference
-
-            model_inputs = {inp.name for inp in session.get_inputs()}
-
-            
-
-            input_feed = {}
-
-            if 'meta' in model_inputs:
-
-                input_feed['meta'] = meta.numpy()
-
-            if 'alpha' in model_inputs:
-
-                input_feed['alpha'] = alpha.numpy()
-
-            if 'lsb' in model_inputs:
-
-                # lsb_onnx is already (1, 3, 256, 256) NCHW
-
-                input_feed['lsb'] = lsb_onnx.numpy()
-
-            if 'palette' in model_inputs:
-
-                input_feed['palette'] = palette.numpy()
-
-            if 'format_features' in model_inputs:
-
-                input_feed['format_features'] = format_features.numpy()
-
-            if 'content_features' in model_inputs:
-
-                input_feed['content_features'] = content_features.numpy()
-
-            if 'pixel_tensor' in model_inputs:
-
-                input_feed['pixel_tensor'] = pixel_tensor.numpy()
-
-            if 'palette_lsb' in model_inputs:
-
-                input_feed['palette_lsb'] = palette_lsb.numpy()
-
-            
-
-            # Legacy inputs handling (for older models if any)
-
-            if 'bit_order' in model_inputs:
-
-                bit_order = torch.tensor([[0.0, 1.0, 0.0]])
-
-                input_feed['bit_order'] = bit_order.numpy()
-
-            if 'pixel' in model_inputs:
-
-                pixel_4ch = torch.cat([pixel_tensor.squeeze(0), alpha.squeeze(0)], dim=0)
-
-                input_feed['pixel'] = pixel_4ch.unsqueeze(0).numpy()
-
-            if 'metadata' in model_inputs:
-
-                input_feed['metadata'] = meta.numpy()
-
-            
-
-            stego_logits, _, method_id, method_probs, _ = session.run(None, input_feed)
+            # Fallback to PyTorch inference
+            with torch.no_grad():
+                bit_order = bit_order.to(DEVICE)
+                stego_logits, method_logits, method_id, method_probs, embedding = session(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order)
+                
+                stego_logits = stego_logits.cpu().numpy()
+                method_id = method_id.cpu().numpy()
+                method_probs = method_probs.cpu().numpy()
 
 
 
@@ -641,9 +605,20 @@ class StarlightScanner:
             model.eval()
             session = model
         else:
-            MODEL_TYPE = 'onnx'
-            DEVICE = None
-            session = onnxruntime.InferenceSession(self.model_path)
+            # ONNX not supported - fallback to PyTorch
+            MODEL_TYPE = 'pytorch'
+            if torch.backends.mps.is_available():
+                DEVICE = torch.device('mps')
+            elif torch.cuda.is_available():
+                DEVICE = torch.device('cuda')
+            else:
+                DEVICE = torch.device('cpu')
+            
+            model = BalancedStarlightDetector()
+            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
+            model.to(DEVICE)
+            model.eval()
+            session = model
         
         # Extraction is enabled for single file scans
         return _scan_logic(file_path, session, extract_message=True)
@@ -731,7 +706,7 @@ def main():
     global NO_HEURISTICS
     parser = argparse.ArgumentParser(description="Scan a directory or a single file for steganography.")
     parser.add_argument("path", help="The directory or file to scan.")
-    parser.add_argument("--model", default="models/detector_balanced.onnx", help="Path to the ONNX or PyTorch model file.")
+    parser.add_argument("--model", default="models/detector_balanced.pth", help="Path to PyTorch model file.")
     parser.add_argument("--workers", type=int, default=os.cpu_count(), help="Number of parallel workers for scanning.")
     parser.add_argument("--json", action="store_true", help="Output results as JSON.")
     parser.add_argument("--no-heuristics", action="store_true", help="Disable post-processing heuristics and special cases for benchmarking.")
@@ -749,25 +724,19 @@ def main():
     
     # Initialize global variables for model type and device
     global MODEL_TYPE, DEVICE
-    if args.model.endswith('.pth'):
-        MODEL_TYPE = 'pytorch'
-        if torch.backends.mps.is_available():
-            DEVICE = torch.device('mps')
-            if not args.json:
-                print(f"[DEVICE] Using MPS (Metal Performance Shaders) for acceleration")
-        elif torch.cuda.is_available():
-            DEVICE = torch.device('cuda')
-            if not args.json:
-                print(f"[DEVICE] Using CUDA for acceleration")
-        else:
-            DEVICE = torch.device('cpu')
-            if not args.json:
-                print(f"[DEVICE] Using CPU for inference")
-    else:
-        MODEL_TYPE = 'onnx'
-        DEVICE = None
+    MODEL_TYPE = 'pytorch'
+    if torch.backends.mps.is_available():
+        DEVICE = torch.device('mps')
         if not args.json:
-            print(f"[DEVICE] Using ONNX Runtime for inference")
+            print(f"[DEVICE] Using MPS (Metal Performance Shaders) for acceleration")
+    elif torch.cuda.is_available():
+        DEVICE = torch.device('cuda')
+        if not args.json:
+            print(f"[DEVICE] Using CUDA for acceleration")
+    else:
+        DEVICE = torch.device('cpu')
+        if not args.json:
+            print(f"[DEVICE] Using CPU for inference")
 
     scanner = StarlightScanner(args.model, num_workers=args.workers, quiet=args.json)
     start_time = time.time()
