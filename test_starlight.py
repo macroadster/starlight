@@ -162,8 +162,8 @@ def main():
     )
     parser.add_argument(
         "-m", "--model",
-        default="models/detector_balanced.onnx",
-        help="Path to ONNX or PyTorch model file (default: models/detector_balanced.onnx)"
+        default="models/detector_balanced.pth",
+        help="Path to PyTorch model file (default: models/detector_balanced.pth)"
     )
     parser.add_argument(
         "-d", "--details",

@@ -713,7 +713,7 @@ def compute_class_weights(method_labels):
 
     return weights
 
-def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_generalized.onnx"):
+def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_generalized.pth"):
     # Use CPU for now due to MPS tensor view compatibility issues
     # TODO: Fix MPS compatibility issues in future PyTorch versions
     if torch.cuda.is_available():
@@ -912,8 +912,8 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
-            torch.save(model.state_dict(), out_path.replace('.onnx', '.pth'))
-            print(f"Validation loss improved. Saved best model to {out_path.replace('.onnx', '.pth')}")
+            torch.save(model.state_dict(), out_path)
+            print(f"Validation loss improved. Saved best model to {out_path}")
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
@@ -922,57 +922,8 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
 
 
 
-    # Export to ONNX
-    print("Exporting to ONNX...")
-    model.load_state_dict(torch.load(out_path.replace('.onnx', '.pth')))
-    model.eval()
-
-    # Create dummy input matching 8-tensor model signature
-    dummy_pixel_tensor = torch.randn(1, 3, 256, 256)
-    dummy_meta = torch.randn(1, 2048)
-    dummy_alpha = torch.randn(1, 2, 256, 256)
-    dummy_lsb = torch.randn(1, 3, 256, 256)
-    dummy_palette = torch.randn(1, 768)
-    dummy_palette_lsb = torch.randn(1, 1, 256, 256)
-    dummy_format_features = torch.randn(1, 6)
-    dummy_content_features = torch.randn(1, 6)
-    dummy_bit_order = torch.tensor([[0.0, 1.0, 0.0]])  # msb-first default
-
-    dummy_pixel_tensor = dummy_pixel_tensor.to(device)
-    dummy_meta = dummy_meta.to(device)
-    dummy_alpha = dummy_alpha.to(device)
-    dummy_lsb = dummy_lsb.to(device)
-    dummy_palette = dummy_palette.to(device)
-    dummy_palette_lsb = dummy_palette_lsb.to(device)
-    dummy_format_features = dummy_format_features.to(device)
-    dummy_content_features = dummy_content_features.to(device)
-    dummy_bit_order = dummy_bit_order.to(device)
-
-    torch.onnx.export(
-        model,
-        (dummy_pixel_tensor, dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_palette_lsb, dummy_format_features, dummy_content_features),
-        out_path,
-        input_names=['pixel_tensor', 'meta', 'alpha', 'lsb', 'palette', 'palette_lsb', 'format_features', 'content_features'],
-        output_names=['stego_logits', 'method_logits', 'method_id', 'method_probs', 'embedding'],
-        dynamic_axes={
-            'pixel_tensor': {0: 'batch'},
-            'meta': {0: 'batch'},
-            'alpha': {0: 'batch'},
-            'lsb': {0: 'batch'},
-            'palette': {0: 'batch'},
-            'palette_lsb': {0: 'batch'},
-            'format_features': {0: 'batch'},
-            'content_features': {0: 'batch'},
-            'stego_logits': {0: 'batch'},
-            'method_logits': {0: 'batch'},
-            'method_id': {0: 'batch'},
-            'method_probs': {0: 'batch'},
-            'embedding': {0: 'batch'}
-        },
-        opset_version=11
-    )
-
-    print(f"Generalized model exported to {out_path}")
+    # PyTorch model is already saved during training
+    print(f"PyTorch model saved to {out_path}")
 
 
 
@@ -986,7 +937,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=50) # Increased default epochs
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--out", default="models/detector_balanced.onnx")
+    parser.add_argument("--out", default="models/detector_balanced.pth")
     args = parser.parse_args()
 
     os.makedirs("models", exist_ok=True)
