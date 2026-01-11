@@ -53,7 +53,7 @@ class BalancedStarlightDetector(nn.Module):
 
         # Alpha stream
         self.alpha_conv = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(2, 16, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
@@ -83,7 +83,11 @@ class BalancedStarlightDetector(nn.Module):
         self.palette_fc = nn.Sequential(
             nn.Linear(768, 256),
             nn.ReLU(),
-            nn.Linear(256, 64)
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64)
         )
 
         # Pixel tensor processing (new stream)
@@ -129,7 +133,7 @@ class BalancedStarlightDetector(nn.Module):
         )
 
         # Fusion and classification
-        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16 + 3  # Updated for 8 streams + bit_order
+        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16  # Updated for 8 streams
         self.fusion = nn.Sequential(
             nn.Linear(self.fusion_dim, 512),
             nn.ReLU(),
@@ -145,7 +149,7 @@ class BalancedStarlightDetector(nn.Module):
         self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
         self.embedding_head = nn.Linear(64, 64)
 
-    def forward(self, pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order):
+    def forward(self, pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features):
         # Pixel tensor stream (new)
         pixel_tensor = self.pixel_conv(pixel_tensor)
         pixel_tensor = pixel_tensor.reshape(pixel_tensor.size(0), -1)
@@ -189,7 +193,7 @@ class BalancedStarlightDetector(nn.Module):
         content_features = self.content_features_fc(content_features)
 
         # Fusion of all 8 streams
-        fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order], dim=1)
+        fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features], dim=1)
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
@@ -307,12 +311,6 @@ def _scan_logic(image_path, session, extract_message=False):
 
         
 
-        # Create bit_order feature (default to msb-first for inference)
-
-        bit_order = torch.tensor([[0.0, 1.0, 0.0]])  # [lsb-first, msb-first, none]
-
-        
-
         # Move tensors to GPU/MPS if using PyTorch to avoid CPU bottlenecks
 
         if MODEL_TYPE == 'pytorch' and DEVICE is not None:
@@ -385,13 +383,11 @@ def _scan_logic(image_path, session, extract_message=False):
 
                 content_features = content_features.to(DEVICE)
 
-                bit_order = bit_order.to(DEVICE)
-
                 
 
                 # Current model expects 8 inputs
 
-                stego_logits, method_logits, method_id, method_probs, embedding = session(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order)
+                stego_logits, method_logits, method_id, method_probs, embedding = session(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
 
                 
 
@@ -404,8 +400,7 @@ def _scan_logic(image_path, session, extract_message=False):
         else:
             # Fallback to PyTorch inference
             with torch.no_grad():
-                bit_order = bit_order.to(DEVICE)
-                stego_logits, method_logits, method_id, method_probs, embedding = session(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order)
+                stego_logits, method_logits, method_id, method_probs, embedding = session(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
                 
                 stego_logits = stego_logits.cpu().numpy()
                 method_id = method_id.cpu().numpy()

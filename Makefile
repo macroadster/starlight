@@ -9,7 +9,7 @@ help: ## Show this help message
 build: models_dist ## Build the Docker image
 	docker build -t starlight-api:latest .
 
-models_dist: ## Create models_dist directory with only ONNX files
+models_dist: ## Create models_dist directory with only PTH files
 	@echo "Creating models_dist directory..."
 	@mkdir -p models_dist
 	@cp models/*.pth models_dist/ 2>/dev/null || true
@@ -20,7 +20,7 @@ models_dist: ## Create models_dist directory with only ONNX files
 
 test: build ## Test the image
 	@echo "Testing image..."
-	docker run --rm starlight-api:latest python -c "import torch; import onnxruntime; print('✓ Dependencies OK')"
+	docker run --rm starlight-api:latest python -c "import torch; print('✓ Dependencies OK')"
 	docker run --rm starlight-api:latest ls -lh /app/models/
 
 clean: ## Remove built images and models_dist
