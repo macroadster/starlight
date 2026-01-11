@@ -48,7 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY *.py ./
 COPY scripts/ ./scripts/
 
-# Copy ONLY ONNX models and metadata (exclude .pth files)
+# Copy models and metadata
 COPY models_dist/ ./models/
 
 # Create non-root user and set permissions
