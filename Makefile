@@ -12,7 +12,7 @@ build: models_dist ## Build the Docker image
 models_dist: ## Create models_dist directory with only ONNX files
 	@echo "Creating models_dist directory..."
 	@mkdir -p models_dist
-	@cp models/*.onnx models_dist/ 2>/dev/null || true
+	@cp models/*.pth models_dist/ 2>/dev/null || true
 	@cp models/*.json models_dist/ 2>/dev/null || true
 	@cp models/*.md models_dist/ 2>/dev/null || true
 	@echo "models_dist created with:"
