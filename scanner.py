@@ -296,7 +296,6 @@ def _scan_logic(image_path, session, extract_message=False):
         
         # If image is larger than 256x256, use patch-based scanning
         if img_size[0] > 256 or img_size[1] > 256:
-            print(f"Large image detected ({img_size[0]}x{img_size[1]}), using patch-based scanning...")
             # For now, center crop large images to avoid dependency issues
             # TODO: Implement proper patch-based scanning
             pass
