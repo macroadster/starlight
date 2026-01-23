@@ -12,8 +12,16 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 import time
 import json
+import multiprocessing as mp
 from scripts.starlight_extractor import extraction_functions
 from scripts.starlight_utils import load_unified_input # Import from trainer.py
+
+# Set multiprocessing start method to avoid CUDA issues
+if __name__ == '__main__':
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Already set
 
 
 
@@ -223,7 +231,7 @@ def init_worker(model_path):
     # Determine model type and device
     if model_path.endswith('.pth'):
         MODEL_TYPE = 'pytorch'
-        # Check for MPS availability on Mac
+        # Use spawn start method to avoid CUDA issues - workers can use GPU safely
         if torch.backends.mps.is_available():
             DEVICE = torch.device('mps')
         elif torch.cuda.is_available():
