@@ -88,13 +88,13 @@ def calculate_fp_rate_by_type(clean_results):
         
         # For each detected file in the clean directory, track what type it was misidentified as
         for detected in scan_data.get("detected_files", []):
-            stego_type = detected.get("stego_type", "unknown")
+            stego_type = detected.get('stego_type', 'unknown')
             fp_by_type[stego_type]["count"] += 1
         
         # Add total files to each type's count for averaging
         if fp_count > 0:
             for detected in scan_data.get("detected_files", []):
-                stego_type = detected.get("stego_type", "unknown")
+                stego_type = detected.get('stego_type', 'unknown')
                 fp_by_type[stego_type]["total"] += total_scanned
     
     # Calculate rates
@@ -108,6 +108,56 @@ def calculate_fp_rate_by_type(clean_results):
         }
     
     return fp_rates
+
+
+def calculate_fn_rate_by_type(stego_results):
+    """Calculate false negative rate grouped by actual steganography type."""
+    # Collect false negatives by actual steganography type
+    fn_by_type = defaultdict(lambda: {"detected": 0, "total": 0})
+    
+    for scan_data in stego_results:
+        results = scan_data.get("results", [])
+        detected_files = {r['file_path'] for r in scan_data.get("detected_files", [])}
+        
+        # Count files by actual steganography type (from filename)
+        for result in results:
+            if "error" in result:
+                continue
+                
+            filepath = result['file_path']
+            filename = os.path.basename(filepath)
+            
+            # Extract steganography type from filename
+            actual_stego_type = "unknown"
+            for stego_method in ["alpha", "palette", "lsb.rgb", "exif", "raw", "eoi"]:
+                if stego_method in filename.lower():
+                    actual_stego_type = stego_method
+                    break
+            
+            fn_by_type[actual_stego_type]["total"] += 1
+            
+            # Check if this file was detected (true positive)
+            if filepath not in detected_files:
+                # This is a false negative
+                fn_by_type[actual_stego_type]["detected"] += 1
+    
+    # Calculate rates (false negatives are undetected files)
+    fn_rates = {}
+    for stego_type, data in fn_by_type.items():
+        total_files = data["total"]
+        undetected_files = data["detected"]  # These are false negatives
+        detected_files = total_files - undetected_files
+        fn_rate = (undetected_files * 100.0 / total_files) if total_files > 0 else 0.0
+        
+        fn_rates[stego_type] = {
+            "false_negatives": undetected_files,
+            "true_positives": detected_files,
+            "total_stego_files": total_files,
+            "fn_rate": fn_rate,
+            "detection_rate": 100.0 - fn_rate
+        }
+    
+    return fn_rates
 
 
 def print_summary_table(title, results_list, metric_name):
@@ -154,6 +204,29 @@ def print_fp_rate_by_type_table(fp_rates):
         print(f"│ {stego_type_str} │ {fp_count:15d} │ {total:14d} │ {rate:9.1f} │")
     
     print("└──────────────┴─────────────────┴────────────────┴───────────┘")
+
+
+def print_fn_rate_by_type_table(fn_rates):
+    """Print false negative rate breakdown by steganography type."""
+    if not fn_rates:
+        return
+    
+    print()
+    print("🔍 FALSE NEGATIVE RATE BY STEGANOGRAPHY TYPE:")
+    print("┌──────────────┬──────────────────┬─────────────────┬─────────────┬───────────┐")
+    print("│ Stego Type   │ False Negatives  │ True Positives  │ Total Files │ FN Rate   │")
+    print("├──────────────┼──────────────────┼─────────────────┼─────────────┼───────────┤")
+    
+    for stego_type in sorted(fn_rates.keys()):
+        data = fn_rates[stego_type]
+        fn_count = data["false_negatives"]
+        tp_count = data["true_positives"]
+        total = data["total_stego_files"]
+        fn_rate = data["fn_rate"]
+        stego_type_str = stego_type[:12].ljust(12)
+        print(f"│ {stego_type_str} │ {fn_count:16d} │ {tp_count:15d} │ {total:11d} │ {fn_rate:9.1f} │")
+    
+    print("└──────────────┴──────────────────┴─────────────────┴─────────────┴───────────┘")
 
 
 def main():
@@ -295,6 +368,11 @@ def main():
     fp_rates = calculate_fp_rate_by_type(clean_results)
     if fp_rates:
         print_fp_rate_by_type_table(fp_rates)
+    
+    # Calculate and print false negative rate by steganography type
+    fn_rates = calculate_fn_rate_by_type(stego_results)
+    if fn_rates:
+        print_fn_rate_by_type_table(fn_rates)
     
     # Performance assessment
     print()
