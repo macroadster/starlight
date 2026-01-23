@@ -446,9 +446,13 @@ def extract_eoi(image_path):
     payload = data[eoi_pos + 2:]
     if len(payload) < 4:
         return None, None
-    if (payload.startswith(b'\xff\xd8') or payload.startswith(b'Exif') or
-        payload.startswith(b'ICC_PROFILE') or payload.startswith(b'<?xpacket') or
-        payload.startswith(b'http://ns.adobe.com')):
+    # Relaxed filtering - only exclude obvious non-steganographic data
+    # Allow Exif/ICC profiles that might contain hidden messages
+    if (payload.startswith(b'\xff\xd8') or 
+        payload.startswith(b'<?xpacket') or
+        payload.startswith(b'http://ns.adobe.com') or
+        payload.startswith(b'GIF89a') or
+        payload.startswith(b'\x89PNG')):
         return None, None
     if all(b == 0 for b in payload[:min(20, len(payload))]) or all(b == 0xFF for b in payload[:min(20, len(payload))]):
         return None, None

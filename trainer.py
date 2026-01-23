@@ -261,18 +261,57 @@ def extract_enhanced_metadata_features(image_path):
 
     # --- EXIF Extraction ---
     exif_bytes = b""
-    # Prioritize EXIF data stored in img.info (e.g., by data_generator for PNG/WebP)
+    
+    # Enhanced cross-format EXIF extraction
+    # Method 1: Prioritize EXIF data stored in img.info (for PNG/WebP)
     if "exif" in img.info:
         exif_bytes = img.info["exif"]
-    elif piexif is not None:
+    
+    # Method 2: Try PIL's getexif() for broader format support
+    if not exif_bytes and hasattr(img, 'getexif'):
         try:
-            # Try to load EXIF using piexif from raw bytes
-            exif_dict = piexif.load(raw)
+            pil_exif = img.getexif()
+            if pil_exif:
+                # Convert to bytes using PIL's method if available
+                exif_bytes = pil_exif.tobytes() if hasattr(pil_exif, 'tobytes') else b""
+        except Exception:
+            pass
+    
+    # Method 3: Fallback to piexif for JPEG files and others
+    if not exif_bytes and piexif is not None:
+        try:
+            # Try different loading methods based on format
+            if format_hint in ['jpeg', 'jpg']:
+                exif_dict = piexif.load(raw)
+            elif format_hint in ['png', 'webp']:
+                # For PNG/WebP, try loading from info dict first, then raw
+                exif_dict = piexif.load(img.info.get("exif", raw))
+            else:
+                # Generic attempt
+                exif_dict = piexif.load(raw)
+                
             if exif_dict:
                 # Re-dump to bytes to get a consistent format for feature extraction
                 exif_bytes = piexif.dump(exif_dict)
         except Exception:
             pass # Not all image types have EXIF or piexif might fail
+    
+    # Method 4: Direct raw EXIF search for edge cases
+    if not exif_bytes:
+        try:
+            # Look for EXIF header in raw data
+            exif_start = raw.find(b'Exif\x00\x00')
+            if exif_start != -1:
+                # Find the end of EXIF data (next major marker or EOF)
+                exif_end = exif_start + 6
+                # Look for reasonable EXIF endpoint (TIFF structure end)
+                while exif_end < len(raw) - 4:
+                    if raw[exif_end:exif_end+4] == b'\xFF\xE0' or raw[exif_end:exif_end+4] == b'\xFF\xE1':
+                        break
+                    exif_end += 1
+                exif_bytes = raw[exif_start:exif_end]
+        except Exception:
+            pass
 
     # --- EOI (Tail) Extraction ---
     tail = extract_post_tail(raw, format_hint)
