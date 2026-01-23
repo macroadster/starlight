@@ -241,7 +241,7 @@ def init_worker(model_path):
         
         # Load PyTorch model with optimizations
         model = BalancedStarlightDetector()
-        model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
         model.to(DEVICE)
         model.eval()
         
@@ -270,7 +270,7 @@ def init_worker(model_path):
         
         # Load PyTorch model with optimizations
         model = BalancedStarlightDetector()
-        model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
         model.to(DEVICE)
         model.eval()
         
@@ -602,7 +602,7 @@ class StarlightScanner:
                 DEVICE = torch.device('cpu')
             
             model = BalancedStarlightDetector()
-            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
+            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE, weights_only=True))
             model.to(DEVICE)
             model.eval()
             session = model
@@ -617,7 +617,7 @@ class StarlightScanner:
                 DEVICE = torch.device('cpu')
             
             model = BalancedStarlightDetector()
-            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE))
+            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE, weights_only=True))
             model.to(DEVICE)
             model.eval()
             session = model
