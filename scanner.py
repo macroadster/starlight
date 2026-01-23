@@ -140,8 +140,41 @@ class BalancedStarlightDetector(nn.Module):
             nn.Linear(32, 16)
         )
 
-        # Fusion and classification
-        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16  # Updated for 8 streams
+        # Method-specific attention mechanisms (disabled for compatibility)
+        # These can be enabled in future training sessions
+        self.eoi_attention = nn.Sequential(
+            nn.Linear(2048, 512),  # Metadata stream features
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),  # Attention weight for EOI
+            nn.Sigmoid()
+        )
+        
+        self.exif_attention = nn.Sequential(
+            nn.Linear(2048, 512),  # Metadata stream features
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),  # Attention weight for EXIF
+            nn.Sigmoid()
+        )
+        
+        # Cross-method attention to distinguish similar patterns
+        self.cross_attention = nn.MultiheadAttention(embed_dim=256, num_heads=4, batch_first=True)
+        
+        # Projection layer for cross-attention input alignment
+        self.method_projection = nn.Linear(2049, 256)
+        
+        # Fusion and classification with method-aware processing
+        # Keep original fusion dimension for compatibility with existing weights
+        # Add attention features as optional enhancement
+        original_fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16  # Original: 18528
+        attention_dim = 512
+        
+        self.fusion_dim = original_fusion_dim
+        self.attention_enabled = False  # Disable attention for now to maintain compatibility
+        
         self.fusion = nn.Sequential(
             nn.Linear(self.fusion_dim, 512),
             nn.ReLU(),
@@ -150,6 +183,28 @@ class BalancedStarlightDetector(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(256, 128 + 64)  # 128 for embedding, 64 for classification
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(self.fusion_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128 + 64)  # 128 for embedding, 64 for classification
+        )
+        
+        # Method-specific heads for better EOI/EXIF balance (disabled for compatibility)
+        self.eoi_specific_head = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
+        )
+        
+        self.exif_specific_head = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
         )
 
         # Heads
@@ -162,11 +217,14 @@ class BalancedStarlightDetector(nn.Module):
         pixel_tensor = self.pixel_conv(pixel_tensor)
         pixel_tensor = pixel_tensor.reshape(pixel_tensor.size(0), -1)
 
-        # Metadata stream with weighting
+        # Metadata stream with weighting (original logic for compatibility)
         meta = meta.unsqueeze(1)  # Add channel dimension
         meta = self.meta_conv(meta)
         meta = meta.reshape(meta.size(0), -1)
         meta = meta * self.meta_weight  # Apply weighting to reduce dominance
+        
+        # Skip attention mechanisms for now (maintain compatibility)
+        attention_features = torch.zeros(meta.size(0), 512).to(meta.device)  # Placeholder
 
         # Alpha stream
         alpha = self.alpha_conv(alpha)
@@ -200,15 +258,18 @@ class BalancedStarlightDetector(nn.Module):
         # Content features stream
         content_features = self.content_features_fc(content_features)
 
-        # Fusion of all 8 streams
-        fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features], dim=1)
+        # Fusion of all streams (original logic for compatibility)
+        if self.attention_enabled:
+            fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, attention_features], dim=1)
+        else:
+            fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features], dim=1)
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
         embedding = fused[:, :128]
         cls_features = fused[:, 128:]
 
-        # Outputs
+        # Outputs (original logic for compatibility)
         stego_logits = self.stego_head(cls_features)
         method_logits = self.method_head(cls_features)
         embedding = self.embedding_head(cls_features)
@@ -241,7 +302,9 @@ def init_worker(model_path):
         
         # Load PyTorch model with optimizations
         model = BalancedStarlightDetector()
-        model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
+        # Load with strict=False to handle missing keys for new attention layers
+        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
+        model.load_state_dict(state_dict, strict=False)
         model.to(DEVICE)
         model.eval()
         
@@ -270,7 +333,9 @@ def init_worker(model_path):
         
         # Load PyTorch model with optimizations
         model = BalancedStarlightDetector()
-        model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
+        # Load with strict=False to handle missing keys for new attention layers
+        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=True)
+        model.load_state_dict(state_dict, strict=False)
         model.to(DEVICE)
         model.eval()
         
@@ -508,7 +573,17 @@ def _scan_logic(image_path, session, extract_message=False):
 
         if extracted_message:
             result["extracted_message"] = extracted_message
-            if not is_stego:
+            # Only override clean classification if extracted message is substantial (not false positive)
+            # Check if message is meaningful (length > 3 and not just repeated characters/null bytes)
+            meaningful_message = (
+                len(extracted_message.strip()) > 3 and
+                len(set(extracted_message.strip())) > 2 and  # Require at least 3 unique characters
+                not extracted_message.strip().startswith('\x00') and
+                not extracted_message.strip().isspace() and
+                not extracted_message.strip().endswith('?')  # Filter out LSB artifacts
+            )
+            
+            if not is_stego and meaningful_message:
                 result["is_stego"] = True
                 result["stego_probability"] = max(result["stego_probability"], 0.99)
                 result["stego_type"] = stego_type
@@ -641,7 +716,9 @@ class StarlightScanner:
                 DEVICE = torch.device('cpu')
             
             model = BalancedStarlightDetector()
-            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE, weights_only=True))
+            # Load with strict=False to handle missing keys for new attention layers
+            state_dict = torch.load(self.model_path, map_location=DEVICE, weights_only=True)
+            model.load_state_dict(state_dict, strict=False)
             model.to(DEVICE)
             model.eval()
             session = model
@@ -656,7 +733,9 @@ class StarlightScanner:
                 DEVICE = torch.device('cpu')
             
             model = BalancedStarlightDetector()
-            model.load_state_dict(torch.load(self.model_path, map_location=DEVICE, weights_only=True))
+            # Load with strict=False to handle missing keys for new attention layers
+            state_dict = torch.load(self.model_path, map_location=DEVICE, weights_only=True)
+            model.load_state_dict(state_dict, strict=False)
             model.to(DEVICE)
             model.eval()
             session = model

@@ -349,7 +349,7 @@ def extract_enhanced_metadata_features(image_path):
         hist = np.histogram(bytearray(tail[:1000]), bins=256)[0]
         # Normalize histogram to get probabilities for entropy calculation
         hist_probs = hist / np.sum(hist) if np.sum(hist) > 0 else hist
-        tail_entropy = -np.sum(hist_probs * np.log2(hist_probs + 1e-10))
+        tail_entropy = -np.sum(hist_probs.astype(float) * np.log2(hist_probs.astype(float) + 1e-10))
         enhanced_features[110] = tail_entropy
         enhanced_features[111] = len(tail)
 
@@ -369,7 +369,7 @@ def extract_enhanced_metadata_features(image_path):
         if len(exif_bytes) > 6:
             exif_data = exif_bytes[6:]
             hist = np.histogram(bytearray(exif_data), bins=256)[0]
-            exif_entropy = -np.sum(hist * np.log2(hist + 1e-10))
+            exif_entropy = -np.sum(hist.astype(float) * np.log2(hist.astype(float) + 1e-10))
             exif_content_features[6] = exif_entropy
 
         # EXIF length ratio (relative to total file)
@@ -401,21 +401,115 @@ def extract_enhanced_metadata_features(image_path):
         location_features[1] = rel_tail_pos * 255 # Using index 1 now
         location_features[2] = 1 if rel_tail_pos > 0.75 else 0 # Using index 2 now
 
-    # JPEG structure analysis (only for JPEG images)
+    # Enhanced EOI features
     if format_hint == 'jpeg':
         soi_pos = raw.find(b'\xFF\xD8')
         eoi_pos = raw.rfind(b'\xFF\xD9')
-        if soi_pos != -1 and eoi_pos != -1:
-            # Distance between SOI and EOI
-            image_size = eoi_pos - soi_pos + 2
-            rel_image_size = image_size / len(raw)
-            location_features[3] = rel_image_size * 255 # Using index 3 now
-
-            # Data after EOI (tail) ratio
-            tail_ratio = len(tail) / len(raw)
-            location_features[4] = tail_ratio * 255 # Using index 4 now
-
+        
+        # JPEG structure integrity checks (SOI/EOI validation)
+        if soi_pos != -1 and eoi_pos != -1 and soi_pos < eoi_pos:
+            # Valid JPEG structure
+            location_features[3] = 1.0  # Valid SOI/EOI markers
+            location_features[4] = (eoi_pos - soi_pos + 2) / len(raw) * 255  # Image data ratio
+        else:
+            # Invalid or missing markers
+            location_features[3] = 0.0
+            location_features[4] = 0.0
+        
+        # EOI marker sequence validation
+        if eoi_pos != -1:
+            # Check for proper EOI marker \xFF\xD9
+            if raw[eoi_pos:eoi_pos+2] == b'\xFF\xD9':
+                location_features[5] = 1.0  # Valid EOI marker
+            
+            # Check for multiple EOI markers (potential anomaly)
+            eoi_count = raw.count(b'\xFF\xD9')
+            location_features[6] = min(eoi_count - 1, 10)  # Extra EOI markers (capped at 10)
+            
+            # Distance from expected end to actual end
+            expected_end = eoi_pos + 2
+            actual_end = len(raw)
+            if actual_end > expected_end:
+                tail_distance = actual_end - expected_end
+                location_features[7] = min(tail_distance / 1000, 255)  # Tail distance in KB (normalized)
+            else:
+                location_features[7] = 0.0
+        
+        # Payload length distribution analysis
+        if len(tail) > 0:
+            # Tail length categories (1-10 bytes, 11-50 bytes, 51-200 bytes, 200+ bytes)
+            if len(tail) <= 10:
+                location_features[8] = 1.0  # Very short
+            elif len(tail) <= 50:
+                location_features[9] = 1.0  # Short
+            elif len(tail) <= 200:
+                location_features[10] = 1.0  # Medium
+            else:
+                location_features[11] = 1.0  # Long
+            
+            # Tail length normalized
+            location_features[12] = min(len(tail) / 500, 255)  # Tail length up to 500 bytes (normalized)
+            
+            # Tail density (non-null bytes ratio)
+            if len(tail) > 0:
+                non_null_ratio = sum(1 for b in tail if b != 0) / len(tail)
+                location_features[13] = non_null_ratio * 255
+        else:
+            # No tail data
+            location_features[8:14] = 0.0
+    
+    # EOI-specific entropy patterns
+    eoi_entropy_features = np.zeros(10, dtype=np.float32)
+    if len(tail) > 0:
+        # Tail entropy analysis
+        hist = np.histogram(bytearray(tail), bins=256)[0]
+        hist_probs = hist / np.sum(hist) if np.sum(hist) > 0 else hist
+        tail_entropy = -np.sum(hist_probs.astype(float) * np.log2(hist_probs.astype(float) + 1e-10))
+        eoi_entropy_features[0] = tail_entropy
+        
+        # Byte diversity (unique bytes / total bytes)
+        unique_bytes = len(set(tail))
+        byte_diversity = unique_bytes / len(tail) if len(tail) > 0 else 0
+        eoi_entropy_features[1] = byte_diversity * 255
+        
+        # Repetition pattern detection
+        if len(tail) >= 4:
+            # Check for repeated patterns (common in LSB artifacts)
+            repetitions = 0
+            for i in range(len(tail) - 3):
+                if tail[i] == tail[i+1] == tail[i+2] == tail[i+3]:
+                    repetitions += 1
+            repetition_ratio = repetitions / (len(tail) - 3) if len(tail) > 3 else 0
+            eoi_entropy_features[2] = repetition_ratio * 255
+        
+        # ASCII character ratio (potential text payloads)
+        ascii_chars = sum(1 for b in tail if 32 <= b <= 126)
+        ascii_ratio = ascii_chars / len(tail) if len(tail) > 0 else 0
+        eoi_entropy_features[3] = ascii_ratio * 255
+        
+        # Control characters ratio
+        control_chars = sum(1 for b in tail if b < 32 or b == 127)
+        control_ratio = control_chars / len(tail) if len(tail) > 0 else 0
+        eoi_entropy_features[4] = control_ratio * 255
+        
+        # High-value bytes ratio (> 200)
+        high_bytes = sum(1 for b in tail if b > 200)
+        high_ratio = high_bytes / len(tail) if len(tail) > 0 else 0
+        eoi_entropy_features[5] = high_ratio * 255
+        
+        # Byte value distribution (check for uniform vs clustered)
+        if len(tail) > 10:
+            byte_ranges = [
+                sum(1 for b in tail if 0 <= b <= 63),
+                sum(1 for b in tail if 64 <= b <= 127),
+                sum(1 for b in tail if 128 <= b <= 191),
+                sum(1 for b in tail if 192 <= b <= 255)
+            ]
+            range_entropy = -np.sum([(r/len(tail)) * np.log2(r/len(tail) + 1e-10) for r in byte_ranges if r > 0])
+            eoi_entropy_features[6] = range_entropy
+    
     enhanced_features[400:450] = location_features
+    enhanced_features[450:460] = eoi_entropy_features
 
     # Combine basic and enhanced features
     basic_bytes = np.frombuffer(exif_bytes + tail, dtype=np.uint8)[:1024]
