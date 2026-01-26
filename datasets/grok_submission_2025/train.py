@@ -22,7 +22,11 @@ CFG = {
     "batch_size": 4,  # Smaller batch for better convergence
     "epochs": 30,  # Test training
     "lr": 5e-4,  # Higher learning rate
-    "device": "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"),
+    "device": (
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    ),
     "seed": 42,
     "save_dir": "checkpoints",
     "img_size": 256,
@@ -298,14 +302,16 @@ def validate(enc, dec, loader):
 # ------------------- MAIN -------------------
 def main():
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Train Grok steganography model')
-    parser.add_argument('--epochs', type=int, default=CFG["epochs"], help='Number of training epochs')
+
+    parser = argparse.ArgumentParser(description="Train Grok steganography model")
+    parser.add_argument(
+        "--epochs", type=int, default=CFG["epochs"], help="Number of training epochs"
+    )
     args = parser.parse_args()
-    
+
     # Update epochs from command line
     epochs = args.epochs
-    
+
     train_loader, val_loader = get_loaders()
     enc = Encoder(CFG["msg_len"]).to(CFG["device"])
     dec = Decoder(CFG["msg_len"]).to(CFG["device"])

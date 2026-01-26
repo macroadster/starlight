@@ -19,13 +19,21 @@ import piexif
 from scripts.starlight_utils import extract_post_tail
 from scripts.starlight_utils import load_unified_input
 
+
 class BalancedStegoDataset(Dataset):
     """
     Dataset that uses stego JSON files to find matching clean images.
     Creates perfect 1:1 clean:stego ratio by sampling stego images to match clean count.
     """
 
-    def __init__(self, clean_dir_pattern, stego_dir_pattern, negative_dir_pattern, transform=None, balance_strategy='sample_stego'):
+    def __init__(
+        self,
+        clean_dir_pattern,
+        stego_dir_pattern,
+        negative_dir_pattern,
+        transform=None,
+        balance_strategy="sample_stego",
+    ):
         self.transform = transform
         self.samples = []
         self.clean_files_used = set()
@@ -33,12 +41,16 @@ class BalancedStegoDataset(Dataset):
         self.method_labels_list = []
         self.method_map = {"alpha": 0, "palette": 1, "lsb.rgb": 2, "exif": 3, "raw": 4}
 
-        print(f"[BALANCED DATASET] Loading from clean pattern: {clean_dir_pattern}, stego pattern: {stego_dir_pattern}, negative pattern: {negative_dir_pattern}...")
+        print(
+            f"[BALANCED DATASET] Loading from clean pattern: {clean_dir_pattern}, stego pattern: {stego_dir_pattern}, negative pattern: {negative_dir_pattern}..."
+        )
         print(f"[BALANCED DATASET] Balance strategy: {balance_strategy}")
 
         stego_dirs = sorted(glob.glob(stego_dir_pattern))
         if not stego_dirs:
-            print(f"Warning: No stego directories found for pattern: {stego_dir_pattern}")
+            print(
+                f"Warning: No stego directories found for pattern: {stego_dir_pattern}"
+            )
 
         all_stego_samples = []
         clean_samples = []
@@ -50,71 +62,86 @@ class BalancedStegoDataset(Dataset):
                 neg_dir = Path(neg_dir_str)
                 print(f"  - Processing negative dir: {neg_dir_str}")
                 for img_file in neg_dir.glob("*.png"):
-                    clean_samples.append({
-                        'path': img_file,
-                        'stego_label': 0,
-                        'method_label': -1,
-                        'bit_order': 'none',
-                        'type': 'clean'
-                    })
+                    clean_samples.append(
+                        {
+                            "path": img_file,
+                            "stego_label": 0,
+                            "method_label": -1,
+                            "bit_order": "none",
+                            "type": "clean",
+                        }
+                    )
 
         for stego_dir_str in stego_dirs:
             stego_dir = Path(stego_dir_str)
             # Derive clean directory from stego directory path
-            clean_dir_str = stego_dir_str.replace('/stego', '/clean').replace('\\stego', '\\clean')
+            clean_dir_str = stego_dir_str.replace("/stego", "/clean").replace(
+                "\\stego", "\\clean"
+            )
             clean_dir = Path(clean_dir_str)
 
             if not clean_dir.exists():
-                print(f"Warning: Corresponding clean directory not found for {stego_dir_str}, expected at {clean_dir_str}")
+                print(
+                    f"Warning: Corresponding clean directory not found for {stego_dir_str}, expected at {clean_dir_str}"
+                )
                 continue
-            
+
             print(f"  - Processing stego dir: {stego_dir_str}")
             print(f"  - Using clean dir: {clean_dir_str}")
 
             for json_file in stego_dir.glob("*.json"):
                 try:
-                    with open(json_file, 'r') as f:
+                    with open(json_file, "r") as f:
                         metadata = json.load(f)
 
-                    technique = metadata.get('embedding', {}).get('technique')
+                    technique = metadata.get("embedding", {}).get("technique")
                     if technique not in self.method_map:
                         continue
 
-                    clean_filename = metadata.get('clean_file')
+                    clean_filename = metadata.get("clean_file")
                     if not clean_filename:
                         continue
 
                     clean_path = clean_dir / clean_filename
-                    stego_path = json_file.with_suffix('')
+                    stego_path = json_file.with_suffix("")
 
                     if not clean_path.exists() or not stego_path.exists():
                         continue
 
                     method_id = self.method_map[technique]
-                    bit_order = metadata.get('embedding', {}).get('bit_order', 'msb-first')
-                    all_stego_samples.append({
-                        'path': stego_path,
-                        'stego_label': 1,
-                        'method_label': method_id,
-                        'bit_order': bit_order,
-                        'type': 'stego'
-                    })
+                    bit_order = metadata.get("embedding", {}).get(
+                        "bit_order", "msb-first"
+                    )
+                    all_stego_samples.append(
+                        {
+                            "path": stego_path,
+                            "stego_label": 1,
+                            "method_label": method_id,
+                            "bit_order": bit_order,
+                            "type": "stego",
+                        }
+                    )
 
                     if clean_filename not in self.clean_files_used:
-                        clean_samples.append({
-                            'path': clean_path,
-                            'stego_label': 0,
-                            'method_label': -1,
-                            'bit_order': 'none',
-                            'type': 'clean'
-                        })
+                        clean_samples.append(
+                            {
+                                "path": clean_path,
+                                "stego_label": 0,
+                                "method_label": -1,
+                                "bit_order": "none",
+                                "type": "clean",
+                            }
+                        )
                         self.clean_files_used.add(clean_filename)
 
                 except (json.JSONDecodeError, KeyError):
                     continue
-        
+
         # Balance the dataset
-        if balance_strategy == 'sample_stego' or balance_strategy == 'undersample_stego':
+        if (
+            balance_strategy == "sample_stego"
+            or balance_strategy == "undersample_stego"
+        ):
             # Sample stego images to match clean count (undersample stego)
             clean_count = len(clean_samples)
             if len(all_stego_samples) > clean_count:
@@ -125,10 +152,10 @@ class BalancedStegoDataset(Dataset):
             else:
                 # Use all stego and sample clean to match
                 random.shuffle(clean_samples)
-                sampled_clean = clean_samples[:len(all_stego_samples)]
+                sampled_clean = clean_samples[: len(all_stego_samples)]
                 self.samples = sampled_clean + all_stego_samples
 
-        elif balance_strategy == 'oversample_clean':
+        elif balance_strategy == "oversample_clean":
             # Oversample clean images to match stego count
             stego_count = len(all_stego_samples)
             if len(clean_samples) > 0:
@@ -137,10 +164,10 @@ class BalancedStegoDataset(Dataset):
                 # Trim to exact match
                 oversampled_clean = oversampled_clean[:stego_count]
                 self.samples = oversampled_clean + all_stego_samples
-            else: # Handle case with no clean samples
+            else:  # Handle case with no clean samples
                 self.samples = all_stego_samples
-        
-        elif balance_strategy == 'use_all_stego':
+
+        elif balance_strategy == "use_all_stego":
             # Use all stego images and oversample clean to match
             stego_count = len(all_stego_samples)
             if len(clean_samples) > 0:
@@ -149,29 +176,33 @@ class BalancedStegoDataset(Dataset):
                 # Trim to exact match
                 oversampled_clean = oversampled_clean[:stego_count]
                 self.samples = oversampled_clean + all_stego_samples
-            else: # Handle case with no clean samples
+            else:  # Handle case with no clean samples
                 self.samples = all_stego_samples
-        
-        elif balance_strategy == 'balanced_classes':
+
+        elif balance_strategy == "balanced_classes":
             # Ensure each stego class has equal representation
             # Group stego samples by method
             stego_by_method = {}
             for sample in all_stego_samples:
-                method = sample['method_label']
+                method = sample["method_label"]
                 if method not in stego_by_method:
                     stego_by_method[method] = []
                 stego_by_method[method].append(sample)
-            
+
             # Find the smallest class size (excluding clean)
-            min_class_size = min(len(samples) for samples in stego_by_method.values()) if stego_by_method else 0
-            
+            min_class_size = (
+                min(len(samples) for samples in stego_by_method.values())
+                if stego_by_method
+                else 0
+            )
+
             # Sample equally from each stego class
             balanced_stego = []
             for method, samples in stego_by_method.items():
                 if len(samples) >= min_class_size:
                     random.shuffle(samples)
                     balanced_stego.extend(samples[:min_class_size])
-            
+
             # Sample clean to match total stego
             total_stego = len(balanced_stego)
             if len(clean_samples) >= total_stego:
@@ -182,131 +213,175 @@ class BalancedStegoDataset(Dataset):
                 clean_multiplier = total_stego // len(clean_samples) + 1
                 balanced_clean = clean_samples * clean_multiplier
                 balanced_clean = balanced_clean[:total_stego]
-            
-            self.samples = balanced_clean + balanced_stego
 
+            self.samples = balanced_clean + balanced_stego
 
         # Collect method labels for class weights
         for sample in self.samples:
-            if sample['type'] == 'stego':
-                self.method_labels_list.append(sample['method_label'])
+            if sample["type"] == "stego":
+                self.method_labels_list.append(sample["method_label"])
 
         print(f"[BALANCED DATASET] Loaded {len(self.samples)} total samples")
-        print(f"[BALANCED DATASET] Available: {len(clean_samples)} clean, {len(all_stego_samples)} stego")
+        print(
+            f"[BALANCED DATASET] Available: {len(clean_samples)} clean, {len(all_stego_samples)} stego"
+        )
 
         # Print class distribution
         class_counts = {}
-        type_counts = {'clean': 0, 'stego': 0}
+        type_counts = {"clean": 0, "stego": 0}
         for sample in self.samples:
-            if sample['type'] == 'stego':
-                technique = list(self.method_map.keys())[list(self.method_map.values()).index(sample['method_label'])]
+            if sample["type"] == "stego":
+                technique = list(self.method_map.keys())[
+                    list(self.method_map.values()).index(sample["method_label"])
+                ]
                 class_counts[technique] = class_counts.get(technique, 0) + 1
-            type_counts[sample['type']] += 1
+            type_counts[sample["type"]] += 1
 
         print(f"[BALANCED DATASET] Final class distribution: {class_counts}")
         print(f"[BALANCED DATASET] Final type distribution: {type_counts}")
 
         # Verify balance
-        clean_count = type_counts['clean']
-        stego_count = type_counts['stego']
+        clean_count = type_counts["clean"]
+        stego_count = type_counts["stego"]
         if clean_count == stego_count:
-            print(f"[BALANCED DATASET] ✅ Perfect balance: {clean_count} clean, {stego_count} stego")
+            print(
+                f"[BALANCED DATASET] ✅ Perfect balance: {clean_count} clean, {stego_count} stego"
+            )
         else:
-            print(f"[BALANCED DATASET] ⚠️  Imbalance: {clean_count} clean, {stego_count} stego")
+            print(
+                f"[BALANCED DATASET] ⚠️  Imbalance: {clean_count} clean, {stego_count} stego"
+            )
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
-        img_path = sample['path']
+        img_path = sample["path"]
 
         try:
-            pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(str(img_path))
+            (
+                pixel_tensor,
+                meta,
+                alpha,
+                lsb,
+                palette,
+                palette_lsb,
+                format_features,
+                content_features,
+            ) = load_unified_input(str(img_path))
             # Add bit_order as one-hot encoding: [lsb-first, msb-first, none]
-            bit_order = sample.get('bit_order', 'msb-first')
-            if bit_order == 'lsb-first':
+            bit_order = sample.get("bit_order", "msb-first")
+            if bit_order == "lsb-first":
                 bit_order_feat = torch.tensor([1.0, 0.0, 0.0])
-            elif bit_order == 'msb-first':
+            elif bit_order == "msb-first":
                 bit_order_feat = torch.tensor([0.0, 1.0, 0.0])
             else:  # clean images
                 bit_order_feat = torch.tensor([0.0, 0.0, 1.0])
-            
+
             # Permute lsb from HWC to CHW before returning
-            lsb = lsb.permute(2, 0, 1) # HWC -> CHW
-            
-            return pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order_feat, sample['stego_label'], sample['method_label']
+            lsb = lsb.permute(2, 0, 1)  # HWC -> CHW
+
+            return (
+                pixel_tensor,
+                meta,
+                alpha,
+                lsb,
+                palette,
+                palette_lsb,
+                format_features,
+                content_features,
+                bit_order_feat,
+                sample["stego_label"],
+                sample["method_label"],
+            )
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
             # Return dummy data
             dummy_pixel = torch.zeros(3, 256, 256)
             dummy_meta = torch.zeros(2048)
             dummy_alpha = torch.zeros(1, 256, 256)
-            dummy_lsb = torch.zeros(3, 256, 256) # CHW
+            dummy_lsb = torch.zeros(3, 256, 256)  # CHW
             dummy_palette = torch.zeros(768)
             dummy_palette_lsb = torch.zeros(1, 256, 256)
             dummy_format = torch.zeros(6)
             dummy_content = torch.zeros(6)
             dummy_bit_order = torch.tensor([0.0, 0.0, 1.0])  # clean default
-            return dummy_pixel, dummy_meta, dummy_alpha, dummy_lsb, dummy_palette, dummy_palette_lsb, dummy_format, dummy_content, dummy_bit_order, 0, -1
+            return (
+                dummy_pixel,
+                dummy_meta,
+                dummy_alpha,
+                dummy_lsb,
+                dummy_palette,
+                dummy_palette_lsb,
+                dummy_format,
+                dummy_content,
+                dummy_bit_order,
+                0,
+                -1,
+            )
+
 
 def extract_enhanced_metadata_features(image_path):
     """Extract enhanced metadata features for better EXIF detection across various formats."""
 
-    with open(image_path, 'rb') as f:
+    with open(image_path, "rb") as f:
         raw = f.read()
 
     img = Image.open(image_path)
-    format_hint = img.format.lower() if img.format else 'unknown'
+    format_hint = img.format.lower() if img.format else "unknown"
 
     # --- EXIF Extraction ---
     exif_bytes = b""
-    
+
     # Enhanced cross-format EXIF extraction
     # Method 1: Prioritize EXIF data stored in img.info (for PNG/WebP)
     if "exif" in img.info:
         exif_bytes = img.info["exif"]
-    
+
     # Method 2: Try PIL's getexif() for broader format support
-    if not exif_bytes and hasattr(img, 'getexif'):
+    if not exif_bytes and hasattr(img, "getexif"):
         try:
             pil_exif = img.getexif()
             if pil_exif:
                 # Convert to bytes using PIL's method if available
-                exif_bytes = pil_exif.tobytes() if hasattr(pil_exif, 'tobytes') else b""
+                exif_bytes = pil_exif.tobytes() if hasattr(pil_exif, "tobytes") else b""
         except Exception:
             pass
-    
+
     # Method 3: Fallback to piexif for JPEG files and others
     if not exif_bytes and piexif is not None:
         try:
             # Try different loading methods based on format
-            if format_hint in ['jpeg', 'jpg']:
+            if format_hint in ["jpeg", "jpg"]:
                 exif_dict = piexif.load(raw)
-            elif format_hint in ['png', 'webp']:
+            elif format_hint in ["png", "webp"]:
                 # For PNG/WebP, try loading from info dict first, then raw
                 exif_dict = piexif.load(img.info.get("exif", raw))
             else:
                 # Generic attempt
                 exif_dict = piexif.load(raw)
-                
+
             if exif_dict:
                 # Re-dump to bytes to get a consistent format for feature extraction
                 exif_bytes = piexif.dump(exif_dict)
         except Exception:
-            pass # Not all image types have EXIF or piexif might fail
-    
+            pass  # Not all image types have EXIF or piexif might fail
+
     # Method 4: Direct raw EXIF search for edge cases
     if not exif_bytes:
         try:
             # Look for EXIF header in raw data
-            exif_start = raw.find(b'Exif\x00\x00')
+            exif_start = raw.find(b"Exif\x00\x00")
             if exif_start != -1:
                 # Find the end of EXIF data (next major marker or EOF)
                 exif_end = exif_start + 6
                 # Look for reasonable EXIF endpoint (TIFF structure end)
                 while exif_end < len(raw) - 4:
-                    if raw[exif_end:exif_end+4] == b'\xFF\xE0' or raw[exif_end:exif_end+4] == b'\xFF\xE1':
+                    if (
+                        raw[exif_end : exif_end + 4] == b"\xff\xe0"
+                        or raw[exif_end : exif_end + 4] == b"\xff\xe1"
+                    ):
                         break
                     exif_end += 1
                 exif_bytes = raw[exif_start:exif_end]
@@ -321,14 +396,14 @@ def extract_enhanced_metadata_features(image_path):
 
     # EXIF size feature
     if exif_bytes:
-        enhanced_features[0] = len(exif_bytes) / 65535.0 # Normalize by max EXIF size
+        enhanced_features[0] = len(exif_bytes) / 65535.0  # Normalize by max EXIF size
 
     # JPEG marker analysis (next 100 bytes) - only for JPEG images
-    if format_hint == 'jpeg':
+    if format_hint == "jpeg":
         jpeg_markers = []
         for i in range(0, min(len(raw) - 1, 10000), 2):  # Check first 10KB
             if raw[i] == 0xFF and i + 1 < len(raw):
-                marker = raw[i+1]
+                marker = raw[i + 1]
                 if marker != 0x00:
                     jpeg_markers.append(marker)
 
@@ -346,13 +421,15 @@ def extract_enhanced_metadata_features(image_path):
         hist = np.histogram(bytearray(tail[:1000]), bins=256)[0]
         # Normalize histogram to get probabilities for entropy calculation
         hist_probs = hist / np.sum(hist) if np.sum(hist) > 0 else hist
-        tail_entropy = -np.sum(hist_probs.astype(float) * np.log2(hist_probs.astype(float) + 1e-10))
+        tail_entropy = -np.sum(
+            hist_probs.astype(float) * np.log2(hist_probs.astype(float) + 1e-10)
+        )
         enhanced_features[110] = tail_entropy
         enhanced_features[111] = len(tail)
 
         # Store first 88 bytes of tail data
         tail_bytes = np.frombuffer(tail[:88], dtype=np.uint8).astype(np.float32)
-        enhanced_features[112:112+len(tail_bytes)] = tail_bytes
+        enhanced_features[112 : 112 + len(tail_bytes)] = tail_bytes
 
     # EXIF content analysis (next 200 bytes)
     exif_content_features = np.zeros(200, dtype=np.float32)
@@ -360,13 +437,17 @@ def extract_enhanced_metadata_features(image_path):
         # EXIF header check (first 6 bytes should be "Exif\x00\x00")
         if len(exif_bytes) >= 6:
             exif_header = exif_bytes[:6]
-            exif_content_features[0:6] = np.frombuffer(exif_header, dtype=np.uint8).astype(np.float32)
+            exif_content_features[0:6] = np.frombuffer(
+                exif_header, dtype=np.uint8
+            ).astype(np.float32)
 
         # EXIF data entropy
         if len(exif_bytes) > 6:
             exif_data = exif_bytes[6:]
             hist = np.histogram(bytearray(exif_data), bins=256)[0]
-            exif_entropy = -np.sum(hist.astype(float) * np.log2(hist.astype(float) + 1e-10))
+            exif_entropy = -np.sum(
+                hist.astype(float) * np.log2(hist.astype(float) + 1e-10)
+            )
             exif_content_features[6] = exif_entropy
 
         # EXIF length ratio (relative to total file)
@@ -377,11 +458,10 @@ def extract_enhanced_metadata_features(image_path):
         if len(exif_bytes) >= 12:
             tiff_header = exif_bytes[6:12]
             # "II" (little-endian) or "MM" (big-endian)
-            if tiff_header[:2] in [b'II', b'MM']:
+            if tiff_header[:2] in [b"II", b"MM"]:
                 exif_content_features[12] = 1  # Valid TIFF header
             else:
                 exif_content_features[12] = 0  # Invalid
-
 
     enhanced_features[200:400] = exif_content_features
 
@@ -395,43 +475,49 @@ def extract_enhanced_metadata_features(image_path):
     if len(tail) > 0:
         tail_start_pos = len(raw) - len(tail)
         rel_tail_pos = tail_start_pos / len(raw)
-        location_features[1] = rel_tail_pos * 255 # Using index 1 now
-        location_features[2] = 1 if rel_tail_pos > 0.75 else 0 # Using index 2 now
+        location_features[1] = rel_tail_pos * 255  # Using index 1 now
+        location_features[2] = 1 if rel_tail_pos > 0.75 else 0  # Using index 2 now
 
     # Enhanced EOI features
-    if format_hint == 'jpeg':
-        soi_pos = raw.find(b'\xFF\xD8')
-        eoi_pos = raw.rfind(b'\xFF\xD9')
-        
+    if format_hint == "jpeg":
+        soi_pos = raw.find(b"\xff\xd8")
+        eoi_pos = raw.rfind(b"\xff\xd9")
+
         # JPEG structure integrity checks (SOI/EOI validation)
         if soi_pos != -1 and eoi_pos != -1 and soi_pos < eoi_pos:
             # Valid JPEG structure
             location_features[3] = 1.0  # Valid SOI/EOI markers
-            location_features[4] = (eoi_pos - soi_pos + 2) / len(raw) * 255  # Image data ratio
+            location_features[4] = (
+                (eoi_pos - soi_pos + 2) / len(raw) * 255
+            )  # Image data ratio
         else:
             # Invalid or missing markers
             location_features[3] = 0.0
             location_features[4] = 0.0
-        
+
         # EOI marker sequence validation
         if eoi_pos != -1:
             # Check for proper EOI marker \xFF\xD9
-            if raw[eoi_pos:eoi_pos+2] == b'\xFF\xD9':
+            if raw[eoi_pos : eoi_pos + 2] == b"\xff\xd9":
                 location_features[5] = 1.0  # Valid EOI marker
-            
+
             # Check for multiple EOI markers (potential anomaly)
-            eoi_count = raw.count(b'\xFF\xD9')
-            location_features[6] = min(eoi_count - 1, 10)  # Extra EOI markers (capped at 10)
-            
+            eoi_count = raw.count(b"\xff\xd9")
+            location_features[6] = min(
+                eoi_count - 1, 10
+            )  # Extra EOI markers (capped at 10)
+
             # Distance from expected end to actual end
             expected_end = eoi_pos + 2
             actual_end = len(raw)
             if actual_end > expected_end:
                 tail_distance = actual_end - expected_end
-                location_features[7] = min(tail_distance / 1000, 255)  # Tail distance in KB (normalized)
+                location_features[7] = min(
+                    tail_distance / 1000, 255
+                )  # Tail distance in KB (normalized)
             else:
                 location_features[7] = 0.0
-        
+
         # Payload length distribution analysis
         if len(tail) > 0:
             # Tail length categories (1-10 bytes, 11-50 bytes, 51-200 bytes, 200+ bytes)
@@ -443,10 +529,12 @@ def extract_enhanced_metadata_features(image_path):
                 location_features[10] = 1.0  # Medium
             else:
                 location_features[11] = 1.0  # Long
-            
+
             # Tail length normalized
-            location_features[12] = min(len(tail) / 500, 255)  # Tail length up to 500 bytes (normalized)
-            
+            location_features[12] = min(
+                len(tail) / 500, 255
+            )  # Tail length up to 500 bytes (normalized)
+
             # Tail density (non-null bytes ratio)
             if len(tail) > 0:
                 non_null_ratio = sum(1 for b in tail if b != 0) / len(tail)
@@ -454,69 +542,78 @@ def extract_enhanced_metadata_features(image_path):
         else:
             # No tail data
             location_features[8:14] = 0.0
-    
+
     # EOI-specific entropy patterns
     eoi_entropy_features = np.zeros(10, dtype=np.float32)
     if len(tail) > 0:
         # Tail entropy analysis
         hist = np.histogram(bytearray(tail), bins=256)[0]
         hist_probs = hist / np.sum(hist) if np.sum(hist) > 0 else hist
-        tail_entropy = -np.sum(hist_probs.astype(float) * np.log2(hist_probs.astype(float) + 1e-10))
+        tail_entropy = -np.sum(
+            hist_probs.astype(float) * np.log2(hist_probs.astype(float) + 1e-10)
+        )
         eoi_entropy_features[0] = tail_entropy
-        
+
         # Byte diversity (unique bytes / total bytes)
         unique_bytes = len(set(tail))
         byte_diversity = unique_bytes / len(tail) if len(tail) > 0 else 0
         eoi_entropy_features[1] = byte_diversity * 255
-        
+
         # Repetition pattern detection
         if len(tail) >= 4:
             # Check for repeated patterns (common in LSB artifacts)
             repetitions = 0
             for i in range(len(tail) - 3):
-                if tail[i] == tail[i+1] == tail[i+2] == tail[i+3]:
+                if tail[i] == tail[i + 1] == tail[i + 2] == tail[i + 3]:
                     repetitions += 1
             repetition_ratio = repetitions / (len(tail) - 3) if len(tail) > 3 else 0
             eoi_entropy_features[2] = repetition_ratio * 255
-        
+
         # ASCII character ratio (potential text payloads)
         ascii_chars = sum(1 for b in tail if 32 <= b <= 126)
         ascii_ratio = ascii_chars / len(tail) if len(tail) > 0 else 0
         eoi_entropy_features[3] = ascii_ratio * 255
-        
+
         # Control characters ratio
         control_chars = sum(1 for b in tail if b < 32 or b == 127)
         control_ratio = control_chars / len(tail) if len(tail) > 0 else 0
         eoi_entropy_features[4] = control_ratio * 255
-        
+
         # High-value bytes ratio (> 200)
         high_bytes = sum(1 for b in tail if b > 200)
         high_ratio = high_bytes / len(tail) if len(tail) > 0 else 0
         eoi_entropy_features[5] = high_ratio * 255
-        
+
         # Byte value distribution (check for uniform vs clustered)
         if len(tail) > 10:
             byte_ranges = [
                 sum(1 for b in tail if 0 <= b <= 63),
                 sum(1 for b in tail if 64 <= b <= 127),
                 sum(1 for b in tail if 128 <= b <= 191),
-                sum(1 for b in tail if 192 <= b <= 255)
+                sum(1 for b in tail if 192 <= b <= 255),
             ]
-            range_entropy = -np.sum([(r/len(tail)) * np.log2(r/len(tail) + 1e-10) for r in byte_ranges if r > 0])
+            range_entropy = -np.sum(
+                [
+                    (r / len(tail)) * np.log2(r / len(tail) + 1e-10)
+                    for r in byte_ranges
+                    if r > 0
+                ]
+            )
             eoi_entropy_features[6] = range_entropy
-    
+
     enhanced_features[400:450] = location_features
     enhanced_features[450:460] = eoi_entropy_features
 
     # Combine basic and enhanced features
     basic_bytes = np.frombuffer(exif_bytes + tail, dtype=np.uint8)[:1024]
-    basic_bytes = np.pad(basic_bytes, (0, 1024 - len(basic_bytes)), 'constant')
+    basic_bytes = np.pad(basic_bytes, (0, 1024 - len(basic_bytes)), "constant")
 
     # Clip enhanced features to 0-255 and normalize
     enhanced_features = np.clip(enhanced_features, 0, 255) / 255.0
 
     # Return both basic and enhanced features
     return basic_bytes.astype(np.float32) / 255.0, enhanced_features
+
 
 def load_enhanced_multi_input(path, transform=None):
     """Enhanced version of load_multi_input with better metadata features"""
@@ -529,16 +626,18 @@ def load_enhanced_multi_input(path, transform=None):
     meta = torch.cat([torch.from_numpy(basic_meta), torch.from_numpy(enhanced_meta)])
 
     # Alpha path - handle BEFORE any transformations to preserve steganography
-    if img.mode == 'RGBA':
+    if img.mode == "RGBA":
         alpha_pil = img.split()[-1]  # Extract alpha channel directly
         # For alpha steganography preservation, use Resize instead of CenterCrop when needed
         if transform:
             # Check if transform contains CenterCrop and image is not square
-            if hasattr(transform, 'transforms'):
-                has_center_crop = any(isinstance(t, transforms.CenterCrop) for t in transform.transforms)
+            if hasattr(transform, "transforms"):
+                has_center_crop = any(
+                    isinstance(t, transforms.CenterCrop) for t in transform.transforms
+                )
             else:
                 has_center_crop = isinstance(transform, transforms.CenterCrop)
-            
+
             if has_center_crop and (img.width != img.height):
                 # Use Resize to preserve alpha steganography for non-square images
                 alpha_aug = transforms.Resize((256, 256))(alpha_pil)
@@ -552,21 +651,26 @@ def load_enhanced_multi_input(path, transform=None):
             else:
                 crop = transforms.CenterCrop((256, 256))
                 alpha_aug = crop(alpha_pil)
-        
-        alpha = torch.from_numpy(np.array(alpha_aug).astype(np.float32) / 255.0).unsqueeze(0)
+
+        alpha = torch.from_numpy(
+            np.array(alpha_aug).astype(np.float32) / 255.0
+        ).unsqueeze(0)
     else:
-        alpha = torch.zeros(1, 256, 256) # Ensure it's 256x256
+        alpha = torch.zeros(1, 256, 256)  # Ensure it's 256x256
 
     # Extract LSB BEFORE augmentation to preserve steganography signals
-    rgb_img_original = img.convert('RGB')
+    rgb_img_original = img.convert("RGB")
     lsb_r = (np.array(rgb_img_original)[:, :, 0] & 1).astype(np.float32)
     lsb_g = (np.array(rgb_img_original)[:, :, 1] & 1).astype(np.float32)
     lsb_b = (np.array(rgb_img_original)[:, :, 2] & 1).astype(np.float32)
     lsb_original = torch.from_numpy(np.stack([lsb_r, lsb_g, lsb_b], axis=0))
-    
+
     # Resize LSB to match expected dimensions (256x256) using nearest neighbor to preserve binary values
     from torchvision.transforms import functional as F_transforms
-    lsb = F_transforms.resize(lsb_original, [256, 256], interpolation=F_transforms.InterpolationMode.NEAREST)
+
+    lsb = F_transforms.resize(
+        lsb_original, [256, 256], interpolation=F_transforms.InterpolationMode.NEAREST
+    )
 
     # Augmentation for RGB channels (applied to RGB image for metadata/other features)
     if transform:
@@ -577,81 +681,102 @@ def load_enhanced_multi_input(path, transform=None):
         aug_img = crop(rgb_img_original)
 
     # Palette path - extract both palette colors AND pixel index LSB patterns for palette steganography
-    if img.mode == 'P':
+    if img.mode == "P":
         # Extract palette colors (traditional approach)
         palette_colors = np.array(img.getpalette(), dtype=np.uint8)
-        palette_colors = np.pad(palette_colors, (0, 768 - len(palette_colors)), 'constant')
-        
+        palette_colors = np.pad(
+            palette_colors, (0, 768 - len(palette_colors)), "constant"
+        )
+
         # Extract LSB patterns from pixel indices (actual palette steganography)
         pixel_indices = np.array(img.getdata())
-        
+
         # Create LSB features from pixel indices
         lsb_features = np.zeros(256, dtype=np.uint8)  # Reduced size for efficiency
-        
+
         total_pixels = len(pixel_indices)
-        
+
         if total_pixels > 0:
             # Extract LSB patterns from pixel indices
             pixel_lsb = pixel_indices & 1
-            
+
             # Sample LSB values from different regions (store as raw bytes, not packed)
-            region_size = min(64, total_pixels // 4)  # Sample up to 64 pixels per region
-            
+            region_size = min(
+                64, total_pixels // 4
+            )  # Sample up to 64 pixels per region
+
             # Top-left region - store raw LSB values
             if region_size > 0:
-                lsb_features[0:region_size] = pixel_lsb[:region_size].astype(np.uint8) * 255
-            
-            # Center region  
+                lsb_features[0:region_size] = (
+                    pixel_lsb[:region_size].astype(np.uint8) * 255
+                )
+
+            # Center region
             center_start = total_pixels // 2 - region_size // 2
             if center_start + region_size <= total_pixels:
-                lsb_features[64:64+region_size] = pixel_lsb[center_start:center_start + region_size].astype(np.uint8) * 255
-            
+                lsb_features[64 : 64 + region_size] = (
+                    pixel_lsb[center_start : center_start + region_size].astype(
+                        np.uint8
+                    )
+                    * 255
+                )
+
             # Bottom-right region
             if region_size > 0:
                 start_idx = 128
-                lsb_features[start_idx:start_idx+region_size] = pixel_lsb[-region_size:].astype(np.uint8) * 255
-            
+                lsb_features[start_idx : start_idx + region_size] = (
+                    pixel_lsb[-region_size:].astype(np.uint8) * 255
+                )
+
             # Overall LSB statistics
             lsb_features[192] = int(np.mean(pixel_lsb) * 255)  # Average LSB value
-            lsb_features[193] = int(np.std(pixel_lsb) * 255)   # LSB variation
-            lsb_features[194] = int((pixel_lsb.sum() % 256))    # LSB sum modulo
-            
+            lsb_features[193] = int(np.std(pixel_lsb) * 255)  # LSB variation
+            lsb_features[194] = int((pixel_lsb.sum() % 256))  # LSB sum modulo
+
             # Additional features: transitions and patterns
             if len(pixel_lsb) > 1:
-                transitions = np.sum(pixel_lsb[1:] != pixel_lsb[:-1])  # Count LSB transitions
+                transitions = np.sum(
+                    pixel_lsb[1:] != pixel_lsb[:-1]
+                )  # Count LSB transitions
                 lsb_features[195] = min(255, transitions)  # Cap at 255
-                
+
                 # Count consecutive same bits
                 max_consecutive = 0
                 current_consecutive = 1
                 for i in range(1, len(pixel_lsb)):
-                    if pixel_lsb[i] == pixel_lsb[i-1]:
+                    if pixel_lsb[i] == pixel_lsb[i - 1]:
                         current_consecutive += 1
                         max_consecutive = max(max_consecutive, current_consecutive)
                     else:
                         current_consecutive = 1
                 lsb_features[196] = min(255, max_consecutive)
-            
+
         # Combine palette colors and LSB features
-        palette_bytes = np.concatenate([palette_colors[:512], lsb_features])  # 512 + 256 = 768
-        
+        palette_bytes = np.concatenate(
+            [palette_colors[:512], lsb_features]
+        )  # 512 + 256 = 768
+
     else:
         # For non-palette images, create minimal palette data
         palette_bytes = np.zeros(768, dtype=np.uint8)
-        
+
         # Only extract palette if there's evidence of palette-based steganography
-        if hasattr(img, 'info') and 'palette' in img.info:
+        if hasattr(img, "info") and "palette" in img.info:
             try:
-                embedded_palette = img.info['palette']
-                if isinstance(embedded_palette, (bytes, bytearray)) and len(embedded_palette) > 0:
+                embedded_palette = img.info["palette"]
+                if (
+                    isinstance(embedded_palette, (bytes, bytearray))
+                    and len(embedded_palette) > 0
+                ):
                     palette_data = np.frombuffer(embedded_palette[:768], dtype=np.uint8)
-                    palette_bytes[:len(palette_data)] = palette_data
+                    palette_bytes[: len(palette_data)] = palette_data
             except (ValueError, TypeError):
                 pass  # Keep zero palette if extraction fails
-    
+
     palette = torch.from_numpy(palette_bytes.astype(np.float32) / 255.0)
 
     return meta, alpha, lsb, palette
+
 
 class BalancedStarlightDetector(nn.Module):
     """Balanced model with weighted metadata processing to reduce EXIF dominance"""
@@ -672,7 +797,7 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.AdaptiveAvgPool1d(16)
+            nn.AdaptiveAvgPool1d(16),
         )
 
         # Alpha stream
@@ -686,7 +811,7 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8)
+            nn.AdaptiveAvgPool2d(8),
         )
 
         # LSB stream
@@ -700,7 +825,7 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8)
+            nn.AdaptiveAvgPool2d(8),
         )
 
         # Palette stream
@@ -711,21 +836,17 @@ class BalancedStarlightDetector(nn.Module):
             nn.Linear(256, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(128, 64)
+            nn.Linear(128, 64),
         )
 
         # Format features stream
         self.format_features_fc = nn.Sequential(
-            nn.Linear(6, 32),
-            nn.ReLU(),
-            nn.Linear(32, 16)
+            nn.Linear(6, 32), nn.ReLU(), nn.Linear(32, 16)
         )
 
         # Content features stream
         self.content_features_fc = nn.Sequential(
-            nn.Linear(6, 32),
-            nn.ReLU(),
-            nn.Linear(32, 16)
+            nn.Linear(6, 32), nn.ReLU(), nn.Linear(32, 16)
         )
 
         # Pixel tensor processing (new stream)
@@ -739,7 +860,7 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8)
+            nn.AdaptiveAvgPool2d(8),
         )
 
         # Palette LSB processing (new stream)
@@ -753,7 +874,7 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8)
+            nn.AdaptiveAvgPool2d(8),
         )
 
         # Attention Mechanisms - Enabled for EOI/EXIF Detection
@@ -763,16 +884,16 @@ class BalancedStarlightDetector(nn.Module):
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Linear(256, 1),  # Attention weight for EOI
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
-        
+
         self.exif_attention = nn.Sequential(
             nn.Linear(2048, 512),  # Metadata stream features
             nn.ReLU(),
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Linear(256, 1),  # Attention weight for EXIF
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
         # Fusion and classification
@@ -787,22 +908,32 @@ class BalancedStarlightDetector(nn.Module):
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(256, 128 + 64)  # 128 for embedding, 64 for classification
+            nn.Linear(256, 128 + 64),  # 128 for embedding, 64 for classification
         )
 
         # Heads
         self.stego_head = nn.Linear(64, 1)
         self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
-        self.bit_order_head = nn.Linear(64, 3) # lsb-first, msb-first, none
+        self.bit_order_head = nn.Linear(64, 3)  # lsb-first, msb-first, none
         self.embedding_head = nn.Linear(64, 64)
 
-    def forward(self, pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features):
+    def forward(
+        self,
+        pixel_tensor,
+        meta,
+        alpha,
+        lsb,
+        palette,
+        palette_lsb,
+        format_features,
+        content_features,
+    ):
         # Pixel tensor stream (new)
         pixel_tensor = self.pixel_conv(pixel_tensor)
         pixel_tensor = pixel_tensor.reshape(pixel_tensor.size(0), -1)
 
         # Metadata stream with weighting
-        meta_features = meta # Keep original features for attention
+        meta_features = meta  # Keep original features for attention
         meta = meta.unsqueeze(1)  # Add channel dimension
         meta = self.meta_conv(meta)
         meta = meta.reshape(meta.size(0), -1)
@@ -811,12 +942,12 @@ class BalancedStarlightDetector(nn.Module):
         # Calculate attention scores
         eoi_attn = self.eoi_attention(meta_features)
         exif_attn = self.exif_attention(meta_features)
-        
+
         # Create attention features
         # Expand attention weights to feature dimensions (simple scaling for now)
         eoi_feat = torch.ones(meta.size(0), 256).to(meta.device) * eoi_attn
         exif_feat = torch.ones(meta.size(0), 256).to(meta.device) * exif_attn
-        
+
         attention_features = torch.cat([eoi_feat, exif_feat], dim=1)
 
         # Alpha stream
@@ -841,7 +972,20 @@ class BalancedStarlightDetector(nn.Module):
         content_features = self.content_features_fc(content_features)
 
         # Fusion of all 8 streams + attention features
-        fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, attention_features], dim=1)
+        fused = torch.cat(
+            [
+                pixel_tensor,
+                meta,
+                alpha,
+                lsb,
+                palette,
+                palette_lsb,
+                format_features,
+                content_features,
+                attention_features,
+            ],
+            dim=1,
+        )
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
@@ -857,12 +1001,21 @@ class BalancedStarlightDetector(nn.Module):
         # Get method predictions
         method_probs = F.softmax(method_logits, dim=1)
         method_id = torch.argmax(method_probs, dim=1)
-        
+
         # Get bit order predictions
         bit_order_probs = F.softmax(bit_order_logits, dim=1)
         bit_order_id = torch.argmax(bit_order_probs, dim=1)
 
-        return stego_logits, method_logits, bit_order_logits, method_id, method_probs, bit_order_id, embedding
+        return (
+            stego_logits,
+            method_logits,
+            bit_order_logits,
+            method_id,
+            method_probs,
+            bit_order_id,
+            embedding,
+        )
+
 
 def compute_class_weights(method_labels):
     """Compute class weights to balance training"""
@@ -883,7 +1036,18 @@ def compute_class_weights(method_labels):
 
     return weights
 
-def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_dir=None, val_stego_dir=None, epochs=10, batch_size=8, lr=1e-4, out_path="models/detector_generalized.pth"):
+
+def train_model(
+    train_clean_dir,
+    train_stego_dir,
+    train_negative_dir,
+    val_clean_dir=None,
+    val_stego_dir=None,
+    epochs=10,
+    batch_size=8,
+    lr=1e-4,
+    out_path="models/detector_generalized.pth",
+):
     # Use CPU for now due to MPS tensor view compatibility issues
     # TODO: Fix MPS compatibility issues in future PyTorch versions
     if torch.cuda.is_available():
@@ -895,26 +1059,44 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
     print(f"Using device: {device}")
 
     # Data augmentation
-    train_transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
-    ])
+    train_transform = transforms.Compose(
+        [
+            transforms.Resize((256, 256)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.ColorJitter(
+                brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05
+            ),
+        ]
+    )
 
-    val_transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-    ])
+    val_transform = transforms.Compose(
+        [
+            transforms.Resize((256, 256)),
+        ]
+    )
 
     # --- Data Loading and Splitting ---
     # Use separate datasets: training from submissions, validation from val set
     print("Loading training data from submissions and validation data from val set...")
 
     # Load training samples from all submission datasets with balanced classes
-    train_source_dataset = BalancedStegoDataset(train_clean_dir, train_stego_dir, train_negative_dir, transform=None, balance_strategy='balanced_classes')
-    
+    train_source_dataset = BalancedStegoDataset(
+        train_clean_dir,
+        train_stego_dir,
+        train_negative_dir,
+        transform=None,
+        balance_strategy="balanced_classes",
+    )
+
     # Load validation samples from val dataset only - use all stego images
-    val_source_dataset = BalancedStegoDataset(val_clean_dir, val_stego_dir, None, transform=None, balance_strategy='use_all_stego')
+    val_source_dataset = BalancedStegoDataset(
+        val_clean_dir,
+        val_stego_dir,
+        None,
+        transform=None,
+        balance_strategy="use_all_stego",
+    )
 
     # Create training dataset with augmentations
     train_dataset = copy.deepcopy(train_source_dataset)
@@ -923,10 +1105,12 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
     # Create validation dataset without augmentations
     val_dataset = copy.deepcopy(val_source_dataset)
     val_dataset.transform = val_transform
-    
+
     method_labels_list = train_dataset.method_labels_list
 
-    print(f"\nDataset split into {len(train_dataset)} training and {len(val_dataset)} validation samples.")
+    print(
+        f"\nDataset split into {len(train_dataset)} training and {len(val_dataset)} validation samples."
+    )
     print(f"Training method distribution: {Counter(method_labels_list)}")
     print(f"Validation method distribution: {Counter(val_dataset.method_labels_list)}")
 
@@ -939,7 +1123,9 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
     print(f"Class weights: {class_weights}")
 
     # Model
-    model = BalancedStarlightDetector(meta_weight=0.3).to(device)  # Reduce metadata dominance
+    model = BalancedStarlightDetector(meta_weight=0.3).to(
+        device
+    )  # Reduce metadata dominance
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # Loss functions with class weighting
@@ -949,7 +1135,7 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
 
     # Training loop
     print("Starting training...")
-    best_val_loss = float('inf')
+    best_val_loss = float("inf")
     epochs_no_improve = 0
     patience = 10
 
@@ -964,7 +1150,19 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
         bit_order_total = 0
 
         for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
-            pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
+            (
+                pixel_tensor,
+                meta,
+                alpha,
+                lsb,
+                palette,
+                palette_lsb,
+                format_features,
+                content_features,
+                bit_order_feat,
+                stego_labels,
+                method_labels,
+            ) = batch
             pixel_tensor = pixel_tensor.to(device)
             meta = meta.to(device)
             alpha = alpha.to(device)
@@ -980,7 +1178,24 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
             optimizer.zero_grad()
 
             # Forward pass
-            stego_logits, method_logits, bit_order_logits, method_ids, method_probs, bit_order_ids, embeddings = model(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
+            (
+                stego_logits,
+                method_logits,
+                bit_order_logits,
+                method_ids,
+                method_probs,
+                bit_order_ids,
+                embeddings,
+            ) = model(
+                pixel_tensor,
+                meta,
+                alpha,
+                lsb,
+                palette,
+                palette_lsb,
+                format_features,
+                content_features,
+            )
 
             # Compute losses
             stego_loss = stego_criterion(stego_logits.reshape(-1), stego_labels)
@@ -988,16 +1203,20 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
             # Only compute method loss for stego samples
             stego_mask = stego_labels > 0.5
             if stego_mask.sum() > 0:
-                method_loss = method_criterion(method_logits[stego_mask], method_labels[stego_mask])
+                method_loss = method_criterion(
+                    method_logits[stego_mask], method_labels[stego_mask]
+                )
             else:
                 method_loss = torch.tensor(0.0).to(device)
-            
+
             # Bit order loss (all samples have a bit order label, even if 'none')
             bit_order_labels = torch.argmax(bit_order_feat, dim=1)
             bit_order_loss = bit_order_criterion(bit_order_logits, bit_order_labels)
 
             # Dynamic loss weighting - reduce method loss importance to avoid overfitting
-            total_loss_batch = stego_loss + 0.1 * method_loss + 0.1 * bit_order_loss #+ 0.05 * method_loss  # Further reduced
+            total_loss_batch = (
+                stego_loss + 0.1 * method_loss + 0.1 * bit_order_loss
+            )  # + 0.05 * method_loss  # Further reduced
 
             # Backward pass
             total_loss_batch.backward()
@@ -1010,9 +1229,11 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
             stego_total += stego_labels.size(0)
 
             if stego_mask.sum() > 0:
-                method_correct += (method_ids[stego_mask] == method_labels[stego_mask]).sum().item()
+                method_correct += (
+                    (method_ids[stego_mask] == method_labels[stego_mask]).sum().item()
+                )
                 method_total += stego_mask.sum().item()
-            
+
             bit_order_correct += (bit_order_ids == bit_order_labels).sum().item()
             bit_order_total += bit_order_labels.size(0)
 
@@ -1031,7 +1252,19 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
 
         with torch.no_grad():
             for batch in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
-                pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
+                (
+                    pixel_tensor,
+                    meta,
+                    alpha,
+                    lsb,
+                    palette,
+                    palette_lsb,
+                    format_features,
+                    content_features,
+                    bit_order_feat,
+                    stego_labels,
+                    method_labels,
+                ) = batch
                 pixel_tensor = pixel_tensor.to(device)
                 meta = meta.to(device)
                 alpha = alpha.to(device)
@@ -1044,24 +1277,49 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
                 stego_labels = stego_labels.float().to(device)
                 method_labels = method_labels.long().to(device)
 
-                stego_logits, method_logits, bit_order_logits, method_ids, method_probs, bit_order_ids, embeddings = model(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
+                (
+                    stego_logits,
+                    method_logits,
+                    bit_order_logits,
+                    method_ids,
+                    method_probs,
+                    bit_order_ids,
+                    embeddings,
+                ) = model(
+                    pixel_tensor,
+                    meta,
+                    alpha,
+                    lsb,
+                    palette,
+                    palette_lsb,
+                    format_features,
+                    content_features,
+                )
                 stego_loss = stego_criterion(stego_logits.reshape(-1), stego_labels)
                 stego_mask = stego_labels > 0.5
                 if stego_mask.sum() > 0:
-                    method_loss = method_criterion(method_logits[stego_mask], method_labels[stego_mask])
+                    method_loss = method_criterion(
+                        method_logits[stego_mask], method_labels[stego_mask]
+                    )
                 else:
                     method_loss = torch.tensor(0.0).to(device)
-                
+
                 bit_order_labels = torch.argmax(bit_order_feat, dim=1)
                 bit_order_loss = bit_order_criterion(bit_order_logits, bit_order_labels)
 
-                val_loss += (stego_loss + 0.01 * method_loss + 0.01 * bit_order_loss).item()
+                val_loss += (
+                    stego_loss + 0.01 * method_loss + 0.01 * bit_order_loss
+                ).item()
                 stego_pred = (torch.sigmoid(stego_logits) > 0.5).float()
                 val_stego_correct += (stego_pred.squeeze() == stego_labels).sum().item()
                 val_stego_total += stego_labels.size(0)
 
                 if stego_mask.sum() > 0:
-                    val_method_correct += (method_ids[stego_mask] == method_labels[stego_mask]).sum().item()
+                    val_method_correct += (
+                        (method_ids[stego_mask] == method_labels[stego_mask])
+                        .sum()
+                        .item()
+                    )
                     val_method_total += stego_mask.sum().item()
 
                     preds = method_ids[stego_mask]
@@ -1072,23 +1330,39 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
                         val_method_total_per_class[label] += 1
                         if pred == label:
                             val_method_correct_per_class[label] += 1
-                
-                val_bit_order_correct += (bit_order_ids == bit_order_labels).sum().item()
+
+                val_bit_order_correct += (
+                    (bit_order_ids == bit_order_labels).sum().item()
+                )
                 val_bit_order_total += bit_order_labels.size(0)
 
         # Print statistics
         avg_loss = total_loss / len(train_dataloader)
         stego_acc = stego_correct / stego_total if stego_total > 0 else 0
         method_acc = method_correct / method_total if method_total > 0 else 0
-        bit_order_acc = bit_order_correct / bit_order_total if bit_order_total > 0 else 0
+        bit_order_acc = (
+            bit_order_correct / bit_order_total if bit_order_total > 0 else 0
+        )
 
         avg_val_loss = val_loss / len(val_dataloader)
-        val_stego_acc = val_stego_correct / val_stego_total if val_stego_total > 0 else 0
-        val_method_acc = val_method_correct / val_method_total if val_method_total > 0 else 0
-        val_bit_order_acc = val_bit_order_correct / val_bit_order_total if val_bit_order_total > 0 else 0
+        val_stego_acc = (
+            val_stego_correct / val_stego_total if val_stego_total > 0 else 0
+        )
+        val_method_acc = (
+            val_method_correct / val_method_total if val_method_total > 0 else 0
+        )
+        val_bit_order_acc = (
+            val_bit_order_correct / val_bit_order_total
+            if val_bit_order_total > 0
+            else 0
+        )
 
-        print(f"Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, Stego Acc={stego_acc:.3f}, Method Acc={method_acc:.3f}, Bit Order Acc={bit_order_acc:.3f}")
-        print(f"Val Loss={avg_val_loss:.4f}, Val Stego Acc={val_stego_acc:.3f}, Val Method Acc={val_method_acc:.3f}, Val Bit Order Acc={val_bit_order_acc:.3f}")
+        print(
+            f"Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, Stego Acc={stego_acc:.3f}, Method Acc={method_acc:.3f}, Bit Order Acc={bit_order_acc:.3f}"
+        )
+        print(
+            f"Val Loss={avg_val_loss:.4f}, Val Stego Acc={val_stego_acc:.3f}, Val Method Acc={val_method_acc:.3f}, Val Bit Order Acc={val_bit_order_acc:.3f}"
+        )
 
         # Print per-class accuracy
         print("  Validation Method Accuracy per class:")
@@ -1107,28 +1381,39 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
-                print(f"No improvement in validation loss for {patience} epochs. Stopping early.")
+                print(
+                    f"No improvement in validation loss for {patience} epochs. Stopping early."
+                )
                 break
-
-
 
     # PyTorch model is already saved during training
     print(f"PyTorch model saved to {out_path}")
-
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_clean_dir", default="datasets/*_submission_*/clean")
     parser.add_argument("--train_stego_dir", default="datasets/*_submission_*/stego")
-    parser.add_argument("--train_negative_dir", default="datasets/*_submission_*/negatives")
+    parser.add_argument(
+        "--train_negative_dir", default="datasets/*_submission_*/negatives"
+    )
     parser.add_argument("--val_clean_dir", default="datasets/val/clean")
     parser.add_argument("--val_stego_dir", default="datasets/val/stego")
-    parser.add_argument("--epochs", type=int, default=50) # Increased default epochs
+    parser.add_argument("--epochs", type=int, default=50)  # Increased default epochs
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--out", default="models/detector_balanced.pth")
     args = parser.parse_args()
 
     os.makedirs("models", exist_ok=True)
-    train_model(args.train_clean_dir, args.train_stego_dir, args.train_negative_dir, args.val_clean_dir, args.val_stego_dir, args.epochs, args.batch_size, args.lr, args.out)
+    train_model(
+        args.train_clean_dir,
+        args.train_stego_dir,
+        args.train_negative_dir,
+        args.val_clean_dir,
+        args.val_stego_dir,
+        args.epochs,
+        args.batch_size,
+        args.lr,
+        args.out,
+    )

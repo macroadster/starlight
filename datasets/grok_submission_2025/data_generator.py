@@ -117,6 +117,7 @@ def add_exif_metadata(img_path, payload):
     except Exception as e:
         logging.error(f"Error adding EXIF metadata to {img_path}: {str(e)}")
 
+
 def embed_eoi(img_path, payload):
     """
     Embed payload by appending after the image data (EOI method).
@@ -126,28 +127,28 @@ def embed_eoi(img_path, payload):
         payload (str): Text to append.
     """
     try:
-        with open(img_path, 'rb') as f:
+        with open(img_path, "rb") as f:
             raw = f.read()
-        payload_bytes = payload.encode('ascii', errors='ignore')
+        payload_bytes = payload.encode("ascii", errors="ignore")
 
         # Detect format and find insertion point
-        if raw.startswith(b'\xFF\xD8'):  # JPEG
-            eoi_pos = raw.rfind(b'\xFF\xD9')
+        if raw.startswith(b"\xff\xd8"):  # JPEG
+            eoi_pos = raw.rfind(b"\xff\xd9")
             if eoi_pos == -1:
                 raise ValueError("No EOI marker found in JPEG")
             insert_pos = eoi_pos + 2
-        elif raw.startswith(b'\x89PNG'):  # PNG
-            iend_pos = raw.rfind(b'IEND')
+        elif raw.startswith(b"\x89PNG"):  # PNG
+            iend_pos = raw.rfind(b"IEND")
             if iend_pos == -1:
                 raise ValueError("No IEND found in PNG")
             insert_pos = iend_pos + 12  # After IEND chunk
-        elif raw.startswith(b'GIF8'):  # GIF
-            term_pos = raw.rfind(b';')
+        elif raw.startswith(b"GIF8"):  # GIF
+            term_pos = raw.rfind(b";")
             if term_pos == -1:
                 raise ValueError("No terminator found in GIF")
             insert_pos = term_pos + 1
-        elif raw.startswith(b'RIFF') and raw[8:12] == b'WEBP':  # WebP
-            vp8x_pos = raw.rfind(b'VP8X')
+        elif raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":  # WebP
+            vp8x_pos = raw.rfind(b"VP8X")
             if vp8x_pos == -1:
                 raise ValueError("No VP8X found in WebP")
             insert_pos = vp8x_pos + 10
@@ -156,7 +157,7 @@ def embed_eoi(img_path, payload):
 
         # Append payload
         new_raw = raw[:insert_pos] + payload_bytes
-        with open(img_path, 'wb') as f:
+        with open(img_path, "wb") as f:
             f.write(new_raw)
         logging.info(f"Embedded EOI payload to {img_path} ({len(payload)} chars)")
     except Exception as e:
@@ -267,6 +268,7 @@ def verify_exif_metadata(img_path, expected_payload):
     except Exception as e:
         logging.error(f"Error verifying EXIF metadata for {img_path}: {str(e)}")
 
+
 def verify_eoi(img_path, expected_payload):
     """
     Verify that appended EOI tail matches the expected payload.
@@ -275,33 +277,33 @@ def verify_eoi(img_path, expected_payload):
         expected_payload (str): Original markdown content.
     """
     try:
-        with open(img_path, 'rb') as f:
+        with open(img_path, "rb") as f:
             raw = f.read()
-        expected_bytes = expected_payload.encode('ascii')
+        expected_bytes = expected_payload.encode("ascii")
 
         # Detect format and extract tail
-        if raw.startswith(b'\xFF\xD8'):  # JPEG
-            eoi_pos = raw.rfind(b'\xFF\xD9')
+        if raw.startswith(b"\xff\xd8"):  # JPEG
+            eoi_pos = raw.rfind(b"\xff\xd9")
             if eoi_pos != -1:
-                extracted = raw[eoi_pos + 2:]
+                extracted = raw[eoi_pos + 2 :]
             else:
                 extracted = b""
-        elif raw.startswith(b'\x89PNG'):  # PNG
-            iend_pos = raw.rfind(b'IEND')
+        elif raw.startswith(b"\x89PNG"):  # PNG
+            iend_pos = raw.rfind(b"IEND")
             if iend_pos != -1:
-                extracted = raw[iend_pos + 12:]
+                extracted = raw[iend_pos + 12 :]
             else:
                 extracted = b""
-        elif raw.startswith(b'GIF8'):  # GIF
-            term_pos = raw.rfind(b';')
+        elif raw.startswith(b"GIF8"):  # GIF
+            term_pos = raw.rfind(b";")
             if term_pos != -1:
-                extracted = raw[term_pos + 1:]
+                extracted = raw[term_pos + 1 :]
             else:
                 extracted = b""
-        elif raw.startswith(b'RIFF') and raw[8:12] == b'WEBP':  # WebP
-            vp8x_pos = raw.rfind(b'VP8X')
+        elif raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":  # WebP
+            vp8x_pos = raw.rfind(b"VP8X")
             if vp8x_pos != -1:
-                extracted = raw[vp8x_pos + 10:]
+                extracted = raw[vp8x_pos + 10 :]
             else:
                 extracted = b""
         else:
@@ -314,7 +316,9 @@ def verify_eoi(img_path, expected_payload):
                 f"EOI verification failed: {img_path} does not match payload."
             )
             logging.warning(f"Expected: {expected_payload[:50]}...")
-            logging.warning(f"Extracted: {extracted.decode('ascii', errors='ignore')[:50]}...")
+            logging.warning(
+                f"Extracted: {extracted.decode('ascii', errors='ignore')[:50]}..."
+            )
     except Exception as e:
         logging.error(f"Error verifying EOI for {img_path}: {str(e)}")
 
@@ -367,7 +371,7 @@ def generate_rgb_no_alpha(output_dir, count=10):
 
         if img_type == 0:
             color = tuple(random.randint(0, 255) for _ in range(3))
-            img = Image.new('RGB', size, color)
+            img = Image.new("RGB", size, color)
         elif img_type == 1:
             data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
             img = Image.fromarray(data)
@@ -389,7 +393,7 @@ def generate_rgb_no_alpha(output_dir, count=10):
             data[:, ::10] = [0, 255, 0]
             img = Image.fromarray(data)
 
-        img.save(os.path.join(output_dir, f'rgb_no_alpha_{i:04d}.png'))
+        img.save(os.path.join(output_dir, f"rgb_no_alpha_{i:04d}.png"))
 
 
 def generate_uniform_alpha(output_dir, count=10):
@@ -407,7 +411,7 @@ def generate_uniform_alpha(output_dir, count=10):
         rgba_data[:, :, :3] = rgb_data
         rgba_data[:, :, 3] = alpha
         img = Image.fromarray(rgba_data)
-        img.save(os.path.join(output_dir, f'uniform_alpha_{i:04d}.png'))
+        img.save(os.path.join(output_dir, f"uniform_alpha_{i:04d}.png"))
 
 
 def generate_natural_noise(output_dir, count=10):
@@ -424,7 +428,7 @@ def generate_natural_noise(output_dir, count=10):
         noise = np.random.randint(0, 2, (size[1], size[0], 3), dtype=np.uint8)
         data = base_data & 0xFE | noise  # Set LSB to noise
         img = Image.fromarray(data)
-        img.save(os.path.join(output_dir, f'natural_noise_{i:04d}.png'))
+        img.save(os.path.join(output_dir, f"natural_noise_{i:04d}.png"))
 
 
 def generate_repetitive_patterns(output_dir, count=10):
@@ -441,7 +445,7 @@ def generate_repetitive_patterns(output_dir, count=10):
             for x in range(size[0]):
                 data[y, x] = [pattern] * 3
         img = Image.fromarray(data)
-        img.save(os.path.join(output_dir, f'repetitive_patterns_{i:04d}.png'))
+        img.save(os.path.join(output_dir, f"repetitive_patterns_{i:04d}.png"))
 
 
 def generate_negatives(clean_dir, stego_dir, count=10, methods=["exif", "lsb", "eoi"]):
@@ -452,10 +456,10 @@ def generate_negatives(clean_dir, stego_dir, count=10, methods=["exif", "lsb", "
     os.makedirs(stego_dir, exist_ok=True)
 
     categories = [
-        ('rgb_no_alpha', generate_rgb_no_alpha),
-        ('uniform_alpha', generate_uniform_alpha),
-        ('natural_noise', generate_natural_noise),
-        ('repetitive_patterns', generate_repetitive_patterns),
+        ("rgb_no_alpha", generate_rgb_no_alpha),
+        ("uniform_alpha", generate_uniform_alpha),
+        ("natural_noise", generate_natural_noise),
+        ("repetitive_patterns", generate_repetitive_patterns),
     ]
 
     payload = "negative example payload"
@@ -467,9 +471,9 @@ def generate_negatives(clean_dir, stego_dir, count=10, methods=["exif", "lsb", "
         # For each method, generate stego versions
         for method in methods:
             for i in tqdm(range(count), desc=f"Stego ({category_name}, {method})"):
-                clean_filename = f'{category_name}_{i:04d}.png'
+                clean_filename = f"{category_name}_{i:04d}.png"
                 clean_path = os.path.join(clean_dir, clean_filename)
-                stego_filename = f'{category_name}_{method}_{i:04d}.png'
+                stego_filename = f"{category_name}_{method}_{i:04d}.png"
                 stego_path = os.path.join(stego_dir, stego_filename)
 
                 # Copy clean to stego
@@ -570,18 +574,18 @@ def generate_images(num_images=5, methods=["exif", "lsb", "eoi"], payload_size=0
                 )
                 if method == "lsb":
                     embed_lsb(
-                     clean_path, stego_path, payload=None, payload_size=payload_size
+                        clean_path, stego_path, payload=None, payload_size=payload_size
                     )
                     stego_paths.append(stego_path)
                 elif method == "exif":
                     generate_clean_image(
-                     stego_path, seed=i, format=format, pattern_type=pattern
+                        stego_path, seed=i, format=format, pattern_type=pattern
                     )  # Copy clean to stego
                     add_exif_metadata(stego_path, "")
                     stego_paths.append(stego_path)
                 elif method == "eoi":
                     generate_clean_image(
-                     stego_path, seed=i, format=format, pattern_type=pattern
+                        stego_path, seed=i, format=format, pattern_type=pattern
                     )  # Copy clean to stego
                     embed_eoi(stego_path, "")
                     stego_paths.append(stego_path)
@@ -612,13 +616,13 @@ def generate_images(num_images=5, methods=["exif", "lsb", "eoi"], payload_size=0
                     stego_path = os.path.join(stego_dir, img_name)
                     pattern = np.random.choice(["linear", "radial"])
                     generate_clean_image(
-                     clean_path, seed=i, format=format, pattern_type=pattern
+                        clean_path, seed=i, format=format, pattern_type=pattern
                     )
-                    
+
                     # Initialize category and technique
                     category = "unknown"
                     technique = "unknown"
-                    
+
                     if method == "lsb":
                         embed_lsb(
                             clean_path,

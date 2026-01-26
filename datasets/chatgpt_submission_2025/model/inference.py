@@ -9,18 +9,24 @@ import os
 import onnxruntime as ort
 import numpy as np
 from PIL import Image
+
 try:
     import jpegio as jio
 except ImportError:
     jio = None
 
+
 class StarlightModel:
-    def __init__(self,
-                 detector_path: str = "model/detector.onnx",
-                 extractor_path: str | None = None,
-                 task: str = "detect"):
+    def __init__(
+        self,
+        detector_path: str = "model/detector.onnx",
+        extractor_path: str | None = None,
+        task: str = "detect",
+    ):
         self.detector = ort.InferenceSession(detector_path)
-        self.extractor = ort.InferenceSession(extractor_path) if extractor_path else None
+        self.extractor = (
+            ort.InferenceSession(extractor_path) if extractor_path else None
+        )
         self.task = task
         self.input_name = self.detector.get_inputs()[0].name
         self.method_config = self._load_method_config()
@@ -38,6 +44,7 @@ class StarlightModel:
         # filenames are `<payload>_<algo>_###.<ext>`
         parts = os.path.basename(img_path).split("_")
         return parts[-2] if len(parts) >= 3 else "lsb"
+
     # -------------------------------------------------
 
     # ---------- preprocessing per method ----------
@@ -50,11 +57,13 @@ class StarlightModel:
             return self._preprocess_rgb(img_path, cfg)
         elif cfg["mode"] == "DCT":
             if jio is None:
-                raise ImportError("jpegio is not installed. DCT-based models cannot be used.")
+                raise ImportError(
+                    "jpegio is not installed. DCT-based models cannot be used."
+                )
             # For DCT images, convert to RGB
             return self._preprocess_rgb(img_path, cfg)
         elif cfg["mode"] == "EXIF":
-            # For EXIF analysis, convert to RGB  
+            # For EXIF analysis, convert to RGB
             return self._preprocess_rgb(img_path, cfg)
         elif cfg["mode"] == "EOI":
             # For EOI analysis, convert to RGB
@@ -67,7 +76,7 @@ class StarlightModel:
         # ChatGPT model expects 224x224 input
         img = Image.open(img_path).convert("RGB").resize((224, 224))
         arr = np.array(img).astype(np.float32) / 255.0
-        
+
         # Ensure we have 3D array (H, W, C) before transpose
         if arr.ndim == 2:
             # Grayscale image, convert to 3 channels
@@ -75,14 +84,16 @@ class StarlightModel:
         elif arr.ndim == 3 and arr.shape[2] == 1:
             # Single channel image, duplicate to 3 channels
             arr = np.repeat(arr, 3, axis=2)
-        
-        arr = np.transpose(arr, (2, 0, 1))          # C×H×W
-        result = np.expand_dims(arr, 0)              # 1×C×H×W
-        
+
+        arr = np.transpose(arr, (2, 0, 1))  # C×H×W
+        result = np.expand_dims(arr, 0)  # 1×C×H×W
+
         # Ensure 4D output
         if result.ndim != 4:
-            raise ValueError(f"RGB preprocessing failed: got {result.ndim}D tensor, expected 4D")
-        
+            raise ValueError(
+                f"RGB preprocessing failed: got {result.ndim}D tensor, expected 4D"
+            )
+
         return result
 
     def _preprocess_rgba(self, img_path, cfg):
@@ -94,11 +105,13 @@ class StarlightModel:
 
     def _preprocess_dct(self, img_path):
         if jio is None:
-            raise ImportError("jpegio is not installed. DCT-based models cannot be used.")
+            raise ImportError(
+                "jpegio is not installed. DCT-based models cannot be used."
+            )
         jpeg = jio.read(img_path)
         coeffs = jpeg.coef_blocks[0]
         coeffs = (coeffs - coeffs.mean()) / (coeffs.std() + 1e-8)
-        padded = np.pad(coeffs.flatten(), (0, 4096), 'constant')[:4096]
+        padded = np.pad(coeffs.flatten(), (0, 4096), "constant")[:4096]
         return padded.astype(np.float32).reshape(1, -1)
 
     def _preprocess_exif(self, img_path):
@@ -106,18 +119,18 @@ class StarlightModel:
         exif = img.info.get("exif", b"")
         data = np.frombuffer(exif, dtype=np.uint8)[:1024]
         padded = np.zeros(1024, dtype=np.float32)
-        padded[:len(data)] = data.astype(np.float32) / 255.0
+        padded[: len(data)] = data.astype(np.float32) / 255.0
         return padded.reshape(1, -1)
 
     def _preprocess_eoi(self, img_path):
         with open(img_path, "rb") as f:
             f.seek(-1024, 2)
             tail = f.read()
-        eoi_pos = tail.find(b'\xFF\xD9')
-        appended = tail[eoi_pos + 2:] if eoi_pos != -1 else tail
+        eoi_pos = tail.find(b"\xff\xd9")
+        appended = tail[eoi_pos + 2 :] if eoi_pos != -1 else tail
         data = np.frombuffer(appended, dtype=np.uint8)[:1024]
         padded = np.zeros(1024, dtype=np.float32)
-        padded[:len(data)] = data.astype(np.float32) / 255.0
+        padded[: len(data)] = data.astype(np.float32) / 255.0
         return padded.reshape(1, -1)
 
     def _preprocess_palette(self, img_path, cfg):
@@ -131,23 +144,23 @@ class StarlightModel:
         """Create metadata features from image"""
         # Simple metadata: [file_size, exif_presence, eoi_presence]
         file_size = os.path.getsize(img_path) / 1e6  # Normalize to MB
-        
+
         # Check for EXIF data
         try:
             img = Image.open(img_path)
             exif_present = 1.0 if img.info.get("exif") else 0.0
         except:
             exif_present = 0.0
-        
+
         # Check for data after EOI marker
         try:
             with open(img_path, "rb") as f:
                 f.seek(-100, 2)  # Check last 100 bytes
                 tail = f.read()
-            eoi_present = 1.0 if b'\xFF\xD9' in tail[:-2] else 0.0
+            eoi_present = 1.0 if b"\xff\xd9" in tail[:-2] else 0.0
         except:
             eoi_present = 0.0
-        
+
         return np.array([[file_size, exif_present, eoi_present]], dtype=np.float32)
 
     # -------------------------------------------------
@@ -161,17 +174,17 @@ class StarlightModel:
         # Detector inference -------------------------------------------------
         input_names = [inp.name for inp in self.detector.get_inputs()]
         input_dict = {}
-        
-        if 'rgb' in input_names:
-            input_dict['rgb'] = input_data.astype(np.float32)
-        if 'metadata' in input_names:
-            input_dict['metadata'] = metadata.astype(np.float32)
+
+        if "rgb" in input_names:
+            input_dict["rgb"] = input_data.astype(np.float32)
+        if "metadata" in input_names:
+            input_dict["metadata"] = metadata.astype(np.float32)
         elif self.input_name in input_dict:
             # Fallback for single input models
             input_dict[self.input_name] = input_data.astype(np.float32)
 
         outputs = self.detector.run(None, input_dict)
-        
+
         # Handle different output formats
         if len(outputs[0].shape) == 2 and outputs[0].shape[1] == 2:
             # Binary classification with logits
@@ -180,23 +193,27 @@ class StarlightModel:
         else:
             prob = float(np.array(outputs[0]).flatten()[0])
 
-        result = {
-            "method": method,
-            "stego_probability": prob,
-            "predicted": prob > 0.5
-        }
+        result = {"method": method, "stego_probability": prob, "predicted": prob > 0.5}
 
         # Extraction (optional) -------------------------------------------------
         if self.task == "extract" and self.extractor:
-            out = self.extractor.run(None, {self.extractor.get_inputs()[0].name: input_data.astype(np.float32)})
+            out = self.extractor.run(
+                None,
+                {self.extractor.get_inputs()[0].name: input_data.astype(np.float32)},
+            )
             out_array = np.array(out[0])
             if out_array.size > 0:
-                payload = ''.join(chr(int(b)) for b in np.argmax(out_array, axis=-1).flatten() if int(b) < 128)
+                payload = "".join(
+                    chr(int(b))
+                    for b in np.argmax(out_array, axis=-1).flatten()
+                    if int(b) < 128
+                )
                 result["extracted_payload"] = payload
             else:
                 result["extracted_payload"] = ""
 
         return result
+
 
 # Example usage
 if __name__ == "__main__":

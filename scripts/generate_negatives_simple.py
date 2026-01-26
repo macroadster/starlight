@@ -15,6 +15,7 @@ from typing import List, Tuple
 import json
 import datetime
 
+
 class SimpleNegativeGenerator:
     """Generate examples teaching what steganography is NOT (no validation)"""
 
@@ -26,7 +27,7 @@ class SimpleNegativeGenerator:
         """Generate RGB images that should NOT be detected as alpha steganography"""
         print(f"Generating {count} RGB images (no alpha)...")
 
-        output_subdir = self.output_dir / 'rgb_no_alpha'
+        output_subdir = self.output_dir / "rgb_no_alpha"
         output_subdir.mkdir(exist_ok=True)
 
         sizes = [(128, 128), (256, 256), (512, 512)]
@@ -40,7 +41,7 @@ class SimpleNegativeGenerator:
             if img_type == 0:
                 # Solid colors
                 color = tuple(random.randint(0, 255) for _ in range(3))
-                img = Image.new('RGB', size, color)
+                img = Image.new("RGB", size, color)
 
             elif img_type == 1:
                 # Random noise
@@ -55,7 +56,7 @@ class SimpleNegativeGenerator:
                         data[y, x] = [
                             int(255 * x / size[0]),
                             int(255 * y / size[1]),
-                            128
+                            128,
                         ]
                 img = Image.fromarray(data)
 
@@ -64,11 +65,7 @@ class SimpleNegativeGenerator:
                 data = np.zeros((size[1], size[0], 3), dtype=np.uint8)
                 for y in range(size[1]):
                     for x in range(size[0]):
-                        data[y, x] = [
-                            (x * y) % 256,
-                            (x + y) % 256,
-                            (x - y) % 256
-                        ]
+                        data[y, x] = [(x * y) % 256, (x + y) % 256, (x - y) % 256]
                 img = Image.fromarray(data)
 
             else:
@@ -79,7 +76,7 @@ class SimpleNegativeGenerator:
                 data[:, ::10] = [0, 255, 0]  # Green lines
                 img = Image.fromarray(data)
 
-            img.save(output_subdir / f'rgb_no_alpha_{i:04d}.png')
+            img.save(output_subdir / f"rgb_no_alpha_{i:04d}.png")
 
         print(f"✅ Generated {count} RGB images in {output_subdir}")
 
@@ -87,7 +84,7 @@ class SimpleNegativeGenerator:
         """Generate RGBA images with uniform alpha (no hidden data)"""
         print(f"Generating {count} RGBA images with uniform alpha...")
 
-        output_subdir = self.output_dir / 'uniform_alpha'
+        output_subdir = self.output_dir / "uniform_alpha"
         output_subdir.mkdir(exist_ok=True)
 
         sizes = [(128, 128), (256, 256), (512, 512)]
@@ -107,7 +104,7 @@ class SimpleNegativeGenerator:
             rgba_data[:, :, 3] = alpha  # Uniform alpha
 
             img = Image.fromarray(rgba_data)
-            img.save(output_subdir / f'uniform_alpha_{i:04d}_{alpha}.png')
+            img.save(output_subdir / f"uniform_alpha_{i:04d}_{alpha}.png")
 
         print(f"✅ Generated {count} uniform alpha images in {output_subdir}")
 
@@ -115,7 +112,7 @@ class SimpleNegativeGenerator:
         """Generate images with natural LSB variation"""
         print(f"Generating {count} images with natural LSB noise...")
 
-        output_subdir = self.output_dir / 'dithered_gif'
+        output_subdir = self.output_dir / "dithered_gif"
         output_subdir.mkdir(exist_ok=True)
 
         sizes = [(128, 128), (256, 256), (512, 512)]
@@ -129,16 +126,20 @@ class SimpleNegativeGenerator:
                 # GIF dithering effect
                 data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
                 img = Image.fromarray(data)
-                img = img.convert('P', dither=Image.Dither.FLOYDSTEINBERG, palette=Image.Palette.ADAPTIVE)
-                img = img.convert('RGB')
+                img = img.convert(
+                    "P",
+                    dither=Image.Dither.FLOYDSTEINBERG,
+                    palette=Image.Palette.ADAPTIVE,
+                )
+                img = img.convert("RGB")
 
             elif noise_type == 1:
                 # JPEG compression artifacts
                 data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
                 img = Image.fromarray(data)
                 # Simulate JPEG compression
-                temp_path = output_subdir / 'temp.jpg'
-                img.save(temp_path, 'JPEG', quality=75)
+                temp_path = output_subdir / "temp.jpg"
+                img.save(temp_path, "JPEG", quality=75)
                 img = Image.open(temp_path)
                 temp_path.unlink()
 
@@ -147,16 +148,18 @@ class SimpleNegativeGenerator:
                 data = np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8)
                 img = Image.fromarray(data)
                 img = img.quantize(colors=64)
-                img = img.convert('RGB')
+                img = img.convert("RGB")
 
             else:
                 # Natural photo-like noise
-                base = np.random.randint(100, 200, (size[1], size[0], 3), dtype=np.uint8)
+                base = np.random.randint(
+                    100, 200, (size[1], size[0], 3), dtype=np.uint8
+                )
                 noise = np.random.normal(0, 5, (size[1], size[0], 3))
                 data = np.clip(base + noise, 0, 255).astype(np.uint8)
                 img = Image.fromarray(data)
 
-            img.save(output_subdir / f'natural_noise_{i:04d}.png')
+            img.save(output_subdir / f"natural_noise_{i:04d}.png")
 
         print(f"✅ Generated {count} natural noise images in {output_subdir}")
 
@@ -164,7 +167,7 @@ class SimpleNegativeGenerator:
         """Generate images with repetitive patterns (not steganography)"""
         print(f"Generating {count} images with repetitive patterns...")
 
-        output_subdir = self.output_dir / 'repetitive_hex'
+        output_subdir = self.output_dir / "repetitive_hex"
         output_subdir.mkdir(exist_ok=True)
 
         sizes = [(128, 128), (256, 256), (512, 512)]
@@ -177,8 +180,11 @@ class SimpleNegativeGenerator:
             if pattern_type == 0:
                 # Solid colors
                 colors = [
-                    (255, 0, 0), (0, 255, 0), (0, 0, 255),
-                    (255, 255, 255), (0, 0, 0)
+                    (255, 0, 0),
+                    (0, 255, 0),
+                    (0, 0, 255),
+                    (255, 255, 255),
+                    (0, 0, 0),
                 ]
                 color = colors[i % len(colors)]
                 data = np.full((size[1], size[0], 3), color, dtype=np.uint8)
@@ -213,7 +219,7 @@ class SimpleNegativeGenerator:
                         data[y, x] = [
                             int(255 * x / size[0]),
                             int(255 * y / size[1]),
-                            int(255 * ((x + y) / (size[0] + size[1])))
+                            int(255 * ((x + y) / (size[0] + size[1]))),
                         ]
 
             else:
@@ -222,20 +228,20 @@ class SimpleNegativeGenerator:
                 center_x, center_y = size[0] // 2, size[1] // 2
                 for y in range(size[1]):
                     for x in range(size[0]):
-                        dist = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+                        dist = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
                         value = int((np.sin(dist / 10) + 1) * 127.5)
                         data[y, x] = [value, value, value]
 
             img = Image.fromarray(data)
-            img.save(output_subdir / f'pattern_{i:04d}.png')
+            img.save(output_subdir / f"pattern_{i:04d}.png")
 
         print(f"✅ Generated {count} pattern images in {output_subdir}")
 
     def generate_all(self, count_per_type: int = 1000):
         """Generate all types of negative examples"""
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("GENERATING NEGATIVE EXAMPLES (FAST MODE - NO VALIDATION)")
-        print("="*70 + "\n")
+        print("=" * 70 + "\n")
 
         self.rgb_with_alpha_check(count_per_type)
         self.uniform_alpha_images(count_per_type)
@@ -244,49 +250,52 @@ class SimpleNegativeGenerator:
 
         total = count_per_type * 4
 
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print(f"✅ COMPLETE: Generated {total} negative examples")
-        print("="*70)
+        print("=" * 70)
 
         # Generate manifest
         constraints = {
-            'rgb_no_alpha': "RGB images cannot have alpha steganography",
-            'uniform_alpha': "Uniform alpha channel contains no hidden data",
-            'dithered_gif': "GIF dithering is natural noise, not steganography",
-            'repetitive_hex': "Repetitive hex patterns are visible, not hidden"
+            "rgb_no_alpha": "RGB images cannot have alpha steganography",
+            "uniform_alpha": "Uniform alpha channel contains no hidden data",
+            "dithered_gif": "GIF dithering is natural noise, not steganography",
+            "repetitive_hex": "Repetitive hex patterns are visible, not hidden",
         }
 
-        manifest_path = self.output_dir / 'manifest.jsonl'
-        with open(manifest_path, 'w') as f:
-            for image in sorted(self.output_dir.rglob('*')):
-                if image.is_file() and image.suffix.lower() in ['.png', '.gif']:
+        manifest_path = self.output_dir / "manifest.jsonl"
+        with open(manifest_path, "w") as f:
+            for image in sorted(self.output_dir.rglob("*")):
+                if image.is_file() and image.suffix.lower() in [".png", ".gif"]:
                     method = image.parent.name
                     if method in constraints:
                         entry = {
                             "method": method,
                             "constraint": constraints[method],
                             "label": "clean",
-                            "file_path": str(image.relative_to(self.output_dir))
+                            "file_path": str(image.relative_to(self.output_dir)),
                         }
-                        f.write(json.dumps(entry) + '\n')
+                        f.write(json.dumps(entry) + "\n")
 
         print(f"Manifest created: {manifest_path}")
-        print("Note: Validation skipped for speed. Run validation separately if needed.")
+        print(
+            "Note: Validation skipped for speed. Run validation separately if needed."
+        )
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate negative examples for steganography detection training (fast mode)'
+        description="Generate negative examples for steganography detection training (fast mode)"
     )
     parser.add_argument(
-        '--output',
-        default='datasets/grok_submission_2025/training/v3_negatives',
-        help='Output directory for negative examples'
+        "--output",
+        default="datasets/grok_submission_2025/training/v3_negatives",
+        help="Output directory for negative examples",
     )
     parser.add_argument(
-        '--count',
+        "--count",
         type=int,
         default=100,
-        help='Number of examples per category (default: 100)'
+        help="Number of examples per category (default: 100)",
     )
 
     args = parser.parse_args()
@@ -296,5 +305,6 @@ def main():
 
     return 0
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     exit(main())

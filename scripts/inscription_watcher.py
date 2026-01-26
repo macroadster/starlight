@@ -17,7 +17,9 @@ import requests
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Forward pending Starlight inscriptions to Stargate.")
+    parser = argparse.ArgumentParser(
+        description="Forward pending Starlight inscriptions to Stargate."
+    )
     parser.add_argument(
         "--outbox",
         default=os.environ.get("STARLIGHT_INSCRIPTION_OUTBOX", "inscriptions/pending"),
@@ -30,12 +32,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--stargate-url",
-        default=os.environ.get("STARGATE_INSCRIBE_URL", "http://localhost:3001/api/inscribe"),
+        default=os.environ.get(
+            "STARGATE_INSCRIBE_URL", "http://localhost:3001/api/inscribe"
+        ),
         help="Stargate inscription endpoint.",
     )
     parser.add_argument(
         "--text",
-        default=os.environ.get("STARLIGHT_INSCRIPTION_TEXT", "starlight inscription payload"),
+        default=os.environ.get(
+            "STARLIGHT_INSCRIPTION_TEXT", "starlight inscription payload"
+        ),
         help="Default text/description to attach to the Stargate contract.",
     )
     parser.add_argument(
@@ -87,9 +93,16 @@ def forward_file(path: Path, args: argparse.Namespace) -> bool:
                 "expectedOutput": args.expected_output,
                 "price": str(args.price),
             }
-            resp = requests.post(args.stargate_url, data=data, files=files, timeout=args.timeout)
+            resp = requests.post(
+                args.stargate_url, data=data, files=files, timeout=args.timeout
+            )
         if resp.status_code >= 400:
-            logging.error("Stargate responded with %s for %s: %s", resp.status_code, path.name, resp.text)
+            logging.error(
+                "Stargate responded with %s for %s: %s",
+                resp.status_code,
+                path.name,
+                resp.text,
+            )
             return False
         logging.info("Forwarded %s to Stargate (%s)", path.name, args.stargate_url)
         return True
@@ -124,14 +137,18 @@ def process_once(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     args = parse_args()
 
     if args.once:
         process_once(args)
         return 0
 
-    logging.info("Watching %s every %ds -> %s", args.outbox, args.interval, args.stargate_url)
+    logging.info(
+        "Watching %s every %ds -> %s", args.outbox, args.interval, args.stargate_url
+    )
     try:
         while True:
             process_once(args)

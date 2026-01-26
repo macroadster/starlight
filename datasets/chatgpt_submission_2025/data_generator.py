@@ -74,12 +74,18 @@ def load_payload(md_path: Path) -> bytes:
 def is_pure_ascii(data: bytes) -> bool:
     """Checks if the byte string contains only 7-bit ASCII characters (values < 128)."""
     return all(b < 128 for b in data)
+
+
 # --------------------------------
 
 
 def next_available_index(payload_name: str, algorithm: str) -> int:
-    pattern = re.compile(rf"^{re.escape(payload_name)}_{re.escape(algorithm)}_(\d{{3}})\.")
-    used = {int(m.group(1)) for f in CLEAN_DIR.glob("*") if (m := pattern.match(f.name))}
+    pattern = re.compile(
+        rf"^{re.escape(payload_name)}_{re.escape(algorithm)}_(\d{{3}})\."
+    )
+    used = {
+        int(m.group(1)) for f in CLEAN_DIR.glob("*") if (m := pattern.match(f.name))
+    }
     for i in range(1000):
         if i not in used:
             return i
@@ -111,20 +117,33 @@ def save_image(img: Image.Image, path: Path, quality: int = 95):
         # Default fallback for other formats
         img.save(path)
 
+
 # === Clean Image Generator ===
 def generate_clean_image(size=DEFAULT_IMG_SIZE, mode="RGBA", seed=None) -> Image.Image:
     if seed is not None:
         random.seed(seed)
     w, h = size
-    img = Image.new(mode, size, color=(255, 255, 255, 255) if "A" in mode else (255, 255, 255))
+    img = Image.new(
+        mode, size, color=(255, 255, 255, 255) if "A" in mode else (255, 255, 255)
+    )
     draw = ImageDraw.Draw(img)
     for y in range(h):
         c = int(200 * (y / h)) + 30
-        color = (c, 255 - c, (c * 2) % 255, 255) if "A" in mode else (c, 255 - c, (c * 2) % 255)
+        color = (
+            (c, 255 - c, (c * 2) % 255, 255)
+            if "A" in mode
+            else (c, 255 - c, (c * 2) % 255)
+        )
         draw.line([(0, y), (w, y)], fill=color)
     for _ in range(6):
-        cx, cy, r = random.randint(0, w), random.randint(0, h), random.randint(10, min(w, h) // 4)
-        fill = tuple(random.randint(0, 255) for _ in range(3)) + ((255,) if "A" in mode else ())
+        cx, cy, r = (
+            random.randint(0, w),
+            random.randint(0, h),
+            random.randint(10, min(w, h) // 4),
+        )
+        fill = tuple(random.randint(0, 255) for _ in range(3)) + (
+            (255,) if "A" in mode else ()
+        )
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill)
     return img
 
@@ -139,20 +158,27 @@ def embed_lsb(cover: Image.Image, payload: bytes) -> Image.Image:
         raise ValueError("Payload too large for LSB embedding.")
     new_data, i = [], 0
     for r, g, b, a in pixels:
-        if i < len(bits): r = (r & 0xFE) | int(bits[i]); i += 1
-        if i < len(bits): g = (g & 0xFE) | int(bits[i]); i += 1
-        if i < len(bits): b = (b & 0xFE) | int(bits[i]); i += 1
+        if i < len(bits):
+            r = (r & 0xFE) | int(bits[i])
+            i += 1
+        if i < len(bits):
+            g = (g & 0xFE) | int(bits[i])
+            i += 1
+        if i < len(bits):
+            b = (b & 0xFE) | int(bits[i])
+            i += 1
         new_data.append((r, g, b, a))
     out = Image.new("RGBA", img.size)
     out.putdata(new_data)
     return out
+
 
 def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
     img = cover.convert("RGBA")
     prefix = b"AI42"
     payload = prefix + payload + b"\x00"  # null terminator
     pixels = list(img.getdata())
-    
+
     if len(payload) * 8 > len(pixels):
         raise ValueError("Payload too large for alpha embedding.")
 
@@ -169,36 +195,38 @@ def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
 
     # Append remaining pixels unmodified
     new_data.extend(pixels[pixel_index:])
-    
+
     out = Image.new("RGBA", img.size)
     out.putdata(new_data)
     return out
+
 
 def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
     """Minimal-change palette embedding for GIF."""
     img = cover.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
     data = list(img.getdata())
-    
+
     # Append the null terminator bit string (8 bits)
     bits = "".join(f"{b:08b}" for b in payload) + "00000000"
-    
+
     required_bits = len(bits)
     available_indices = len(data)
-    
+
     if required_bits > available_indices:
         # New, clearer error message
         raise ValueError(
             f"Payload too large for palette embedding. Requires {required_bits} bits, "
             f"but only {available_indices} indices are available."
         )
-        
+
     new_data, i = [], 0
     for idx in data:
         if i < required_bits:
             # LSB insertion
-            idx = (idx & 0xFE) | int(bits[i]); i += 1
+            idx = (idx & 0xFE) | int(bits[i])
+            i += 1
         new_data.append(idx)
-        
+
     # The image is guaranteed to have enough capacity now, but keeping the logic clean.
     out = Image.new("P", img.size)
     out.putdata(new_data)
@@ -207,11 +235,18 @@ def embed_palette(cover: Image.Image, payload: bytes) -> Image.Image:
         out.putpalette(palette)
     return out
 
+
 def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
     if piexif is None:
         raise RuntimeError("piexif not installed; cannot perform EXIF embedding.")
     img = cover.convert("RGB")
-    exif = {"0th": {}, "Exif": {piexif.ExifIFD.UserComment: b"ASCII\x00\x00\x00" + payload[:2000]}, "GPS": {}, "1st": {}, "thumbnail": None}
+    exif = {
+        "0th": {},
+        "Exif": {piexif.ExifIFD.UserComment: b"ASCII\x00\x00\x00" + payload[:2000]},
+        "GPS": {},
+        "1st": {},
+        "thumbnail": None,
+    }
     img.info["exif_bytes"] = piexif.dump(exif)
     return img
 
@@ -247,17 +282,25 @@ def algorithm_name(func: Callable) -> str:
     return n.split("embed_")[1] if n.startswith("embed_") else n
 
 
-def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable], force_regen=False, limit=None):
+def generate_for_payload(
+    payload_name: str,
+    payload: bytes,
+    funcs: List[Callable],
+    force_regen=False,
+    limit=None,
+):
     stats = {}
     for f in funcs:
         algo = algorithm_name(f)
-        
+
         # --- NEW: UTF-8 (Non-ASCII) CHECK FOR GIF PALETTE ---
         if algo == "palette" and not is_pure_ascii(payload):
-            logging.warning(f"Skipping {payload_name} for 'palette': Payload contains non-ASCII (UTF-8) characters which are unstable in LSB.")
-            continue # Skip this payload/algorithm combination entirely if it contains non-ASCII
+            logging.warning(
+                f"Skipping {payload_name} for 'palette': Payload contains non-ASCII (UTF-8) characters which are unstable in LSB."
+            )
+            continue  # Skip this payload/algorithm combination entirely if it contains non-ASCII
         # ----------------------------------------------------
-        
+
         current_payload = payload
         formats = ALGO_FORMATS.get(algo, ["png"])
         idx = next_available_index(payload_name, algo)
@@ -283,30 +326,57 @@ def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable
                 continue
             try:
                 if algo == "exif":
-                    save_jpeg_with_exif(stego_img, stego, stego_img.info.get("exif_bytes"))
+                    save_jpeg_with_exif(
+                        stego_img, stego, stego_img.info.get("exif_bytes")
+                    )
                 elif algo == "eoi":
-                    save_jpeg_with_eoi_append(stego_img, stego, stego_img.info.get("eoi_append", b""))
+                    save_jpeg_with_eoi_append(
+                        stego_img, stego, stego_img.info.get("eoi_append", b"")
+                    )
                 else:
                     save_image(stego_img, stego)
-                
+
                 # --- Create JSON Sidecar ---
-                json_path = stego.with_suffix(stego.suffix + '.json')
+                json_path = stego.with_suffix(stego.suffix + ".json")
                 embedding_data = {}
-                if algo == 'lsb':
-                    embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": "msb-first"}
-                elif algo == 'alpha':
-                    embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True, "bit_order": "lsb-first"}
-                elif algo == 'palette':
-                    embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": "msb-first"}
-                elif algo == 'exif':
-                    embedding_data = {"category": "metadata", "technique": "exif", "ai42": False}
-                elif algo == 'eoi':
-                    embedding_data = {"category": "eoi", "technique": "raw", "ai42": False}
-                
+                if algo == "lsb":
+                    embedding_data = {
+                        "category": "pixel",
+                        "technique": "lsb.rgb",
+                        "ai42": False,
+                        "bit_order": "msb-first",
+                    }
+                elif algo == "alpha":
+                    embedding_data = {
+                        "category": "pixel",
+                        "technique": "alpha",
+                        "ai42": True,
+                        "bit_order": "lsb-first",
+                    }
+                elif algo == "palette":
+                    embedding_data = {
+                        "category": "pixel",
+                        "technique": "palette",
+                        "ai42": False,
+                        "bit_order": "msb-first",
+                    }
+                elif algo == "exif":
+                    embedding_data = {
+                        "category": "metadata",
+                        "technique": "exif",
+                        "ai42": False,
+                    }
+                elif algo == "eoi":
+                    embedding_data = {
+                        "category": "eoi",
+                        "technique": "raw",
+                        "ai42": False,
+                    }
+
                 if embedding_data:
                     sidecar_content = {
                         "embedding": embedding_data,
-                        "clean_file": clean.name
+                        "clean_file": clean.name,
                     }
                     json_path.write_text(json.dumps(sidecar_content, indent=2))
 
@@ -326,8 +396,16 @@ def generate_for_payload(payload_name: str, payload: bytes, funcs: List[Callable
 def validate_dataset() -> dict:
     logging.info("\n--- Validating dataset ---")
     result = {"valid": True, "errors": []}
-    clean_files = {f.name for f in CLEAN_DIR.glob("*") if f.is_file() and not f.name.endswith('.json')}
-    stego_files = {f.name for f in STEGO_DIR.glob("*") if f.is_file() and not f.name.endswith('.json')}
+    clean_files = {
+        f.name
+        for f in CLEAN_DIR.glob("*")
+        if f.is_file() and not f.name.endswith(".json")
+    }
+    stego_files = {
+        f.name
+        for f in STEGO_DIR.glob("*")
+        if f.is_file() and not f.name.endswith(".json")
+    }
 
     # Missing pairs
     missing_in_stego = clean_files - stego_files
@@ -382,10 +460,18 @@ def summarize_dataset(validation: dict):
 
 # === CLI ===
 def main():
-    parser = argparse.ArgumentParser(description="Project Starlight Dataset Generator + Validator + Summary")
-    parser.add_argument("--validate-only", action="store_true", help="Run validation only.")
-    parser.add_argument("--regen", action="store_true", help="Force regeneration even if files exist.")
-    parser.add_argument("--limit", type=int, help="Limit images per payload per algorithm.")
+    parser = argparse.ArgumentParser(
+        description="Project Starlight Dataset Generator + Validator + Summary"
+    )
+    parser.add_argument(
+        "--validate-only", action="store_true", help="Run validation only."
+    )
+    parser.add_argument(
+        "--regen", action="store_true", help="Force regeneration even if files exist."
+    )
+    parser.add_argument(
+        "--limit", type=int, help="Limit images per payload per algorithm."
+    )
     args = parser.parse_args()
 
     ensure_dirs()
@@ -403,7 +489,9 @@ def main():
     total_stats = {}
     for md in md_files:
         name, payload = md.stem, load_payload(md)
-        stats = generate_for_payload(name, payload, funcs, force_regen=args.regen, limit=args.limit)
+        stats = generate_for_payload(
+            name, payload, funcs, force_regen=args.regen, limit=args.limit
+        )
         for k, v in stats.items():
             total_stats[k] = total_stats.get(k, 0) + v
 

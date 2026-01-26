@@ -36,8 +36,7 @@ import numpy as np
 
 import itertools
 
-warnings.filterwarnings('ignore')
-
+warnings.filterwarnings("ignore")
 
 
 try:
@@ -48,27 +47,20 @@ except ImportError:
 
     def tqdm(iterable, *args, **kwargs):
 
-        print("tqdm not found, progress bar will not be shown. To install: pip install tqdm", file=sys.stderr)
+        print(
+            "tqdm not found, progress bar will not be shown. To install: pip install tqdm",
+            file=sys.stderr,
+        )
 
         return iterable
 
 
-
-
-
-
-
 try:
-
-
 
     import piexif
 
 
-
 except ImportError:
-
-
 
     piexif = None
 
@@ -80,18 +72,20 @@ def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
     Embeds the provided payload.
     """
     img = cover.convert("RGBA")
-    
+
     pixels = list(img.getdata())
-    
+
     prefix = b"AI42"
     full_payload = prefix + payload + b" \x00"
-    
+
     if len(full_payload) * 8 > len(pixels):
-        raise ValueError(f"Payload too large for alpha embedding. Needs {len(full_payload) * 8} bits, has {len(pixels)}.")
-    
+        raise ValueError(
+            f"Payload too large for alpha embedding. Needs {len(full_payload) * 8} bits, has {len(pixels)}."
+        )
+
     new_data = []
     pixel_index = 0
-    
+
     for byte_val in full_payload:
         # Embed each byte in LSB-first order (bit 0 = LSB of byte)
         for bit_index in range(8):
@@ -101,36 +95,38 @@ def embed_alpha(cover: Image.Image, payload: bytes) -> Image.Image:
             a = (a & 0xFE) | bit_to_embed
             new_data.append((r, g, b, a))
             pixel_index += 1
-    
+
     new_data.extend(pixels[pixel_index:])
     out = Image.new("RGBA", img.size)
     out.putdata(new_data)
     return out
 
 
-def embed_lsb(cover: Image.Image, payload: bytes, bit_order: str = "random") -> tuple[Image.Image, str]:
+def embed_lsb(
+    cover: Image.Image, payload: bytes, bit_order: str = "random"
+) -> tuple[Image.Image, str]:
     """
     Embed in RGB channels using either MSB-first or LSB-first bit order.
     SPEC: Generic LSB, null-terminated, no hint. Always produces an RGB image.
     Embeds the provided payload.
-    
+
     Args:
         cover: Cover image to embed payload in
         payload: Payload bytes to embed
         bit_order: "msb-first", "lsb-first", or "random" to randomly choose
-        
+
     Returns:
         Tuple of (stego_image, actual_bit_order_used)
     """
     img = cover.convert("RGB")  # Always convert to RGB
     pixels = list(img.getdata())
-    
-    max_lsb_bits = len(pixels) * 3 # Each pixel has 3 RGB bits
-    
+
+    max_lsb_bits = len(pixels) * 3  # Each pixel has 3 RGB bits
+
     # Choose bit order
     if bit_order == "random":
         bit_order = random.choice(["msb-first", "lsb-first"])
-    
+
     # Encode bits based on chosen order with null terminator
     if bit_order == "lsb-first":
         # LSB-first (byte-reversed) encoding
@@ -138,13 +134,15 @@ def embed_lsb(cover: Image.Image, payload: bytes, bit_order: str = "random") -> 
     else:
         # MSB-first encoding (default)
         bits = "".join(f"{b:08b}" for b in payload) + "00000000"
-    
+
     if len(bits) > max_lsb_bits:
-        raise ValueError(f"Payload too large for LSB embedding. Needs {len(bits)} bits, has {max_lsb_bits}.")
-    
+        raise ValueError(
+            f"Payload too large for LSB embedding. Needs {len(bits)} bits, has {max_lsb_bits}."
+        )
+
     new_data = []
     bit_index = 0
-    
+
     for r, g, b in pixels:
         if bit_index < len(bits):
             r = (r & 0xFE) | int(bits[bit_index])
@@ -156,12 +154,15 @@ def embed_lsb(cover: Image.Image, payload: bytes, bit_order: str = "random") -> 
             b = (b & 0xFE) | int(bits[bit_index])
             bit_index += 1
         new_data.append((r, g, b))
-    
+
     out = Image.new("RGB", img.size)
     out.putdata(new_data)
     return out, bit_order
 
-def embed_palette(cover: Image.Image, payload: bytes, bit_order: str = "random") -> tuple[Image.Image, str]:
+
+def embed_palette(
+    cover: Image.Image, payload: bytes, bit_order: str = "random"
+) -> tuple[Image.Image, str]:
     """
     Embed in palette indices using either MSB-first or LSB-first bit order.
     SPEC: MSB-first, null-terminated. Embeds the provided payload.
@@ -174,7 +175,7 @@ def embed_palette(cover: Image.Image, payload: bytes, bit_order: str = "random")
     Returns:
         Tuple of (stego_image, actual_bit_order_used)
     """
-    if cover.mode != 'P':
+    if cover.mode != "P":
         img = cover.convert("P", colors=256)
     else:
         img = cover.copy()
@@ -216,9 +217,9 @@ def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
     """
     if piexif is None:
         raise RuntimeError("piexif not installed; cannot perform EXIF embedding.")
-    
+
     img = cover.convert("RGB")
-    
+
     # SPEC: Use ASCII encoding header
     full_payload = b"ASCII\x00\x00\x00" + payload
     if len(full_payload) > 65535:
@@ -226,12 +227,10 @@ def embed_exif(cover: Image.Image, payload: bytes) -> Image.Image:
 
     exif_dict = {
         "0th": {},
-        "Exif": {
-            piexif.ExifIFD.UserComment: full_payload
-        },
+        "Exif": {piexif.ExifIFD.UserComment: full_payload},
         "GPS": {},
         "1st": {},
-        "thumbnail": None
+        "thumbnail": None,
     }
 
     exif_bytes = piexif.dump(exif_dict)
@@ -245,12 +244,13 @@ def embed_eoi(cover: Image.Image, payload: bytes) -> Image.Image:
     SPEC: Raw append after image end (may have hint prefix). Works for JPEG, PNG, GIF, WebP.
     """
     img = cover.copy()  # Don't convert to RGB, preserve format
-    
+
     img.info["eoi_append"] = payload
     return img
 
 
 # === SAVING LOGIC ===
+
 
 def save_image(img: Image.Image, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -281,9 +281,6 @@ def save_image(img: Image.Image, path: Path):
         img.save(path)
 
 
-
-
-
 def save_with_eoi_append(img, path, append_bytes, quality=95):
     path.parent.mkdir(parents=True, exist_ok=True)
     ext = path.suffix.lower()
@@ -292,7 +289,7 @@ def save_with_eoi_append(img, path, append_bytes, quality=95):
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=quality)
         data = buf.getvalue()
-        if b'\xff\xd9' not in data:
+        if b"\xff\xd9" not in data:
             raise RuntimeError("JPEG EOI marker not found.")
         new_data = data + append_bytes
         path.write_bytes(new_data)
@@ -311,11 +308,12 @@ def save_with_eoi_append(img, path, append_bytes, quality=95):
         else:
             img.save(path)
         # Append bytes to the file
-        with open(path, 'ab') as f:
+        with open(path, "ab") as f:
             f.write(append_bytes)
 
 
 # === MAIN SCRIPT ===
+
 
 def main():
     logging.basicConfig(
@@ -327,16 +325,36 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate stego validation set based on markdown payloads."
     )
-    parser.add_argument("--clean_source", type=str, default="clean",
-                         help="Directory of clean source images.")
-    parser.add_argument("--output_stego", type=str, default="stego",
-                         help="Directory to save generated stego images.")
-    parser.add_argument("--limit", type=int, default=10,
-                         help="Limit the number of clean images to use for generation.")
-    parser.add_argument("--methods", type=str, default="exif,lsb,eoi,alpha,palette",
-                         help="Comma-separated methods to use: exif, lsb, eoi, alpha, palette.")
-    parser.add_argument("--seeds_dir", type=str, default="seeds",
-                         help="Directory containing markdown seed files for payloads.")
+    parser.add_argument(
+        "--clean_source",
+        type=str,
+        default="clean",
+        help="Directory of clean source images.",
+    )
+    parser.add_argument(
+        "--output_stego",
+        type=str,
+        default="stego",
+        help="Directory to save generated stego images.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Limit the number of clean images to use for generation.",
+    )
+    parser.add_argument(
+        "--methods",
+        type=str,
+        default="exif,lsb,eoi,alpha,palette",
+        help="Comma-separated methods to use: exif, lsb, eoi, alpha, palette.",
+    )
+    parser.add_argument(
+        "--seeds_dir",
+        type=str,
+        default="seeds",
+        help="Directory containing markdown seed files for payloads.",
+    )
     args = parser.parse_args()
 
     methods = [m.strip().lower() for m in args.methods.split(",")]
@@ -346,7 +364,11 @@ def main():
 
     # Load markdown payloads from the specified seeds directory
     script_dir = Path(__file__).parent
-    seeds_dir = script_dir / args.seeds_dir if not Path(args.seeds_dir).is_absolute() else Path(args.seeds_dir)
+    seeds_dir = (
+        script_dir / args.seeds_dir
+        if not Path(args.seeds_dir).is_absolute()
+        else Path(args.seeds_dir)
+    )
     md_files = sorted(list(seeds_dir.glob("*.md")))
     if not md_files:
         logging.error(f"No markdown payload files found in {seeds_dir}")
@@ -364,7 +386,7 @@ def main():
     source_images_unverified = [p for p in source_dir.iterdir() if p.is_file()]
     source_images = []
     for path in source_images_unverified:
-        if path.name == '.DS_Store':
+        if path.name == ".DS_Store":
             continue
         try:
             with Image.open(path) as img:
@@ -372,12 +394,12 @@ def main():
             source_images.append(path)
         except Exception as e:
             logging.warning(f"Skipping non-image or corrupt file: {path.name} ({e})")
-    
+
     logging.info(f"Found {len(source_images)} valid clean images.")
 
     # Apply limit if specified
     if args.limit is not None and args.limit > 0:
-        source_images = source_images[:args.limit]
+        source_images = source_images[: args.limit]
         logging.info(f"Using a limited set of {len(source_images)} clean images.")
 
     # Pre-load payloads
@@ -386,7 +408,9 @@ def main():
         try:
             payloads[md_file] = md_file.read_bytes()
         except Exception as e:
-            logging.warning(f"Could not read payload file {md_file.name}, skipping: {e}")
+            logging.warning(
+                f"Could not read payload file {md_file.name}, skipping: {e}"
+            )
 
     # Define which algorithms are suitable for which source file extensions
     algo_to_suitable_exts = {
@@ -394,13 +418,16 @@ def main():
         "exif": {".jpg", ".jpeg", ".png", ".webp"},
         "alpha": {".png", ".webp"},
         "palette": {".gif", ".bmp"},
-        "lsb": {".png", ".webp", ".bmp"}
+        "lsb": {".png", ".webp", ".bmp"},
     }
 
     # Map algorithm names to functions
     all_algorithms = {
-        "lsb": embed_lsb, "alpha": embed_alpha, "palette": embed_palette,
-        "exif": embed_exif, "eoi": embed_eoi
+        "lsb": embed_lsb,
+        "alpha": embed_alpha,
+        "palette": embed_palette,
+        "exif": embed_exif,
+        "eoi": embed_eoi,
     }
     algorithms = {k: v for k, v in all_algorithms.items() if k in methods}
 
@@ -415,13 +442,15 @@ def main():
     total_generated_count = 0
     image_indices = {}  # To track index for each payload-algorithm pair
 
-    for (md_file, payload_content), (algo_name, embed_func), clean_path in tqdm(tasks, desc="Generating stego images", unit="image"):
+    for (md_file, payload_content), (algo_name, embed_func), clean_path in tqdm(
+        tasks, desc="Generating stego images", unit="image"
+    ):
         try:
             # === NEW: Enforce format alignment ===
             source_ext = clean_path.suffix.lower()
             suitable_exts = algo_to_suitable_exts.get(algo_name)
             if suitable_exts and source_ext not in suitable_exts:
-                continue # Skip this combination as it's not format-aligned
+                continue  # Skip this combination as it's not format-aligned
 
             payload_name = md_file.stem
 
@@ -430,15 +459,17 @@ def main():
             image_index = image_indices.get(index_key, 0)
 
             cover_img = Image.open(clean_path)
-            
+
             # This check is now redundant due to the suitability mapping, but kept for safety
-            if cover_img.mode not in ['RGB', 'RGBA', 'P']:
-                cover_img = cover_img.convert('RGB')
+            if cover_img.mode not in ["RGB", "RGBA", "P"]:
+                cover_img = cover_img.convert("RGB")
 
             # Determine bit order for lsb and palette: alternate msb-first and lsb-first
             if algo_name in ["lsb", "palette"]:
                 bit_order = "msb-first" if image_index % 2 == 0 else "lsb-first"
-                stego_img, actual_bit_order = embed_func(cover_img.copy(), payload_content, bit_order=bit_order)
+                stego_img, actual_bit_order = embed_func(
+                    cover_img.copy(), payload_content, bit_order=bit_order
+                )
             else:
                 stego_img = embed_func(cover_img.copy(), payload_content)
                 actual_bit_order = None
@@ -455,44 +486,71 @@ def main():
             output_format = source_ext
 
             # Format output filename
-            stego_filename = f"{payload_name}_{algo_name}_{image_index:03d}{output_format}"
+            stego_filename = (
+                f"{payload_name}_{algo_name}_{image_index:03d}{output_format}"
+            )
             stego_path = stego_dir / stego_filename
 
             # Save the stego image
             if algo_name == "eoi":
-                save_with_eoi_append(stego_img, stego_path, stego_img.info.get("eoi_append", b""))
+                save_with_eoi_append(
+                    stego_img, stego_path, stego_img.info.get("eoi_append", b"")
+                )
             else:
                 save_image(stego_img, stego_path)
 
             # Create and save the JSON sidecar
-            json_path = stego_path.with_suffix(stego_path.suffix + '.json')
+            json_path = stego_path.with_suffix(stego_path.suffix + ".json")
             embedding_data = {}
-            if algo_name == 'alpha':
-                embedding_data = {"category": "pixel", "technique": "alpha", "ai42": True, "bit_order": "lsb-first"}
-            elif algo_name == 'palette':
-                embedding_data = {"category": "pixel", "technique": "palette", "ai42": False, "bit_order": actual_bit_order}
-            elif algo_name == 'lsb':
-                embedding_data = {"category": "pixel", "technique": "lsb.rgb", "ai42": False, "bit_order": actual_bit_order}
-            elif algo_name == 'exif':
-                embedding_data = {"category": "metadata", "technique": "exif", "ai42": False}
-            elif algo_name == 'eoi':
+            if algo_name == "alpha":
+                embedding_data = {
+                    "category": "pixel",
+                    "technique": "alpha",
+                    "ai42": True,
+                    "bit_order": "lsb-first",
+                }
+            elif algo_name == "palette":
+                embedding_data = {
+                    "category": "pixel",
+                    "technique": "palette",
+                    "ai42": False,
+                    "bit_order": actual_bit_order,
+                }
+            elif algo_name == "lsb":
+                embedding_data = {
+                    "category": "pixel",
+                    "technique": "lsb.rgb",
+                    "ai42": False,
+                    "bit_order": actual_bit_order,
+                }
+            elif algo_name == "exif":
+                embedding_data = {
+                    "category": "metadata",
+                    "technique": "exif",
+                    "ai42": False,
+                }
+            elif algo_name == "eoi":
                 embedding_data = {"category": "eoi", "technique": "raw", "ai42": False}
 
             if embedding_data:
                 sidecar_content = {
                     "embedding": embedding_data,
-                    "clean_file": clean_path.name
+                    "clean_file": clean_path.name,
                 }
-                with open(json_path, 'w') as f:
+                with open(json_path, "w") as f:
                     json.dump(sidecar_content, f, indent=2)
 
             image_indices[index_key] = image_index + 1
             total_generated_count += 1
 
         except Exception as e:
-            logging.warning(f"Skipped: {clean_path.name} with {md_file.name} ({algo_name}) - {e}")
+            logging.warning(
+                f"Skipped: {clean_path.name} with {md_file.name} ({algo_name}) - {e}"
+            )
 
-    logging.info(f"\nGeneration complete. Total stego images created: {total_generated_count}")
+    logging.info(
+        f"\nGeneration complete. Total stego images created: {total_generated_count}"
+    )
 
 
 if __name__ == "__main__":

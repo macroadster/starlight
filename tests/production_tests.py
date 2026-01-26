@@ -26,6 +26,7 @@ except ImportError:
 # ONNX imports
 try:
     import onnxruntime as ort
+
     ONNX_AVAILABLE = True
 except ImportError:
     ONNX_AVAILABLE = False
@@ -34,6 +35,7 @@ except ImportError:
 # PIL for image manipulation
 try:
     from PIL import Image
+
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -42,6 +44,7 @@ except ImportError:
 # psutil for memory monitoring
 try:
     import psutil
+
     PSUTIL_AVAILABLE = True
 except ImportError:
     PSUTIL_AVAILABLE = False
@@ -53,8 +56,10 @@ class ProductionTestSuite(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment"""
-        self.model_path = os.getenv('STARLIGHT_MODEL', 'models/detector_balanced.onnx')
-        self.dataset_path = os.getenv('STARLIGHT_DATASET', 'datasets/sample_submission_2025')
+        self.model_path = os.getenv("STARLIGHT_MODEL", "models/detector_balanced.onnx")
+        self.dataset_path = os.getenv(
+            "STARLIGHT_DATASET", "datasets/sample_submission_2025"
+        )
 
         if ONNX_AVAILABLE:
             try:
@@ -83,10 +88,15 @@ class ProductionTestSuite(unittest.TestCase):
         self.assertLessEqual(fpr, 0.01, f"FPR {fpr:.2f}% exceeds benchmark 0.00%")
 
         # Verify detection rate meets benchmark
-        self.assertGreaterEqual(overall_detection, 95.0,
-                               f"Detection rate {overall_detection:.1f}% below benchmark {self.expected_detection_rate}%")
+        self.assertGreaterEqual(
+            overall_detection,
+            95.0,
+            f"Detection rate {overall_detection:.1f}% below benchmark {self.expected_detection_rate}%",
+        )
 
-        print(f"✅ Benchmark verification: FPR={fpr:.2f}%, Detection={overall_detection:.1f}%")
+        print(
+            f"✅ Benchmark verification: FPR={fpr:.2f}%, Detection={overall_detection:.1f}%"
+        )
 
     def test_02_fresh_dataset_testing(self):
         """Test on completely new, unseen images"""
@@ -102,10 +112,10 @@ class ProductionTestSuite(unittest.TestCase):
 
             # Generate some random images
             for i in range(10):
-                img = Image.new('RGB', (64, 64), color=(i*25, i*25, i*25))
-                img.save(temp_path / f'fresh_clean_{i}.png')
+                img = Image.new("RGB", (64, 64), color=(i * 25, i * 25, i * 25))
+                img.save(temp_path / f"fresh_clean_{i}.png")
 
-            if list(temp_path.glob('*.png')):
+            if list(temp_path.glob("*.png")):
                 fpr = calculate_fpr(self.model, str(temp_path))
                 self.assertLessEqual(fpr, 1.0, f"High FPR on fresh images: {fpr:.1f}%")
 
@@ -124,25 +134,27 @@ class ProductionTestSuite(unittest.TestCase):
 
             if PIL_AVAILABLE:
                 # Large image
-                large_img = Image.new('RGB', (2048, 2048), color=(128, 128, 128))
-                large_path = temp_path / 'large.png'
+                large_img = Image.new("RGB", (2048, 2048), color=(128, 128, 128))
+                large_path = temp_path / "large.png"
                 large_img.save(large_path)
-                test_cases.append(('large_image', large_path))
+                test_cases.append(("large_image", large_path))
 
                 # Unusual format (if supported)
                 try:
-                    unusual_img = Image.new('RGBA', (64, 64), color=(128, 128, 128, 255))
-                    unusual_path = temp_path / 'unusual.tiff'
+                    unusual_img = Image.new(
+                        "RGBA", (64, 64), color=(128, 128, 128, 255)
+                    )
+                    unusual_path = temp_path / "unusual.tiff"
                     unusual_img.save(unusual_path)
-                    test_cases.append(('unusual_format', unusual_path))
+                    test_cases.append(("unusual_format", unusual_path))
                 except:
                     pass
 
                 # Corrupted file
-                corrupt_path = temp_path / 'corrupt.png'
-                with open(corrupt_path, 'wb') as f:
-                    f.write(b'not an image')
-                test_cases.append(('corrupt_file', corrupt_path))
+                corrupt_path = temp_path / "corrupt.png"
+                with open(corrupt_path, "wb") as f:
+                    f.write(b"not an image")
+                test_cases.append(("corrupt_file", corrupt_path))
             else:
                 # Skip edge case tests if PIL not available
                 self.skipTest("PIL not available for edge case testing")
@@ -164,7 +176,9 @@ class ProductionTestSuite(unittest.TestCase):
 
         # Test concurrent requests
         def worker():
-            latencies = benchmark_inference(self.model, sample_size=10, dataset_path=self.dataset_path)
+            latencies = benchmark_inference(
+                self.model, sample_size=10, dataset_path=self.dataset_path
+            )
             return latencies
 
         # Run 4 concurrent workers
@@ -200,14 +214,18 @@ class ProductionTestSuite(unittest.TestCase):
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
 
         # Run some inferences
-        latencies = benchmark_inference(self.model, sample_size=50, dataset_path=self.dataset_path)
+        latencies = benchmark_inference(
+            self.model, sample_size=50, dataset_path=self.dataset_path
+        )
 
         # Check memory after
         final_memory = process.memory_info().rss / 1024 / 1024  # MB
         memory_increase = final_memory - initial_memory
 
         # Memory increase should be reasonable (< 500MB)
-        self.assertLess(memory_increase, 500, f"High memory usage: +{memory_increase:.1f}MB")
+        self.assertLess(
+            memory_increase, 500, f"High memory usage: +{memory_increase:.1f}MB"
+        )
 
         print(f"✅ Memory test: {memory_increase:.1f}MB increase")
 
@@ -217,8 +235,10 @@ class ProductionTestSuite(unittest.TestCase):
             self.skipTest("ONNX not available")
 
         # Just test that model loads and runs on current platform
-        result = infer_image(self.model, list(Path(self.dataset_path).glob("clean/*.png"))[0])
-        self.assertIn('is_steganography', result)
+        result = infer_image(
+            self.model, list(Path(self.dataset_path).glob("clean/*.png"))[0]
+        )
+        self.assertIn("is_steganography", result)
 
         print("✅ Cross-platform test: model functional on current platform")
 
@@ -232,19 +252,23 @@ def calculate_fpr(model, dataset_path):
     fp_count = 0
     for img_path in clean_images[:100]:  # Limit for speed
         pred = infer_image(model, str(img_path))
-        if pred.get('is_steganography', False):
+        if pred.get("is_steganography", False):
             fp_count += 1
     return (fp_count / len(clean_images)) * 100 if clean_images else 0.0
 
 
 def calculate_detection_rates(model, dataset_path):
     """Calculate detection rates per method"""
-    methods = ['lsb', 'alpha', 'palette', 'exif', 'eoi']
+    methods = ["lsb", "alpha", "palette", "exif", "eoi"]
     results = {}
     for method in methods:
         stego_files = list(Path(dataset_path).glob(f"stego/{method}/**/*.png"))
         if stego_files:
-            tp_count = sum(1 for f in stego_files[:20] if infer_image(model, str(f)).get('is_steganography', False))
+            tp_count = sum(
+                1
+                for f in stego_files[:20]
+                if infer_image(model, str(f)).get("is_steganography", False)
+            )
             results[method] = (tp_count / len(stego_files[:20])) * 100
         else:
             results[method] = 0.0
@@ -275,19 +299,28 @@ def infer_image(model, img_path):
         return {"error": "starlight_utils not available", "is_steganography": False}
 
     try:
-        pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features = load_unified_input(img_path)
+        (
+            pixel_tensor,
+            meta,
+            alpha,
+            lsb,
+            palette,
+            palette_lsb,
+            format_features,
+            content_features,
+        ) = load_unified_input(img_path)
 
         lsb_chw = lsb.permute(2, 0, 1) if lsb.dim() == 3 else lsb
         alpha_chw = alpha.unsqueeze(0) if alpha.dim() == 2 else alpha
 
         inputs = {
-            'meta': np.expand_dims(meta.numpy(), 0),
-            'alpha': np.expand_dims(alpha_chw.numpy(), 0),
-            'lsb': np.expand_dims(lsb_chw.numpy(), 0),
-            'palette': np.expand_dims(palette.numpy(), 0),
-            'format_features': np.expand_dims(format_features.numpy(), 0),
-            'content_features': np.expand_dims(content_features.numpy(), 0),
-            'bit_order': np.array([[0.0, 1.0, 0.0]], dtype=np.float32)
+            "meta": np.expand_dims(meta.numpy(), 0),
+            "alpha": np.expand_dims(alpha_chw.numpy(), 0),
+            "lsb": np.expand_dims(lsb_chw.numpy(), 0),
+            "palette": np.expand_dims(palette.numpy(), 0),
+            "format_features": np.expand_dims(format_features.numpy(), 0),
+            "content_features": np.expand_dims(content_features.numpy(), 0),
+            "bit_order": np.array([[0.0, 1.0, 0.0]], dtype=np.float32),
         }
 
         outputs = model.run(None, inputs)
@@ -300,7 +333,7 @@ def infer_image(model, img_path):
         return {
             "stego_probability": prob,
             "predicted_method_id": predicted_method_id,
-            "is_steganography": prob > 0.5
+            "is_steganography": prob > 0.5,
         }
     except Exception as e:
         return {"error": str(e), "is_steganography": False}
@@ -308,17 +341,23 @@ def infer_image(model, img_path):
 
 def main():
     """Run production tests"""
-    parser = argparse.ArgumentParser(description='Production readiness tests for Starlight V4')
-    parser.add_argument('--model', help='Path to model file')
-    parser.add_argument('--dataset', help='Path to dataset directory')
-    parser.add_argument('--output', default='results/v4_validation_report.json', help='Output report file')
+    parser = argparse.ArgumentParser(
+        description="Production readiness tests for Starlight V4"
+    )
+    parser.add_argument("--model", help="Path to model file")
+    parser.add_argument("--dataset", help="Path to dataset directory")
+    parser.add_argument(
+        "--output",
+        default="results/v4_validation_report.json",
+        help="Output report file",
+    )
     args = parser.parse_args()
 
     # Set environment variables if provided
     if args.model:
-        os.environ['STARLIGHT_MODEL'] = args.model
+        os.environ["STARLIGHT_MODEL"] = args.model
     if args.dataset:
-        os.environ['STARLIGHT_DATASET'] = args.dataset
+        os.environ["STARLIGHT_DATASET"] = args.dataset
 
     # Run tests
     suite = unittest.TestLoader().loadTestsFromTestCase(ProductionTestSuite)
@@ -327,30 +366,30 @@ def main():
 
     # Generate report
     report = {
-        'timestamp': datetime.now().isoformat(),
-        'model': args.model or 'models/detector_balanced.onnx',
-        'dataset': args.dataset or 'datasets/sample_submission_2025',
-        'tests_run': result.testsRun,
-        'failures': len(result.failures),
-        'errors': len(result.errors),
-        'success': result.wasSuccessful(),
-        'details': {
-            'failures': [{'test': str(f[0]), 'error': f[1]} for f in result.failures],
-            'errors': [{'test': str(e[0]), 'error': e[1]} for e in result.errors]
-        }
+        "timestamp": datetime.now().isoformat(),
+        "model": args.model or "models/detector_balanced.onnx",
+        "dataset": args.dataset or "datasets/sample_submission_2025",
+        "tests_run": result.testsRun,
+        "failures": len(result.failures),
+        "errors": len(result.errors),
+        "success": result.wasSuccessful(),
+        "details": {
+            "failures": [{"test": str(f[0]), "error": f[1]} for f in result.failures],
+            "errors": [{"test": str(e[0]), "error": e[1]} for e in result.errors],
+        },
     }
 
     # Save report
     output_path = Path(args.output)
     output_path.parent.mkdir(exist_ok=True)
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
 
     print(f"\n📊 Report saved to: {output_path}")
     print(f"✅ Production ready: {report['success']}")
 
-    return 0 if report['success'] else 1
+    return 0 if report["success"] else 1
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     exit(main())
