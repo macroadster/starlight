@@ -316,9 +316,6 @@ def extract_enhanced_metadata_features(image_path):
     # --- EOI (Tail) Extraction ---
     tail = extract_post_tail(raw, format_hint)
 
-    # Debug prints
-
-
     # Enhanced features (next 1024 bytes)
     enhanced_features = np.zeros(1024, dtype=np.float32)
 
@@ -759,8 +756,30 @@ class BalancedStarlightDetector(nn.Module):
             nn.AdaptiveAvgPool2d(8)
         )
 
+        # Attention Mechanisms - Enabled for EOI/EXIF Detection
+        self.eoi_attention = nn.Sequential(
+            nn.Linear(2048, 512),  # Metadata stream features
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),  # Attention weight for EOI
+            nn.Sigmoid()
+        )
+        
+        self.exif_attention = nn.Sequential(
+            nn.Linear(2048, 512),  # Metadata stream features
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),  # Attention weight for EXIF
+            nn.Sigmoid()
+        )
+
         # Fusion and classification
-        self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16  # Updated for 8 streams
+        # Original fusion dim + 512 for attention features (256 * 2)
+        # self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16  # Original: 18528
+        self.fusion_dim = 18528 + 512  # Adding attention features
+
         self.fusion = nn.Sequential(
             nn.Linear(self.fusion_dim, 512),
             nn.ReLU(),
@@ -774,6 +793,7 @@ class BalancedStarlightDetector(nn.Module):
         # Heads
         self.stego_head = nn.Linear(64, 1)
         self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
+        self.bit_order_head = nn.Linear(64, 3) # lsb-first, msb-first, none
         self.embedding_head = nn.Linear(64, 64)
 
     def forward(self, pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features):
@@ -782,10 +802,22 @@ class BalancedStarlightDetector(nn.Module):
         pixel_tensor = pixel_tensor.reshape(pixel_tensor.size(0), -1)
 
         # Metadata stream with weighting
+        meta_features = meta # Keep original features for attention
         meta = meta.unsqueeze(1)  # Add channel dimension
         meta = self.meta_conv(meta)
         meta = meta.reshape(meta.size(0), -1)
         meta = meta * self.meta_weight  # Apply weighting to reduce dominance
+
+        # Calculate attention scores
+        eoi_attn = self.eoi_attention(meta_features)
+        exif_attn = self.exif_attention(meta_features)
+        
+        # Create attention features
+        # Expand attention weights to feature dimensions (simple scaling for now)
+        eoi_feat = torch.ones(meta.size(0), 256).to(meta.device) * eoi_attn
+        exif_feat = torch.ones(meta.size(0), 256).to(meta.device) * exif_attn
+        
+        attention_features = torch.cat([eoi_feat, exif_feat], dim=1)
 
         # Alpha stream
         alpha = self.alpha_conv(alpha)
@@ -808,8 +840,8 @@ class BalancedStarlightDetector(nn.Module):
         # Content features stream
         content_features = self.content_features_fc(content_features)
 
-        # Fusion of all 8 streams
-        fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features], dim=1)
+        # Fusion of all 8 streams + attention features
+        fused = torch.cat([pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, attention_features], dim=1)
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
@@ -819,13 +851,18 @@ class BalancedStarlightDetector(nn.Module):
         # Outputs
         stego_logits = self.stego_head(cls_features)
         method_logits = self.method_head(cls_features)
+        bit_order_logits = self.bit_order_head(cls_features)
         embedding = self.embedding_head(cls_features)
 
         # Get method predictions
         method_probs = F.softmax(method_logits, dim=1)
         method_id = torch.argmax(method_probs, dim=1)
+        
+        # Get bit order predictions
+        bit_order_probs = F.softmax(bit_order_logits, dim=1)
+        bit_order_id = torch.argmax(bit_order_probs, dim=1)
 
-        return stego_logits, method_logits, method_id, method_probs, embedding
+        return stego_logits, method_logits, bit_order_logits, method_id, method_probs, bit_order_id, embedding
 
 def compute_class_weights(method_labels):
     """Compute class weights to balance training"""
@@ -908,6 +945,7 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
     # Loss functions with class weighting
     stego_criterion = nn.BCEWithLogitsLoss()
     method_criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    bit_order_criterion = nn.CrossEntropyLoss()
 
     # Training loop
     print("Starting training...")
@@ -920,8 +958,10 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
         total_loss = 0
         stego_correct = 0
         method_correct = 0
+        bit_order_correct = 0
         stego_total = 0
         method_total = 0
+        bit_order_total = 0
 
         for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
             pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features, bit_order_feat, stego_labels, method_labels = batch
@@ -940,7 +980,7 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
             optimizer.zero_grad()
 
             # Forward pass
-            stego_logits, method_logits, method_ids, method_probs, embeddings = model(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
+            stego_logits, method_logits, bit_order_logits, method_ids, method_probs, bit_order_ids, embeddings = model(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
 
             # Compute losses
             stego_loss = stego_criterion(stego_logits.reshape(-1), stego_labels)
@@ -951,9 +991,13 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
                 method_loss = method_criterion(method_logits[stego_mask], method_labels[stego_mask])
             else:
                 method_loss = torch.tensor(0.0).to(device)
+            
+            # Bit order loss (all samples have a bit order label, even if 'none')
+            bit_order_labels = torch.argmax(bit_order_feat, dim=1)
+            bit_order_loss = bit_order_criterion(bit_order_logits, bit_order_labels)
 
             # Dynamic loss weighting - reduce method loss importance to avoid overfitting
-            total_loss_batch = stego_loss + 0.1 * method_loss #+ 0.05 * method_loss  # Further reduced
+            total_loss_batch = stego_loss + 0.1 * method_loss + 0.1 * bit_order_loss #+ 0.05 * method_loss  # Further reduced
 
             # Backward pass
             total_loss_batch.backward()
@@ -968,14 +1012,19 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
             if stego_mask.sum() > 0:
                 method_correct += (method_ids[stego_mask] == method_labels[stego_mask]).sum().item()
                 method_total += stego_mask.sum().item()
+            
+            bit_order_correct += (bit_order_ids == bit_order_labels).sum().item()
+            bit_order_total += bit_order_labels.size(0)
 
         # Validation
         model.eval()
         val_loss = 0
         val_stego_correct = 0
         val_method_correct = 0
+        val_bit_order_correct = 0
         val_stego_total = 0
         val_method_total = 0
+        val_bit_order_total = 0
         val_method_correct_per_class = Counter()
         val_method_total_per_class = Counter()
         id_to_method = {v: k for k, v in val_dataset.method_map.items()}
@@ -995,15 +1044,18 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
                 stego_labels = stego_labels.float().to(device)
                 method_labels = method_labels.long().to(device)
 
-                stego_logits, method_logits, method_ids, method_probs, embeddings = model(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
+                stego_logits, method_logits, bit_order_logits, method_ids, method_probs, bit_order_ids, embeddings = model(pixel_tensor, meta, alpha, lsb, palette, palette_lsb, format_features, content_features)
                 stego_loss = stego_criterion(stego_logits.reshape(-1), stego_labels)
                 stego_mask = stego_labels > 0.5
                 if stego_mask.sum() > 0:
                     method_loss = method_criterion(method_logits[stego_mask], method_labels[stego_mask])
                 else:
                     method_loss = torch.tensor(0.0).to(device)
+                
+                bit_order_labels = torch.argmax(bit_order_feat, dim=1)
+                bit_order_loss = bit_order_criterion(bit_order_logits, bit_order_labels)
 
-                val_loss += (stego_loss + 0.01 * method_loss).item()
+                val_loss += (stego_loss + 0.01 * method_loss + 0.01 * bit_order_loss).item()
                 stego_pred = (torch.sigmoid(stego_logits) > 0.5).float()
                 val_stego_correct += (stego_pred.squeeze() == stego_labels).sum().item()
                 val_stego_total += stego_labels.size(0)
@@ -1020,18 +1072,23 @@ def train_model(train_clean_dir, train_stego_dir, train_negative_dir, val_clean_
                         val_method_total_per_class[label] += 1
                         if pred == label:
                             val_method_correct_per_class[label] += 1
+                
+                val_bit_order_correct += (bit_order_ids == bit_order_labels).sum().item()
+                val_bit_order_total += bit_order_labels.size(0)
 
         # Print statistics
         avg_loss = total_loss / len(train_dataloader)
         stego_acc = stego_correct / stego_total if stego_total > 0 else 0
         method_acc = method_correct / method_total if method_total > 0 else 0
+        bit_order_acc = bit_order_correct / bit_order_total if bit_order_total > 0 else 0
 
         avg_val_loss = val_loss / len(val_dataloader)
         val_stego_acc = val_stego_correct / val_stego_total if val_stego_total > 0 else 0
         val_method_acc = val_method_correct / val_method_total if val_method_total > 0 else 0
+        val_bit_order_acc = val_bit_order_correct / val_bit_order_total if val_bit_order_total > 0 else 0
 
-        print(f"Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, Stego Acc={stego_acc:.3f}, Method Acc={method_acc:.3f}")
-        print(f"Val Loss={avg_val_loss:.4f}, Val Stego Acc={val_stego_acc:.3f}, Val Method Acc={val_method_acc:.3f}")
+        print(f"Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, Stego Acc={stego_acc:.3f}, Method Acc={method_acc:.3f}, Bit Order Acc={bit_order_acc:.3f}")
+        print(f"Val Loss={avg_val_loss:.4f}, Val Stego Acc={val_stego_acc:.3f}, Val Method Acc={val_method_acc:.3f}, Val Bit Order Acc={val_bit_order_acc:.3f}")
 
         # Print per-class accuracy
         print("  Validation Method Accuracy per class:")
@@ -1075,5 +1132,3 @@ if __name__ == "__main__":
 
     os.makedirs("models", exist_ok=True)
     train_model(args.train_clean_dir, args.train_stego_dir, args.train_negative_dir, args.val_clean_dir, args.val_stego_dir, args.epochs, args.batch_size, args.lr, args.out)
-
-
