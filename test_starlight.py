@@ -235,8 +235,8 @@ def main():
     )
     parser.add_argument(
         "-m", "--model",
-        default="models/detector_balanced.pth",
-        help="Path to PyTorch model file (default: models/detector_balanced.pth)"
+        default="models/detector_v3_auto_attn.pth",
+        help="Path to PyTorch model file (default: models/detector_v3_auto_attn.pth)"
     )
     parser.add_argument(
         "-d", "--details",
