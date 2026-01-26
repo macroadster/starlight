@@ -1048,14 +1048,13 @@ def train_model(
     lr=1e-4,
     out_path="models/detector_generalized.pth",
 ):
-    # Use CPU for now due to MPS tensor view compatibility issues
-    # TODO: Fix MPS compatibility issues in future PyTorch versions
-    if torch.cuda.is_available():
+    # Device selection: prioritize MPS for Apple Silicon, then CUDA, then CPU
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
-        if torch.backends.mps.is_available():
-            print("Note: MPS detected but using CPU due to tensor compatibility issues")
     print(f"Using device: {device}")
 
     # Data augmentation
