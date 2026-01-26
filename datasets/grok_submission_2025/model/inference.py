@@ -39,7 +39,7 @@ class StarlightModel:
         self,
         detector_path: str = "model/detector.onnx",
         extractor_path: str = None,
-        task: str = "detect"
+        task: str = "detect",
     ):
         self.detector_path = detector_path
         self.extractor_path = extractor_path
@@ -52,27 +52,33 @@ class StarlightModel:
             # Dynamically select available providers: CUDA > CoreML > CPU
             providers = []
             available_providers = ort.get_available_providers()
-            if 'CUDAExecutionProvider' in available_providers:
-                providers.append('CUDAExecutionProvider')
-            if 'CoreMLExecutionProvider' in available_providers:
-                providers.append('CoreMLExecutionProvider')
-            providers.append('CPUExecutionProvider')
+            if "CUDAExecutionProvider" in available_providers:
+                providers.append("CUDAExecutionProvider")
+            if "CoreMLExecutionProvider" in available_providers:
+                providers.append("CoreMLExecutionProvider")
+            providers.append("CPUExecutionProvider")
 
             session_options = ort.SessionOptions()
-            if 'CUDAExecutionProvider' in providers:
+            if "CUDAExecutionProvider" in providers:
                 session_options.enable_mem_pattern = False  # Optimize for GPU
-            elif 'CoreMLExecutionProvider' in providers:
+            elif "CoreMLExecutionProvider" in providers:
                 session_options.enable_mem_pattern = False  # Optimize for MPS
 
             if os.path.exists(detector_path):
                 try:
-                    self.detector = ort.InferenceSession(detector_path, sess_options=session_options, providers=providers)
+                    self.detector = ort.InferenceSession(
+                        detector_path, sess_options=session_options, providers=providers
+                    )
                     self.input_name = self.detector.get_inputs()[0].name
                 except Exception as e:
                     print(f"Warning: Could not load detector: {e}")
             if extractor_path and os.path.exists(extractor_path):
                 try:
-                    self.extractor = ort.InferenceSession(extractor_path, sess_options=session_options, providers=providers)
+                    self.extractor = ort.InferenceSession(
+                        extractor_path,
+                        sess_options=session_options,
+                        providers=providers,
+                    )
                 except Exception as e:
                     print(f"Warning: Could not load extractor: {e}")
 
@@ -127,47 +133,49 @@ class StarlightModel:
     def _preprocess_exif(self, img_path):
         img = Image.open(img_path)
         exif = img.info.get("exif")
-        data = np.frombuffer(exif or b'', dtype=np.uint8)[:1024]
+        data = np.frombuffer(exif or b"", dtype=np.uint8)[:1024]
         padded = np.zeros(1024, dtype=np.float32)
-        padded[:len(data)] = data.astype(np.float32) / 255.0
+        padded[: len(data)] = data.astype(np.float32) / 255.0
         return padded.reshape(1, -1)
 
     def _preprocess_eoi(self, img_path):
         """Preprocess EOI (End of Image) steganography by reading tail bytes"""
-        with open(img_path, 'rb') as f:
+        with open(img_path, "rb") as f:
             raw = f.read()
 
         # Detect format
-        if raw.startswith(b'\xFF\xD8'):
-            format_hint = 'jpeg'
-        elif raw.startswith(b'\x89PNG'):
-            format_hint = 'png'
-        elif raw.startswith(b'GIF8'):
-            format_hint = 'gif'
-        elif raw.startswith(b'RIFF') and raw[8:12] == b'WEBP':
-            format_hint = 'webp'
+        if raw.startswith(b"\xff\xd8"):
+            format_hint = "jpeg"
+        elif raw.startswith(b"\x89PNG"):
+            format_hint = "png"
+        elif raw.startswith(b"GIF8"):
+            format_hint = "gif"
+        elif raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+            format_hint = "webp"
         else:
-            format_hint = 'unknown'
+            format_hint = "unknown"
 
         # Extract post-tail
-        if format_hint == 'jpeg':
-            eoi_pos = raw.rfind(b'\xFF\xD9')
-            appended = raw[eoi_pos + 2:] if eoi_pos != -1 else b""
-        elif format_hint == 'png':
-            iend_pos = raw.rfind(b'IEND')
-            appended = raw[iend_pos + 12:] if iend_pos != -1 else b""  # After IEND chunk
-        elif format_hint == 'gif':
-            term_pos = raw.rfind(b';')
-            appended = raw[term_pos + 1:] if term_pos != -1 else b""
-        elif format_hint == 'webp':
-            vp8x_pos = raw.rfind(b'VP8X')
-            appended = raw[vp8x_pos + 10:] if vp8x_pos != -1 else b""
+        if format_hint == "jpeg":
+            eoi_pos = raw.rfind(b"\xff\xd9")
+            appended = raw[eoi_pos + 2 :] if eoi_pos != -1 else b""
+        elif format_hint == "png":
+            iend_pos = raw.rfind(b"IEND")
+            appended = (
+                raw[iend_pos + 12 :] if iend_pos != -1 else b""
+            )  # After IEND chunk
+        elif format_hint == "gif":
+            term_pos = raw.rfind(b";")
+            appended = raw[term_pos + 1 :] if term_pos != -1 else b""
+        elif format_hint == "webp":
+            vp8x_pos = raw.rfind(b"VP8X")
+            appended = raw[vp8x_pos + 10 :] if vp8x_pos != -1 else b""
         else:
             appended = b""
 
         data = np.frombuffer(appended, dtype=np.uint8)[:1024]
         padded = np.zeros(1024, dtype=np.float32)
-        padded[:len(data)] = data.astype(np.float32) / 255.0
+        padded[: len(data)] = data.astype(np.float32) / 255.0
         return padded.reshape(1, -1)
 
     def _preprocess_palette(self, img_path, config):
@@ -191,7 +199,7 @@ class StarlightModel:
                         "stego_probability": prob,
                         "task": self.task,
                         "method": method,
-                        "predicted": prob > 0.5
+                        "predicted": prob > 0.5,
                     }
                 except Exception:
                     pass
@@ -202,17 +210,18 @@ class StarlightModel:
                 "stego_probability": prob,
                 "task": self.task,
                 "method": method,
-                "predicted": prob > 0.5
+                "predicted": prob > 0.5,
             }
         elif self.task == "extract":
             if self.extractor:
                 try:
-                    outputs = self.extractor.run(None, {self.extractor.get_inputs()[0].name: input_data})
-                    payload = ''.join(chr(int(b)) for b in np.argmax(outputs[0], axis=-1))
-                    return {
-                        "method": method,
-                        "extracted_payload": payload
-                    }
+                    outputs = self.extractor.run(
+                        None, {self.extractor.get_inputs()[0].name: input_data}
+                    )
+                    payload = "".join(
+                        chr(int(b)) for b in np.argmax(outputs[0], axis=-1)
+                    )
+                    return {"method": method, "extracted_payload": payload}
                 except Exception:
                     pass
             # Fallback to rule-based extraction
@@ -222,10 +231,7 @@ class StarlightModel:
                 payload = self._extract_exif(img_path)
             else:
                 payload = ""
-            return {
-                "method": method,
-                "extracted_payload": payload
-            }
+            return {"method": method, "extracted_payload": payload}
         else:
             return {"error": f"Unknown task: {self.task}"}
 

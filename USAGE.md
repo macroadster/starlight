@@ -36,7 +36,7 @@ Train the high-performance V3 generalized model with Attention mechanisms and au
 * **Action:** Execute the training script with recommended parameters.
 * **Command:**
     ```bash
-    python3 trainer.py --epochs 20 --batch_size 16 --out models/detector_v3_auto_attn.pth
+    python3 trainer.py --epochs 20 --batch_size 16 --out models/detector_balanced.pth
     ```
 * **V3 Features:**
   - **Bit-Order Prediction**: Learns to distinguish between LSB-first and MSB-first bitstreams.

@@ -8,9 +8,10 @@ from pathlib import Path
 from PIL import Image
 import random
 
+
 def generate_noise_lsb(count: int = 1000):
     """Generate images with natural LSB noise patterns"""
-    output_dir = Path('datasets/grok_submission_2025/training/v3_negatives/noise_lsb')
+    output_dir = Path("datasets/grok_submission_2025/training/v3_negatives/noise_lsb")
     output_dir.mkdir(exist_ok=True)
 
     print(f"Generating {count} images with natural LSB noise...")
@@ -45,7 +46,9 @@ def generate_noise_lsb(count: int = 1000):
 
         else:
             # Environmental noise (camera sensor, transmission)
-            base_data = np.random.randint(100, 200, (size[1], size[0], 3), dtype=np.uint8)
+            base_data = np.random.randint(
+                100, 200, (size[1], size[0], 3), dtype=np.uint8
+            )
             noise = np.random.normal(0, 2, (size[1], size[0], 3))
             base_data = np.clip(base_data + noise, 0, 255).astype(np.uint8)
             # Add LSB variations
@@ -53,9 +56,10 @@ def generate_noise_lsb(count: int = 1000):
             base_data = (base_data & 0xFE) | lsb_noise
 
         img = Image.fromarray(base_data)
-        img.save(output_dir / f'lsb_noise_{i:04d}.png')
+        img.save(output_dir / f"lsb_noise_{i:04d}.png")
 
     print(f"✅ Generated {count} LSB noise images")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     generate_noise_lsb(1000)

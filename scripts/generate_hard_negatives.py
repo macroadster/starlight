@@ -4,12 +4,13 @@ from tqdm import tqdm
 import sys
 
 # Add project root to Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
 from scanner import _scan_logic, init_worker
 from scripts.starlight_utils import extract_post_tail
 import onnxruntime
+
 
 def generate_hard_negatives(clean_dir, hard_negatives_dir, model_path):
     """
@@ -18,7 +19,12 @@ def generate_hard_negatives(clean_dir, hard_negatives_dir, model_path):
     if not os.path.exists(hard_negatives_dir):
         os.makedirs(hard_negatives_dir)
 
-    image_paths = [os.path.join(root, file) for root, _, files in os.walk(clean_dir) for file in files if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'))]
+    image_paths = [
+        os.path.join(root, file)
+        for root, _, files in os.walk(clean_dir)
+        for file in files
+        if file.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"))
+    ]
 
     session = onnxruntime.InferenceSession(model_path)
 
@@ -28,7 +34,7 @@ def generate_hard_negatives(clean_dir, hard_negatives_dir, model_path):
             # This is the model prediction part from the old scanner
             from trainer import load_enhanced_multi_input
             import torch
-            
+
             meta, alpha, lsb, palette = load_enhanced_multi_input(image_path)
             meta = meta.unsqueeze(0)
             alpha = alpha.unsqueeze(0)
@@ -36,11 +42,11 @@ def generate_hard_negatives(clean_dir, hard_negatives_dir, model_path):
             palette = palette.unsqueeze(0)
             bit_order = torch.tensor([[0.0, 1.0, 0.0]])
             input_feed = {
-                'meta': meta.numpy(),
-                'alpha': alpha.numpy(),
-                'lsb': lsb.numpy(),
-                'palette': palette.numpy(),
-                'bit_order': bit_order.numpy()
+                "meta": meta.numpy(),
+                "alpha": alpha.numpy(),
+                "lsb": lsb.numpy(),
+                "palette": palette.numpy(),
+                "bit_order": bit_order.numpy(),
             }
             stego_logits, _, _, _, _ = session.run(None, input_feed)
             logit = stego_logits[0][0]
@@ -56,7 +62,10 @@ def generate_hard_negatives(clean_dir, hard_negatives_dir, model_path):
                 result = _scan_logic(image_path, session)
                 if not result.get("is_stego"):
                     # This is a hard negative!
-                    shutil.copy(image_path, os.path.join(hard_negatives_dir, os.path.basename(image_path)))
+                    shutil.copy(
+                        image_path,
+                        os.path.join(hard_negatives_dir, os.path.basename(image_path)),
+                    )
                     hard_negatives_count += 1
 
         except Exception as e:
@@ -64,10 +73,11 @@ def generate_hard_negatives(clean_dir, hard_negatives_dir, model_path):
 
     print(f"Generated {hard_negatives_count} hard negatives.")
 
+
 if __name__ == "__main__":
     # We need to use the model that the original scanner was using.
     # scanner.py defaults to models/detector_balanced.onnx
-    
+
     # I will use all the clean datasets to generate hard negatives
     clean_dirs = [
         "datasets/val/clean",
@@ -80,4 +90,6 @@ if __name__ == "__main__":
     ]
 
     for clean_dir in clean_dirs:
-        generate_hard_negatives(clean_dir, "datasets/hard_negatives/clean", "models/detector_balanced.onnx")
+        generate_hard_negatives(
+            clean_dir, "datasets/hard_negatives/clean", "models/detector_balanced.onnx"
+        )

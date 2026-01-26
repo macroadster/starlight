@@ -9,41 +9,45 @@ from torch.utils.data import Dataset, DataLoader
 import argparse
 from tqdm import tqdm
 
+
 def load_dual_input(path):
     # --- Pixel path ---
     img = Image.open(path)
     if img.mode == "P":
         # For palette, keep indices as 1-channel
-        img = img.resize((256,256), resample=0)  # NEAREST
+        img = img.resize((256, 256), resample=0)  # NEAREST
         indices = np.array(img).astype(np.float32) / 255.0  # (256,256)
         pixel = np.stack([indices] * 4, axis=-1)  # (256,256,4), all channels same
     else:
         if img.mode != "RGBA":
             img = img.convert("RGBA")
-        pixel = np.array(img.resize((256,256), resample=0)).astype(np.float32)/255.0  # (256,256,4)
-    pixel = torch.from_numpy(pixel).permute(2,0,1).unsqueeze(0)  # (1,4,256,256)
+        pixel = (
+            np.array(img.resize((256, 256), resample=0)).astype(np.float32) / 255.0
+        )  # (256,256,4)
+    pixel = torch.from_numpy(pixel).permute(2, 0, 1).unsqueeze(0)  # (1,4,256,256)
 
     # --- Metadata path ---
-    with open(path, 'rb') as f:
+    with open(path, "rb") as f:
         raw = f.read()
 
     # EXIF: find first APP1 (0xFFE1)
     exif = b""
-    pos = raw.find(b'\xFF\xE1')
+    pos = raw.find(b"\xff\xe1")
     if pos != -1:
-        length = struct.unpack('>H', raw[pos+2:pos+4])[0]
-        exif = raw[pos+4:pos+4+length-2]
+        length = struct.unpack(">H", raw[pos + 2 : pos + 4])[0]
+        exif = raw[pos + 4 : pos + 4 + length - 2]
 
     # EOI tail: after last 0xFFD9
-    eoi_pos = raw.rfind(b'\xFF\xD9')
-    tail = raw[eoi_pos+2:] if eoi_pos != -1 else b""
+    eoi_pos = raw.rfind(b"\xff\xd9")
+    tail = raw[eoi_pos + 2 :] if eoi_pos != -1 else b""
 
     # Combine + pad to 1024
     meta = np.frombuffer(exif + tail, dtype=np.uint8)[:1024]
-    meta = np.pad(meta, (0, 1024 - len(meta)), 'constant')
-    meta = torch.from_numpy(meta.astype(np.float32)/255.0).unsqueeze(0)  # (1,1024)
+    meta = np.pad(meta, (0, 1024 - len(meta)), "constant")
+    meta = torch.from_numpy(meta.astype(np.float32) / 255.0).unsqueeze(0)  # (1,1024)
 
     return pixel, meta
+
 
 class StegoDataset(Dataset):
     def __init__(self, clean_dir, stego_dir):
@@ -52,14 +56,16 @@ class StegoDataset(Dataset):
 
         # Clean samples
         for f in os.listdir(clean_dir):
-            if f.endswith(('.jpg', '.png', '.gif', '.webp', '.bmp', '.jpeg')):
-                self.samples.append((os.path.join(clean_dir, f), 0, -1))  # stego=0, method=-1
+            if f.endswith((".jpg", ".png", ".gif", ".webp", ".bmp", ".jpeg")):
+                self.samples.append(
+                    (os.path.join(clean_dir, f), 0, -1)
+                )  # stego=0, method=-1
 
         # Stego samples
         for f in os.listdir(stego_dir):
-            if f.endswith(('.jpg', '.png', '.gif', '.webp', '.bmp', '.jpeg')):
+            if f.endswith((".jpg", ".png", ".gif", ".webp", ".bmp", ".jpeg")):
                 # Extract method from filename, e.g., current_alpha_000.png -> alpha
-                parts = f.split('_')
+                parts = f.split("_")
                 if len(parts) >= 2:
                     method_str = parts[1]
                     if method_str in method_map:
@@ -72,9 +78,22 @@ class StegoDataset(Dataset):
     def __getitem__(self, idx):
         path, stego_label, method_label = self.samples[idx]
         pixel, meta = load_dual_input(path)
-        return pixel.squeeze(0), meta.squeeze(0), torch.tensor(stego_label, dtype=torch.float), torch.tensor(method_label, dtype=torch.long)
+        return (
+            pixel.squeeze(0),
+            meta.squeeze(0),
+            torch.tensor(stego_label, dtype=torch.float),
+            torch.tensor(method_label, dtype=torch.long),
+        )
 
-def train_model(clean_dir, stego_dir, epochs=10, batch_size=8, lr=1e-3, out_path="models/detector_dual.onnx"):
+
+def train_model(
+    clean_dir,
+    stego_dir,
+    epochs=10,
+    batch_size=8,
+    lr=1e-3,
+    out_path="models/detector_dual.onnx",
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset = StegoDataset(clean_dir, stego_dir)
@@ -83,14 +102,20 @@ def train_model(clean_dir, stego_dir, epochs=10, batch_size=8, lr=1e-3, out_path
     model = StarlightDetector().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     stego_criterion = nn.BCELoss()
-    method_criterion = nn.CrossEntropyLoss(ignore_index=-1)  # Ignore clean samples for method loss
+    method_criterion = nn.CrossEntropyLoss(
+        ignore_index=-1
+    )  # Ignore clean samples for method loss
 
     for epoch in range(epochs):
         model.train()
         total_loss = 0
-        for pixel, meta, stego_labels, method_labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
+        for pixel, meta, stego_labels, method_labels in tqdm(
+            dataloader, desc=f"Epoch {epoch+1}/{epochs}"
+        ):
             pixel, meta = pixel.to(device), meta.to(device)
-            stego_labels, method_labels = stego_labels.to(device), method_labels.to(device)
+            stego_labels, method_labels = stego_labels.to(device), method_labels.to(
+                device
+            )
 
             optimizer.zero_grad()
             outputs = model(pixel, meta)
@@ -107,8 +132,8 @@ def train_model(clean_dir, stego_dir, epochs=10, batch_size=8, lr=1e-3, out_path
 
     # Export to ONNX
     model.eval()
-    dummy_pixel = torch.randn(1,4,256,256).to(device)
-    dummy_meta = torch.randn(1,1024).to(device)
+    dummy_pixel = torch.randn(1, 4, 256, 256).to(device)
+    dummy_meta = torch.randn(1, 1024).to(device)
 
     torch.onnx.export(
         model,
@@ -116,9 +141,10 @@ def train_model(clean_dir, stego_dir, epochs=10, batch_size=8, lr=1e-3, out_path
         out_path,
         input_names=["pixel", "metadata"],
         output_names=["stego_prob", "method_id", "method_probs"],
-        dynamic_axes={"pixel": {0: "batch"}, "metadata": {0: "batch"}}
+        dynamic_axes={"pixel": {0: "batch"}, "metadata": {0: "batch"}},
     )
     print(f"Model exported to {out_path}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -131,4 +157,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     os.makedirs("models", exist_ok=True)
-    train_model(args.clean_dir, args.stego_dir, args.epochs, args.batch_size, args.lr, args.out)
+    train_model(
+        args.clean_dir, args.stego_dir, args.epochs, args.batch_size, args.lr, args.out
+    )

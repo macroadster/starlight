@@ -8,13 +8,14 @@ from inference import detect_steganography
 import tempfile
 import os
 
+
 def detect_image(image):
     """Detect steganography in uploaded image"""
     if image is None:
         return "Please upload an image"
 
     # Save uploaded image to temp file
-    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         image.save(tmp.name)
         tmp_path = tmp.name
 
@@ -23,9 +24,9 @@ def detect_image(image):
         result = detect_steganography(tmp_path)
 
         # Format output
-        prob = result.get('stego_probability', 0.0)
-        predicted = result.get('predicted', False)
-        method = result.get('method', 'unknown')
+        prob = result.get("stego_probability", 0.0)
+        predicted = result.get("predicted", False)
+        method = result.get("method", "unknown")
 
         status = "STEGANOGRAPHY DETECTED" if predicted else "CLEAN IMAGE"
         confidence = f"{prob:.3f}"
@@ -46,6 +47,7 @@ def detect_image(image):
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
+
 # Create Gradio interface
 iface = gr.Interface(
     fn=detect_image,
@@ -55,7 +57,7 @@ iface = gr.Interface(
     description="Upload an image to detect if it contains hidden steganographic data. This model detects LSB, EXIF, and EOI steganography methods.",
     examples=[
         ["https://huggingface.co/datasets/Narsil/image_dummy/raw/main/parrots.png"]
-    ]
+    ],
 )
 
 if __name__ == "__main__":
