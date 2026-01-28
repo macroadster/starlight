@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import shutil
 from typing import List, Dict, Set, Optional, Any, Tuple
@@ -210,10 +211,14 @@ class WatcherAgent:
         
         proposal_id = proposal.get("id", "")
         
+        # Create audit working directory for isolation using visible_pixel_hash
+        audit_dir = os.path.join(Config.UPLOADS_DIR, "audit", visible_pixel_hash[:16])  # Use first 16 chars of hash for directory name
+        os.makedirs(audit_dir, exist_ok=True)
+        
         # Try MCP client first for efficiency
         if self.opencode_client.is_available():
             try:
-                output = self.opencode_client.run(prompt, timeout=300)  # 5 minutes for proposal audit (quick decision)
+                output = self.opencode_client.run(prompt, timeout=300, workdir=audit_dir)  # 5 minutes for proposal audit (quick decision)
                 if output:
                     output = output.strip().upper()
                     if "VERDICT: PASS" in output or "PASS" in output.split()[:10]:
@@ -231,7 +236,7 @@ class WatcherAgent:
             import subprocess
             try:
                 cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # 5 minutes for proposal audit (quick decision)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=audit_dir)  # 5 minutes for proposal audit (quick decision)
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
@@ -296,6 +301,9 @@ class WatcherAgent:
         deliverables = sub.get("deliverables", {})
         notes = deliverables.get("notes", "")
         
+        # Extract contract identifier for isolation
+        visible_pixel_hash = sub.get("visible_pixel_hash") or sub.get("task", {}).get("visible_pixel_hash") or "unknown"
+        
         prompt = (
             f"Audit this work submission report.\n"
             f"Report: {notes[:2000]}\n\n"
@@ -306,10 +314,14 @@ class WatcherAgent:
             f"Respond with a single line: 'VERDICT: PASS' or 'VERDICT: FAIL - <reason>'."
         )
         
+        # Create audit working directory for isolation using visible_pixel_hash
+        audit_dir = os.path.join(Config.UPLOADS_DIR, "audit", visible_pixel_hash[:16])  # Use first 16 chars of hash for directory name
+        os.makedirs(audit_dir, exist_ok=True)
+        
         # Try MCP client first for efficiency
         if self.opencode_client.is_available():
             try:
-                output = self.opencode_client.run(prompt, timeout=300)  # 5 minutes for submission audit (quick decision)
+                output = self.opencode_client.run(prompt, timeout=300, workdir=audit_dir)  # 5 minutes for submission audit (quick decision)
                 if output:
                     output = output.strip()
                     if "VERDICT: PASS" in output.upper() or "PASS" in output.upper().split()[:5]:
@@ -323,7 +335,7 @@ class WatcherAgent:
             import subprocess
             try:
                 cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # 5 minutes for submission audit (quick decision)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=audit_dir)  # 5 minutes for submission audit (quick decision)
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")

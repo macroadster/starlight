@@ -32,6 +32,7 @@ from starlight.agents.config import Config as AgentConfig
 from starlight.agents.client import StargateClient
 from starlight.agents.watcher import WatcherAgent
 from starlight.agents.worker import WorkerAgent
+from starlight.agents.dynamic_loader import dynamic_loader, LoadRequest as DynamicLoadRequest
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 # Configure logging
@@ -1448,14 +1449,210 @@ async def get_agent_status():
  # Removed agent control endpoints for security
 # Agent control functionality is now internal-only to prevent external manipulation
 
+# Dynamic Loading for Self-Improvement
+class SandboxLoadRequest(BaseModel):
+    visible_pixel_hash: str = Field(..., description="Contract hash for isolation")
+    function_name: str = Field(..., description="Function to load")
+    module_name: Optional[str] = Field(None, description="Module containing function")
+    function_type: str = Field(..., pattern="^(scan|agent|api)$", description="Type of function")
+
+class SandboxLoadResponse(BaseModel):
+    status: str = Field(..., description="Load status")
+    function_loaded: bool = Field(..., description="Whether function was successfully loaded")
+    endpoint_path: Optional[str] = Field(None, description="Dynamic endpoint path")
+    sandbox_id: str = Field(..., description="Unique sandbox load ID")
+
+@app.post("/sandbox/load", response_model=SandboxLoadResponse, tags=["Sandbox"])
+async def load_sandbox_function(
+    request: SandboxLoadRequest,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_api_key),
+):
+    """Load an agent-developed function from sandbox"""
+    sandbox_id = str(uuid.uuid4())
+    start_time = datetime.utcnow()
+    
+    try:
+        logger.info(f"Loading sandbox function: {request.function_name} for {request.visible_pixel_hash}")
+        
+        # Create load request
+        load_request = DynamicLoadRequest(
+            visible_pixel_hash=request.visible_pixel_hash,
+            function_name=request.function_name,
+            module_name=request.module_name,
+            endpoint_path=f"/sandbox/{request.function_type}/{request.function_name}",
+            method="GET"
+        )
+        
+        # Load function using dynamic loader
+        loaded_module = dynamic_loader.load_function(load_request)
+        
+        # Register as endpoint
+        func = dynamic_loader.get_function(request.visible_pixel_hash, request.function_name)
+        if func:
+            # Add dynamic route for sandbox function
+            app.add_api_route(
+                loaded_module.endpoint_path,
+                func,
+                methods=[loaded_module.method],
+                name=f"sandbox_{loaded_module.module_id[:8]}",
+                operation_id=f"sandbox_{request.function_type}_{request.function_name}",
+                include_in_schema=True
+            )
+            
+            # Refresh OpenAPI schema
+            app.openapi_schema = None
+            
+            logger.info(f"Sandbox function loaded: {loaded_module.endpoint_path}")
+            
+            return SandboxLoadResponse(
+                status="success",
+                function_loaded=True,
+                endpoint_path=loaded_module.endpoint_path,
+                sandbox_id=sandbox_id
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to load function")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sandbox function loading failed: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Sandbox function loading failed: {str(e)}"
+        )
+
+@app.get("/sandbox/status", tags=["Sandbox"])
+async def get_sandbox_status():
+    """Get current sandbox capabilities and loaded functions"""
+    try:
+        loaded_functions = dynamic_loader.list_loaded_functions()
+        
+        # Categorize functions
+        scan_functions = []
+        agent_functions = []
+        api_functions = []
+        
+        for module_id, loaded_module in loaded_functions.items():
+            function_info = {
+                "module_id": module_id,
+                "function_name": loaded_module.function_name,
+                "endpoint_path": loaded_module.endpoint_path,
+                "loaded_at": loaded_module.loaded_at,
+                "visible_pixel_hash": loaded_module.visible_pixel_hash
+            }
+            
+            # Categorize by endpoint path
+            if "scan" in loaded_module.endpoint_path:
+                scan_functions.append(function_info)
+            elif "agent" in loaded_module.endpoint_path:
+                agent_functions.append(function_info)
+            else:
+                api_functions.append(function_info)
+        
+        return {
+            "status": "active",
+            "total_loaded": len(loaded_functions),
+            "scan_functions": scan_functions,
+            "agent_functions": agent_functions,
+            "api_functions": api_functions,
+            "sandbox_enabled": True,
+            "agent_development_capable": AGENT_MANAGER_AVAILABLE,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting sandbox status: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Status check failed: {str(e)}"
+        )
+
+@app.delete("/sandbox/unload/{visible_pixel_hash}/{function_name}", tags=["Sandbox"])
+async def unload_sandbox_function(
+    visible_pixel_hash: str,
+    function_name: str,
+    api_key: str = Depends(verify_api_key),
+):
+    """Unload a sandbox function"""
+    try:
+        logger.info(f"Unloading sandbox function: {function_name} for {visible_pixel_hash}")
+        
+        success = dynamic_loader.unload_function(visible_pixel_hash, function_name)
+        
+        if success:
+            # Refresh OpenAPI schema
+            app.openapi_schema = None
+            
+            return {
+                "status": "success",
+                "message": f"Sandbox function '{function_name}' unloaded successfully",
+                "visible_pixel_hash": visible_pixel_hash
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Function not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sandbox function unloading failed: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Unload failed: {str(e)}"
+        )
+
+@app.post("/sandbox/auto-load", tags=["Sandbox"])
+async def trigger_auto_sandbox_load(
+    api_key: str = Depends(verify_api_key),
+):
+    """Trigger autonomous agents to create and load sandbox functions"""
+    try:
+        logger.info("Triggering auto sandbox load cycle")
+        
+        if not AGENT_MANAGER_AVAILABLE:
+            raise HTTPException(
+                status_code=503, 
+                detail="Agent manager not available for auto sandbox loading"
+            )
+        
+        # Trigger agent sandbox cycle
+        if process_cycle:
+            # Process one cycle to generate functions
+            sandbox_results = process_cycle()
+            
+            return {
+                "status": "loaded",
+                "sandbox_cycle": "completed",
+                "results": sandbox_results,
+                "message": "Auto sandbox load cycle completed. Check loaded functions.",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            raise HTTPException(
+                status_code=503, 
+                detail="Auto sandbox loading not available"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Auto sandbox loading failed: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Auto sandbox loading failed: {str(e)}"
+        )
+
 # Root endpoint
 @app.get("/", tags=["Root"])
 async def root():
     """API root endpoint with basic information"""
+    loaded_count = len(dynamic_loader.list_loaded_functions())
+    
     return {
-        "name": "Starlight Bitcoin Scanning API",
-        "version": "1.0.0",
-        "description": "API for scanning Bitcoin transactions for steganography",
+        "name": "Starlight Bitcoin Scanning API with Sandbox",
+        "version": "2.0.0",
+        "description": "API for scanning Bitcoin transactions for steganography with dynamic sandbox loading capabilities",
         "endpoints": {
             "health": "/health",
             "info": "/info",
@@ -1466,10 +1663,28 @@ async def root():
             "extract": "/extract",
             "inscribe": "/inscribe",
             "get_transaction": "/transaction/{txid}",
+            "sandbox": {
+                "load": "/sandbox/load",
+                "status": "/sandbox/status", 
+                "unload": "/sandbox/unload/{hash}/{function}",
+                "auto_load": "/sandbox/auto-load"
+            },
+            "agents_status": "/agents/status"
         },
         "documentation": "/docs",
+        "agent_docs": {
+            "sandbox_guide": "/AGENT_SANDBOX_GUIDE.md",
+            "quick_reference": "/AGENT_SANDBOX_QUICK_REF.md",
+            "dynamic_api": "/DYNAMIC_API_README.md"
+        },
         "timestamp": datetime.utcnow().isoformat(),
         "scanner_available": SCANNER_AVAILABLE,
+        "sandbox": {
+            "enabled": True,
+            "loaded_functions": loaded_count,
+            "auto_loading_available": AGENT_MANAGER_AVAILABLE,
+            "isolation_based_on": "visible_pixel_hash"
+        }
     }
 
 
