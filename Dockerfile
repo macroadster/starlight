@@ -14,6 +14,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN apt-get update && apt-get install -y \
     build-essential \
     pkg-config \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -38,22 +40,40 @@ COPY --from=builder /opt/venv /opt/venv
 # Activate the virtual environment
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install ONLY runtime system dependencies
+# Install runtime system dependencies including nodejs for opencode
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    ca-certificates \
+    gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+
+# Install OpenCode
+RUN curl -fsSL https://opencode.ai/install | bash \
+    && mv /root/.opencode /opt/opencode \
+    && ln -s /opt/opencode/bin/opencode /usr/local/bin/opencode \
+    && chmod -R 755 /opt/opencode
+
+# Create non-root user
+RUN useradd -m -u 1000 starlight
 
 # Copy application code
 COPY *.py ./
 COPY scripts/ ./scripts/
+COPY starlight/ ./starlight/
 
 # Copy models and metadata
 COPY models_dist/ ./models/
 
-# Create non-root user and set permissions
-RUN useradd -m -u 1000 starlight && chown -R starlight:starlight /app
+# Ensure permissions for starlight user on home, app and opencode opts
+RUN chown -R starlight:starlight /app /home/starlight /opt/opencode
+
 USER starlight
+
+# Set home environment variable for opencode
+ENV HOME=/home/starlight
 
 # Expose port
 EXPOSE 8080
