@@ -717,20 +717,22 @@ class WorkerAgent:
         proposal_title = task.get("proposal_title", "Unknown Proposal")
         task_id = task.get("task_id", str(uuid.uuid4()))
         contract_id = task.get("contract_id", "unassigned")
+        # Use visible_pixel_hash for better isolation anchoring
+        visible_pixel_hash = task.get("visible_pixel_hash") or contract_id
         rejection_feedback = task.get("rejection_feedback")
         
         # Extract skills to inspire the agent
         skills = task.get("skills", ["general engineering"])
         skills_str = ", ".join(skills) if isinstance(skills, list) else str(skills)
 
-        # Determine data directory for results
+        # Determine data directory for results using visible_pixel_hash for isolation
         base_uploads_dir = Config.UPLOADS_DIR
-        contract_results_dir = os.path.join(base_uploads_dir, "results", contract_id)
+        contract_results_dir = os.path.join(base_uploads_dir, "results", visible_pixel_hash)
         os.makedirs(contract_results_dir, exist_ok=True)
         
         result_filename = f"{task_id}.md"
         result_path = os.path.join(contract_results_dir, result_filename)
-        public_url = f"/uploads/results/{contract_id}/{result_filename}"
+        public_url = f"/uploads/results/{visible_pixel_hash}/{result_filename}"
 
         opencode_output = ""
         
@@ -738,35 +740,45 @@ class WorkerAgent:
         if self.opencode_client.is_available():
             logger.info(f"Executing work using OpenCode MCP: {title}")
             try:
-                # TASK-FOCUSED PROMPT - practical and concise
-                base_instruction = (
-                    f"You are a practical engineer implementing: '{description}'.\n"
-                    f"Skills: [{skills_str}].\n\n"
-                    f"TASK: Complete this work efficiently and provide concrete results.\n\n"
-                    f"REQUIREMENTS:\n"
-                    f"1. Provide specific implementation details\n"
-                    f"2. Include actual code examples or execution steps\n"
-                    f"3. Show evidence of completion\n"
-                    f"4. Keep response concise and actionable\n\n"
-                    f"Focus on delivering working solutions, not theoretical discussions."
-                )
-
-                work_type = task.get("work_type", "new work").upper()
+                # Change to contract-specific working directory for isolation
+                original_cwd = os.getcwd()
+                os.chdir(contract_results_dir)
+                logger.info(f"Changed working directory to: {contract_results_dir}")
                 
-                if rejection_feedback:
-                    prompt = (
-                        f"REWORK REQUIRED: Your previous submission for '{title}' was REJECTED.\n"
-                        f"FEEDBACK: '{rejection_feedback}'.\n\n"
-                        f"TASK: Fix all identified issues and provide a corrected implementation.\n"
-                        f"Focus on addressing each rejection point specifically.\n\n"
-                        f"{base_instruction}"
+                try:
+                    # TASK-FOCUSED PROMPT - practical and concise
+                    base_instruction = (
+                        f"You are a practical engineer implementing: '{description}'.\n"
+                        f"Skills: [{skills_str}].\n\n"
+                        f"TASK: Complete this work efficiently and provide concrete results.\n\n"
+                        f"REQUIREMENTS:\n"
+                        f"1. Provide specific implementation details\n"
+                        f"2. Include actual code examples or execution steps\n"
+                        f"3. Show evidence of completion\n"
+                        f"4. Keep response concise and actionable\n\n"
+                        f"Focus on delivering working solutions, not theoretical discussions."
                     )
-                    logger.info(f"Worker: Executing REWORK for {title} - Feedback: {rejection_feedback}")
-                else:
-                    prompt = base_instruction
-                    logger.info(f"Worker: Executing NEW WORK for {title}")
-                
-                result = self.opencode_client.run(prompt, timeout=3600)  # 1 hour timeout for complex tasks
+
+                    work_type = task.get("work_type", "new work").upper()
+                    
+                    if rejection_feedback:
+                        prompt = (
+                            f"REWORK REQUIRED: Your previous submission for '{title}' was REJECTED.\n"
+                            f"FEEDBACK: '{rejection_feedback}'.\n\n"
+                            f"TASK: Fix all identified issues and provide a corrected implementation.\n"
+                            f"Focus on addressing each rejection point specifically.\n\n"
+                            f"{base_instruction}"
+                        )
+                        logger.info(f"Worker: Executing REWORK for {title} - Feedback: {rejection_feedback}")
+                    else:
+                        prompt = base_instruction
+                        logger.info(f"Worker: Executing NEW WORK for {title}")
+                    
+                    result = self.opencode_client.run(prompt, timeout=3600)  # 1 hour timeout for complex tasks
+                finally:
+                    # Always restore original working directory
+                    os.chdir(original_cwd)
+                    logger.info(f"Restored working directory to: {original_cwd}")
                 if result:
                     opencode_output = result
                 else:
@@ -779,36 +791,46 @@ class WorkerAgent:
             import subprocess
             logger.info(f"Executing work using OpenCode subprocess: {title}")
             try:
-                # TASK-FOCUSED PROMPT - practical and concise
-                base_instruction = (
-                    f"You are a practical engineer implementing: '{description}'.\n"
-                    f"Skills: [{skills_str}].\n\n"
-                    f"TASK: Complete this work efficiently and provide concrete results.\n\n"
-                    f"REQUIREMENTS:\n"
-                    f"1. Provide specific implementation details\n"
-                    f"2. Include actual code examples or execution steps\n"
-                    f"3. Show evidence of completion\n"
-                    f"4. Keep response concise and actionable\n\n"
-                    f"Focus on delivering working solutions, not theoretical discussions."
-                )
-
-                work_type = task.get("work_type", "new work").upper()
+                # Change to contract-specific working directory for isolation
+                original_cwd = os.getcwd()
+                os.chdir(contract_results_dir)
+                logger.info(f"Changed working directory to: {contract_results_dir}")
                 
-                if rejection_feedback:
-                    prompt = (
-                        f"REWORK REQUIRED: Your previous submission for '{title}' was REJECTED.\n"
-                        f"FEEDBACK: '{rejection_feedback}'.\n\n"
-                        f"TASK: Fix all identified issues and provide a corrected implementation.\n"
-                        f"Focus on addressing each rejection point specifically.\n\n"
-                        f"{base_instruction}"
+                try:
+                    # TASK-FOCUSED PROMPT - practical and concise
+                    base_instruction = (
+                        f"You are a practical engineer implementing: '{description}'.\n"
+                        f"Skills: [{skills_str}].\n\n"
+                        f"TASK: Complete this work efficiently and provide concrete results.\n\n"
+                        f"REQUIREMENTS:\n"
+                        f"1. Provide specific implementation details\n"
+                        f"2. Include actual code examples or execution steps\n"
+                        f"3. Show evidence of completion\n"
+                        f"4. Keep response concise and actionable\n\n"
+                        f"Focus on delivering working solutions, not theoretical discussions."
                     )
-                    logger.info(f"Worker: Executing REWORK for {title} - Feedback: {rejection_feedback}")
-                else:
-                    prompt = base_instruction
-                    logger.info(f"Worker: Executing NEW WORK for {title}")
-                
-                cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # 1 hour timeout
+
+                    work_type = task.get("work_type", "new work").upper()
+                    
+                    if rejection_feedback:
+                        prompt = (
+                            f"REWORK REQUIRED: Your previous submission for '{title}' was REJECTED.\n"
+                            f"FEEDBACK: '{rejection_feedback}'.\n\n"
+                            f"TASK: Fix all identified issues and provide a corrected implementation.\n"
+                            f"Focus on addressing each rejection point specifically.\n\n"
+                            f"{base_instruction}"
+                        )
+                        logger.info(f"Worker: Executing REWORK for {title} - Feedback: {rejection_feedback}")
+                    else:
+                        prompt = base_instruction
+                        logger.info(f"Worker: Executing NEW WORK for {title}")
+                    
+                    cmd = ["opencode", "run", prompt]
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, cwd=contract_results_dir)  # 1 hour timeout
+                finally:
+                    # Always restore original working directory
+                    os.chdir(original_cwd)
+                    logger.info(f"Restored working directory to: {original_cwd}")
                 
                 if result.returncode == 0:
                     opencode_output = result.stdout
@@ -866,6 +888,6 @@ class WorkerAgent:
         return {
             "notes": notes,
             "result_file": public_url,
-            "artifacts_dir": f"/uploads/results/{contract_id}/",
+            "artifacts_dir": f"/uploads/results/{visible_pixel_hash}/",
             "completion_proof": str(uuid.uuid4())
         }

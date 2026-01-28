@@ -54,20 +54,30 @@ class OpenCodeMCPClient:
         """Check if OpenCode MCP client is available."""
         return self._available
     
-    def run(self, prompt: str, timeout: int = 300) -> Optional[str]:
+    def run(self, prompt: str, timeout: int = 300, workdir: Optional[str] = None) -> Optional[str]:
         """
         Execute OpenCode run command via MCP.
         Equivalent to: subprocess.run(["opencode", "run", prompt])
+        
+        Args:
+            prompt: The prompt to execute
+            timeout: Timeout in seconds
+            workdir: Working directory for execution (isolation)
         """
         if not self._available:
             return None
             
+        arguments = {
+            "prompt": prompt,
+            "timeout": timeout
+        }
+        
+        if workdir:
+            arguments["workdir"] = workdir
+            
         payload = {
             "tool": "opencode_run",
-            "arguments": {
-                "prompt": prompt,
-                "timeout": timeout
-            }
+            "arguments": arguments
         }
         
         try:
@@ -100,21 +110,32 @@ class OpenCodeMCPClient:
             logger.error(f"OpenCode MCP error: {e}")
             return None
     
-    def run_with_context(self, prompt: str, context: Optional[Dict] = None, timeout: int = 300) -> Optional[str]:
+    def run_with_context(self, prompt: str, context: Optional[Dict] = None, timeout: int = 300, workdir: Optional[str] = None) -> Optional[str]:
         """
         Execute OpenCode with additional context.
         This can maintain conversation state and provide better results.
+        
+        Args:
+            prompt: The prompt to execute
+            context: Additional context for execution
+            timeout: Timeout in seconds
+            workdir: Working directory for execution (isolation)
         """
         if not self._available:
-            return self.run(prompt, timeout)  # Fallback to basic run
+            return self.run(prompt, timeout, workdir)  # Fallback to basic run
+            
+        arguments = {
+            "prompt": prompt,
+            "context": context or {},
+            "timeout": timeout
+        }
+        
+        if workdir:
+            arguments["workdir"] = workdir
             
         payload = {
             "tool": "opencode_run",
-            "arguments": {
-                "prompt": prompt,
-                "context": context or {},
-                "timeout": timeout
-            }
+            "arguments": arguments
         }
         
         try:
