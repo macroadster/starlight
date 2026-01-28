@@ -25,8 +25,13 @@ from pathlib import Path
 import requests
 from contextlib import asynccontextmanager
 import glob
+import threading
 
 from PIL import Image
+from starlight.agents.config import Config as AgentConfig
+from starlight.agents.client import StargateClient
+from starlight.agents.watcher import WatcherAgent
+from starlight.agents.worker import WorkerAgent
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 # Configure logging
@@ -533,14 +538,71 @@ async def verify_api_key(authorization: str = Header(None)):
     return api_key
 
 
+# Global Agent State
+agent_running = False
+agent_thread = None
+
+def run_agents_loop():
+    global agent_running
+    logger.info("Starting Autonomous Agents Loop")
+    try:
+        client = StargateClient()
+        
+        # Bind wallet if configured (needed for write operations like approval)
+        if AgentConfig.DONATION_ADDRESS:
+            logger.info(f"Attempting to bind wallet: {AgentConfig.DONATION_ADDRESS}")
+            client.bind_wallet(AgentConfig.DONATION_ADDRESS)
+        else:
+            logger.warning("No DONATION_ADDRESS configured. Write operations might fail.")
+
+        watcher = WatcherAgent(client, ai_identifier=AgentConfig.AI_IDENTIFIER)
+        worker = WorkerAgent(client, ai_identifier=AgentConfig.AI_IDENTIFIER)
+        
+        while agent_running:
+            try:
+                # 1. Worker looks for wishes and creates proposals
+                worker.process_wishes()
+
+                # 2. Watcher looks for proposals (audits/approves them) and tasks
+                tasks = watcher.run_once()
+                
+                # 3. Worker processes available tasks
+                for task in tasks:
+                    worker.process_task(task)
+                
+                # 3. Wait
+                # Use a loop for sleep to allow faster shutdown
+                for _ in range(AgentConfig.POLL_INTERVAL):
+                    if not agent_running:
+                        break
+                    time.sleep(1)
+            except Exception as e:
+                logger.error(f"Agent loop error: {e}")
+                time.sleep(5)
+    except Exception as e:
+         logger.critical(f"Failed to initialize agents: {e}")
+
 # FastAPI application
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starlight Bitcoin Scanning API starting up...")
+    
+    # Start Autonomous Agents
+    global agent_running, agent_thread
+    agent_running = True
+    agent_thread = threading.Thread(target=run_agents_loop, daemon=True)
+    agent_thread.start()
+    logger.info("Autonomous agents thread started")
+
     yield
+    
     # Shutdown
     logger.info("Starlight Bitcoin Scanning API shutting down...")
+    agent_running = False
+    if agent_thread:
+        agent_thread.join(timeout=5)
+        logger.info("Autonomous agents thread stopped")
 
 
 app = FastAPI(
@@ -1299,6 +1361,19 @@ async def scan_block(
     except Exception as e:
         logger.error(f"Error scanning block {request.block_height}: {e}")
         raise HTTPException(status_code=500, detail=f"Block scan failed: {str(e)}")
+
+
+@app.get("/agents/status", tags=["Agents"])
+async def get_agent_status():
+    """Get the status of the autonomous agents"""
+    return {
+        "running": agent_running,
+        "config": {
+            "stargate_url": AgentConfig.STARGATE_API_URL,
+            "ai_identifier": AgentConfig.AI_IDENTIFIER,
+            "poll_interval": AgentConfig.POLL_INTERVAL
+        }
+    }
 
 
 # Root endpoint
