@@ -1,6 +1,7 @@
 import requests
 import logging
 import hashlib
+import time
 from typing import List, Dict, Optional, Any, Union
 from .config import Config
 
@@ -24,13 +25,15 @@ class StargateClient:
         return hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Optional[Union[Dict, List]]:
-        """Helper to make HTTP requests with standardized error handling."""
+        """Helper to make HTTP requests with container-optimized error handling."""
         url = f"{self.base_url}{endpoint}"
         try:
-            response = requests.request(method, url, headers=self.headers, timeout=10, **kwargs)
+            # Container-optimized timeouts: shorter for faster failure detection
+            response = requests.request(method, url, headers=self.headers, timeout=5, **kwargs)
             
             if response.status_code == 429:
                 logger.warning(f"Throttled by Stargate API (429) at {endpoint}. Backing off.")
+                time.sleep(1)  # Brief backoff for throttling
                 return None
             
             response.raise_for_status()
@@ -41,6 +44,12 @@ class StargateClient:
                 # Some endpoints might return empty body on success (e.g. 204)
                 return {}
                 
+        except requests.Timeout:
+            logger.warning(f"Request timeout for {method} {endpoint} (container optimization)")
+            return None
+        except requests.ConnectionError:
+            logger.warning(f"Connection error for {method} {endpoint} (container network)")
+            return None
         except requests.RequestException as e:
             logger.error(f"Request failed for {method} {endpoint}: {e}")
             if getattr(e, 'response', None) is not None:
@@ -48,16 +57,45 @@ class StargateClient:
             return None
 
     def mcp_call(self, tool: str, arguments: Optional[Dict] = None) -> Optional[Any]:
-        """Executes an MCP tool call."""
+        """Makes an MCP call to Stargate backend with container optimizations."""
+        if arguments is None:
+            arguments = {}
+            
         payload = {
             "tool": tool,
-            "arguments": arguments or {}
+            "arguments": arguments
         }
+        
         try:
-            response = requests.post(self.mcp_url, headers=self.headers, json=payload, timeout=30)
+            # Container-optimized timeout: faster failure for network issues
+            response = requests.post(self.mcp_url, json=payload, headers=self.headers, timeout=8)
+            
             if response.status_code == 429:
-                logger.warning(f"Throttled by MCP API (429) during tool '{tool}'.")
+                logger.warning(f"Throttled by Stargate MCP (429) for tool {tool}. Backing off.")
+                time.sleep(0.5)  # Brief backoff for throttling
                 return None
+                
+            response.raise_for_status()
+            
+            result = response.json()
+            if isinstance(result, dict) and "error" in result:
+                logger.error(f"MCP error for {tool}: {result['error']}")
+                return None
+                
+            # Extract the actual result from MCP response format
+            if isinstance(result, dict):
+                return result.get("result") or result.get("content") or result
+            return result
+            
+        except requests.Timeout:
+            logger.warning(f"MCP timeout for {tool} (container optimization)")
+            return None
+        except requests.ConnectionError:
+            logger.warning(f"MCP connection error for {tool} (container network)")
+            return None
+        except requests.RequestException as e:
+            logger.error(f"MCP call failed for {tool}: {e}")
+            return None
             
             response.raise_for_status()
             data = response.json()
@@ -93,7 +131,7 @@ class StargateClient:
         if result is None:
             return []
         if isinstance(result, dict):
-            return result.get("transactions") or []
+            return result.get("contracts") or []
         return result if isinstance(result, list) else []
 
     def get_proposals(self) -> List[Dict]:
