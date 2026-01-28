@@ -538,13 +538,51 @@ async def verify_api_key(authorization: str = Header(None)):
     return api_key
 
 
-# Global Agent State
+# Import agent manager
+AGENT_MANAGER_AVAILABLE = False
+get_manager = None
+start_agents = None
+stop_agents = None
+get_agent_status = None
+process_cycle = None
+
+try:
+    from starlight.agents.agent_manager import (
+        get_manager as _get_manager, 
+        start_agents as _start_agents, 
+        stop_agents as _stop_agents, 
+        get_agent_status as _get_agent_status,
+        process_cycle as _process_cycle
+    )
+    AGENT_MANAGER_AVAILABLE = True
+    get_manager = _get_manager
+    start_agents = _start_agents
+    stop_agents = _stop_agents
+    get_agent_status = _get_agent_status
+    process_cycle = _process_cycle
+    logger.info("Agent manager module loaded successfully")
+except ImportError as e:
+    AGENT_MANAGER_AVAILABLE = False
+    logger.error(f"Could not import agent manager: {e}")
+
+# Global Agent State (backward compatibility)
 agent_running = False
-agent_thread = None
 
 def run_agents_loop():
+    """Backward compatibility wrapper using new agentManager."""
     global agent_running
-    logger.info("Starting Autonomous Agents Loop")
+    
+    if AGENT_MANAGER_AVAILABLE:
+        # Use the new modular agentManager
+        manager = get_manager()
+        if manager.initialize():
+            agent_running = manager.start(blocking=True)
+            logger.info("Agent loop started using AgentManager")
+            return agent_running
+    
+    # Fallback to original logic if manager unavailable
+    agent_running = False
+    logger.info("Starting Autonomous Agents Loop (fallback mode)")
     try:
         client = StargateClient()
         
@@ -554,7 +592,7 @@ def run_agents_loop():
             client.bind_wallet(AgentConfig.DONATION_ADDRESS)
         else:
             logger.warning("No DONATION_ADDRESS configured. Write operations might fail.")
-
+        
         watcher = WatcherAgent(client, ai_identifier=AgentConfig.AI_IDENTIFIER)
         worker = WorkerAgent(client, ai_identifier=AgentConfig.AI_IDENTIFIER)
         
@@ -1363,11 +1401,13 @@ async def scan_block(
         raise HTTPException(status_code=500, detail=f"Block scan failed: {str(e)}")
 
 
-@app.get("/agents/status", tags=["Agents"])
-async def get_agent_status():
-    """Get the status of the autonomous agents"""
+# Legacy agent status endpoint (backward compatibility)
+@app.get("/agents/legacy/status", tags=["Agents"])
+async def get_legacy_agent_status():
+    """Get the status of the legacy autonomous agents"""
     return {
         "running": agent_running,
+        "manager_available": AGENT_MANAGER_AVAILABLE,
         "config": {
             "stargate_url": AgentConfig.STARGATE_API_URL,
             "ai_identifier": AgentConfig.AI_IDENTIFIER,
@@ -1375,6 +1415,38 @@ async def get_agent_status():
         }
     }
 
+# Updated status endpoint
+@app.get("/agents/status", tags=["Agents"])
+async def get_agent_status():
+    """Get the status of the autonomous agents"""
+    if AGENT_MANAGER_AVAILABLE and get_agent_status:
+        # Get status from the new AgentManager
+        manager_status = get_agent_status()
+        return {
+            "running": agent_running,
+            "manager_available": True,
+            "config": {
+                "stargate_url": AgentConfig.STARGATE_API_URL,
+                "ai_identifier": AgentConfig.AI_IDENTIFIER,
+                "poll_interval": AgentConfig.POLL_INTERVAL
+            },
+            "internal_status": manager_status
+        }
+    else:
+        # Fallback to legacy status
+        return {
+            "running": agent_running,
+            "manager_available": False,
+            "config": {
+                "stargate_url": AgentConfig.STARGATE_API_URL,
+                "ai_identifier": AgentConfig.AI_IDENTIFIER,
+                "poll_interval": AgentConfig.POLL_INTERVAL
+            }
+        }
+
+
+ # Removed agent control endpoints for security
+# Agent control functionality is now internal-only to prevent external manipulation
 
 # Root endpoint
 @app.get("/", tags=["Root"])
