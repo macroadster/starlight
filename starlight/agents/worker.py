@@ -730,6 +730,21 @@ class WorkerAgent:
         contract_results_dir = os.path.join(base_uploads_dir, "results", visible_pixel_hash)
         os.makedirs(contract_results_dir, exist_ok=True)
         
+        # Copy AGENTS_WORKING_GUIDE.md into sandbox directory for context
+        try:
+            # Find the project root (3 levels up from agents/worker.py)
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            agents_guide_src = os.path.join(project_root, "AGENTS_WORKING_GUIDE.md")
+            agents_guide_dest = os.path.join(contract_results_dir, "AGENTS.md")
+            if os.path.exists(agents_guide_src):
+                import shutil
+                shutil.copy2(agents_guide_src, agents_guide_dest)
+                logger.info(f"Added AGENTS.md guide to worker sandbox: {agents_guide_dest}")
+            else:
+                logger.warning(f"AGENTS_WORKING_GUIDE.md not found at: {agents_guide_src}")
+        except Exception as e:
+            logger.error(f"Failed to copy AGENTS_WORKING_GUIDE.md to sandbox: {e}")
+        
         result_filename = f"{task_id}.md"
         result_path = os.path.join(contract_results_dir, result_filename)
         public_url = f"/uploads/results/{visible_pixel_hash}/{result_filename}"
@@ -750,12 +765,14 @@ class WorkerAgent:
                     base_instruction = (
                         f"You are a practical engineer implementing: '{description}'.\n"
                         f"Skills: [{skills_str}].\n\n"
+                        f"IMPORTANT: Read AGENTS.md in your current directory for complete working guidelines!\n\n"
                         f"TASK: Complete this work efficiently and provide concrete results.\n\n"
                         f"REQUIREMENTS:\n"
                         f"1. Provide specific implementation details\n"
                         f"2. Include actual code examples or execution steps\n"
                         f"3. Show evidence of completion\n"
                         f"4. Keep response concise and actionable\n\n"
+                        f"Follow security guidelines in AGENTS.md - only allowed imports and operations.\n"
                         f"Focus on delivering working solutions, not theoretical discussions."
                     )
 
@@ -801,12 +818,14 @@ class WorkerAgent:
                     base_instruction = (
                         f"You are a practical engineer implementing: '{description}'.\n"
                         f"Skills: [{skills_str}].\n\n"
+                        f"IMPORTANT: Read AGENTS.md in your current directory for complete working guidelines!\n\n"
                         f"TASK: Complete this work efficiently and provide concrete results.\n\n"
                         f"REQUIREMENTS:\n"
                         f"1. Provide specific implementation details\n"
                         f"2. Include actual code examples or execution steps\n"
                         f"3. Show evidence of completion\n"
                         f"4. Keep response concise and actionable\n\n"
+                        f"Follow security guidelines in AGENTS.md - only allowed imports and operations.\n"
                         f"Focus on delivering working solutions, not theoretical discussions."
                     )
 
