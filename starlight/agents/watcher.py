@@ -211,14 +211,15 @@ class WatcherAgent:
         
         proposal_id = proposal.get("id", "")
         
-        # Create audit working directory for isolation using visible_pixel_hash
-        audit_dir = os.path.join(Config.UPLOADS_DIR, "audit", visible_pixel_hash[:16])  # Use first 16 chars of hash for directory name
-        os.makedirs(audit_dir, exist_ok=True)
+        # For proposal audit, use temp directory (no artifacts needed)
+        import tempfile
+        audit_dir = tempfile.mkdtemp(prefix="audit_proposal_")
+        logger.debug(f"Created temporary audit directory for proposal: {audit_dir}")
         
         # Try MCP client first for efficiency
         if self.opencode_client.is_available():
             try:
-                output = self.opencode_client.run(prompt, timeout=300, workdir=audit_dir)  # 5 minutes for proposal audit (quick decision)
+                output = self.opencode_client.run(prompt, timeout=1800, workdir=audit_dir)  # 30 minutes for proposal audit (thorough analysis)
                 if output:
                     output = output.strip().upper()
                     if "VERDICT: PASS" in output or "PASS" in output.split()[:10]:
@@ -236,7 +237,7 @@ class WatcherAgent:
             import subprocess
             try:
                 cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=audit_dir)  # 5 minutes for proposal audit (quick decision)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=audit_dir)  # 30 minutes for proposal audit (thorough analysis)
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
@@ -300,9 +301,54 @@ class WatcherAgent:
         """Uses OpenCode to verify the quality of a submission."""
         deliverables = sub.get("deliverables", {})
         notes = deliverables.get("notes", "")
+        artifacts_dir = deliverables.get("artifacts_dir", "")
         
         # Extract contract identifier for isolation
         visible_pixel_hash = sub.get("visible_pixel_hash") or sub.get("task", {}).get("visible_pixel_hash") or "unknown"
+        
+        # Find the worker's artifacts directory directly
+        audit_dir = None
+        artifacts_available = False
+        
+        if artifacts_dir:
+            try:
+                # Handle both relative and absolute paths
+                if artifacts_dir.startswith("/uploads/"):
+                    # Convert from URL path to filesystem path
+                    hash_component = artifacts_dir.strip("/").split("/")[-1]
+                    # Try multiple potential locations (dev vs kubernetes)
+                    potential_paths = [
+                        os.path.join(Config.UPLOADS_DIR, "results", hash_component),
+                        os.path.join("results", hash_component)
+                    ]
+                else:
+                    potential_paths = [artifacts_dir]
+                
+                # Find the first existing artifacts directory
+                for path in potential_paths:
+                    if os.path.exists(path):
+                        audit_dir = path
+                        artifacts_available = True
+                        logger.info(f"Auditing directly in worker's artifacts directory: {path}")
+                        break
+                
+                if not audit_dir:
+                    logger.warning(f"Artifacts directory not found in any location: {potential_paths}")
+                    # Fallback to a temp directory if no artifacts found
+                    import tempfile
+                    audit_dir = tempfile.mkdtemp(prefix="audit_fallback_")
+                    logger.warning(f"No artifacts found, using temp directory: {audit_dir}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to locate artifacts directory: {e}")
+                # Fallback to temp directory on error
+                import tempfile
+                audit_dir = tempfile.mkdtemp(prefix="audit_error_")
+        
+        # If no artifacts_dir provided, use temp directory
+        if not audit_dir:
+            import tempfile
+            audit_dir = tempfile.mkdtemp(prefix="audit_no_artifacts_")
         
         prompt = (
             f"Audit this work submission report.\n"
@@ -310,18 +356,21 @@ class WatcherAgent:
             f"CRITERIA:\n"
             f"1. Must contain technical evidence (code, logs, pseudo-code).\n"
             f"2. Must NOT be generic or conversational filler.\n"
-            f"3. Must demonstrate task completion.\n\n"
-            f"Respond with a single line: 'VERDICT: PASS' or 'VERDICT: FAIL - <reason>'."
+            f"3. Must demonstrate task completion.\n"
         )
         
-        # Create audit working directory for isolation using visible_pixel_hash
-        audit_dir = os.path.join(Config.UPLOADS_DIR, "audit", visible_pixel_hash[:16])  # Use first 16 chars of hash for directory name
-        os.makedirs(audit_dir, exist_ok=True)
+        # Add artifacts info to prompt if available
+        if artifacts_available:
+            prompt += f"\n4. Artifacts are available in current directory - examine files for evidence.\n\n"
+        else:
+            prompt += f"\n4. No artifacts directory available - rely on report content only.\n\n"
+            
+        prompt += "Respond with a single line: 'VERDICT: PASS' or 'VERDICT: FAIL - <reason>'."
         
         # Try MCP client first for efficiency
         if self.opencode_client.is_available():
             try:
-                output = self.opencode_client.run(prompt, timeout=300, workdir=audit_dir)  # 5 minutes for submission audit (quick decision)
+                output = self.opencode_client.run(prompt, timeout=1800, workdir=audit_dir)  # 30 minutes for submission audit (thorough analysis)
                 if output:
                     output = output.strip()
                     if "VERDICT: PASS" in output.upper() or "PASS" in output.upper().split()[:5]:
@@ -335,7 +384,7 @@ class WatcherAgent:
             import subprocess
             try:
                 cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=audit_dir)  # 5 minutes for submission audit (quick decision)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=audit_dir)  # 30 minutes for submission audit (thorough analysis)
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
