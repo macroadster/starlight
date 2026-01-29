@@ -19,9 +19,48 @@ env/
 # Datasets
 datasets/
 
-# Documentation
-docs/
-*.md
+# Git version control
+.git
+.gitignore
+
+# Docker
+.dockerignore
+Dockerfile
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Datasets
+datasets/
+
+# Large files and artifacts
+checkpoints/
+results/
+experiments/
+*.pth
+*.pt
+*.pkl
+*.h5
+*.log
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Additional exclusions
+blocks/
+data/
+hf_repos/
+temp_clean/
+benchmark_results/
 
 # Large files and artifacts
 checkpoints/
