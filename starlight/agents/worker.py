@@ -50,13 +50,18 @@ class WorkerAgent:
 
     def _has_incomplete_tasks(self) -> bool:
         """Check if worker has incomplete tasks that need completion."""
+        logger.debug(f"Worker: Checking for incomplete tasks. Active tasks: {list(self.active_tasks)}")
+        
         if not self.active_tasks:
+            logger.debug("Worker: No active tasks, proceeding")
             return False
             
         # Check if any active tasks are actually incomplete
         for task_id in list(self.active_tasks):
             try:
                 details = self.client.get_task_status(str(task_id))
+                logger.debug(f"Worker: Task {task_id} status: {details.get('status') if details else 'None'}")
+                
                 if details:
                     status = details.get("status", "").lower()
                     # Task is incomplete if still claimed by us and not completed
@@ -66,15 +71,18 @@ class WorkerAgent:
                         if not is_ours and Config.DONATION_ADDRESS:
                             is_ours = claimed_by == Config.DONATION_ADDRESS.lower()
                         if is_ours:
+                            logger.debug(f"Worker: Task {task_id} is still active and claimed by us")
                             return True
                     else:
                         # Task is no longer active, remove from tracking
+                        logger.debug(f"Worker: Task {task_id} is no longer active ({status}), removing from tracking")
                         self.active_tasks.discard(str(task_id))
             except Exception as e:
                 logger.error(f"Error checking task status for {task_id}: {e}")
                 # Assume incomplete if we can't verify
                 return True
         
+        logger.debug("Worker: No incomplete tasks found, proceeding")
         return False
 
     def _load_state(self):
@@ -143,6 +151,7 @@ class WorkerAgent:
                 
             total, used, free = shutil.disk_usage(disk_path)
             free_gb = free // (1024**3)
+            logger.debug(f"Worker: Resource check - {free_gb}GB free at {disk_path}")
             
             # Reduce activity if low on disk space
             if free_gb < 3:
@@ -283,6 +292,7 @@ class WorkerAgent:
         try:
             # RESOURCE CHECK: Skip if low on resources
             if not self._check_resources():
+                logger.info("Worker: Resource check failed, skipping proposal creation")
                 return
                 
             # TASK COMPLETION GATE: Must complete active tasks before creating new proposals
@@ -732,16 +742,34 @@ class WorkerAgent:
         
         # Copy AGENTS_WORKING_GUIDE.md into sandbox directory for context
         try:
-            # Find the project root (3 levels up from agents/worker.py)
+            # Try multiple potential locations for the guide
+            potential_sources = []
+            
+            # 1. Environment variable (Docker/set environment)
+            if os.getenv("AGENTS_WORKING_GUIDE_PATH"):
+                potential_sources.append(os.getenv("AGENTS_WORKING_GUIDE_PATH"))
+            
+            # 2. Project root (3 levels up from agents/worker.py)
             project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-            agents_guide_src = os.path.join(project_root, "AGENTS_WORKING_GUIDE.md")
+            potential_sources.append(os.path.join(project_root, "AGENTS_WORKING_GUIDE.md"))
+            
+            # 3. Current working directory fallback
+            potential_sources.append(os.path.join(os.getcwd(), "AGENTS_WORKING_GUIDE.md"))
+            
             agents_guide_dest = os.path.join(contract_results_dir, "AGENTS.md")
-            if os.path.exists(agents_guide_src):
-                import shutil
-                shutil.copy2(agents_guide_src, agents_guide_dest)
-                logger.info(f"Added AGENTS.md guide to worker sandbox: {agents_guide_dest}")
-            else:
-                logger.warning(f"AGENTS_WORKING_GUIDE.md not found at: {agents_guide_src}")
+            guide_copied = False
+            
+            for agents_guide_src in potential_sources:
+                if os.path.exists(agents_guide_src):
+                    import shutil
+                    shutil.copy2(agents_guide_src, agents_guide_dest)
+                    logger.info(f"Added AGENTS.md guide to worker sandbox: {agents_guide_dest} (from {agents_guide_src})")
+                    guide_copied = True
+                    break
+            
+            if not guide_copied:
+                logger.warning(f"AGENTS_WORKING_GUIDE.md not found in any location: {potential_sources}")
+                
         except Exception as e:
             logger.error(f"Failed to copy AGENTS_WORKING_GUIDE.md to sandbox: {e}")
         
