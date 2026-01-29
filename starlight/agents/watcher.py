@@ -136,11 +136,10 @@ class WatcherAgent:
                 if not is_ours and Config.DONATION_ADDRESS:
                     is_ours = claimed_by == Config.DONATION_ADDRESS.lower()
                 
-                if (status == "available" or (status == "claimed" and is_ours)) and task_id and task_id not in self.seen_tasks:
+                if (status == "available" or ((status == "claimed" or status == "rejected") and is_ours)) and task_id:
                     task["proposal_id"] = proposal.get("id")
                     task["proposal_title"] = proposal.get("title")
                     available_tasks.append(task)
-                    self.seen_tasks.add(task_id)
         
         if available_tasks:
             logger.info(f"Watcher found {len(available_tasks)} actionable tasks (available or resuming).")
