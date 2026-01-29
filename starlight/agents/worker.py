@@ -65,7 +65,7 @@ class WorkerAgent:
                 if details:
                     status = details.get("status", "").lower()
                     # Task is incomplete if still claimed by us and not completed
-                    if status in ["claimed", "in_progress"]:
+                    if status in ["claimed", "in_progress", "rejected"]:
                         claimed_by = details.get("claimed_by", "").lower()
                         is_ours = claimed_by == self.ai_identifier.lower()
                         if not is_ours and Config.DONATION_ADDRESS:
@@ -630,7 +630,7 @@ class WorkerAgent:
             if rejection_feedback:
                 logger.info(f"Worker: Task {task_id} REJECTED. Reason: {rejection_feedback}. PRIORITY REWORK...")
                 # For rejected tasks, try to claim immediately (higher priority)
-                if status == "available" and task_id:
+                if (status == "available" or status == "rejected") and task_id:
                     logger.info(f"Worker: Priority claiming rejected task {task_id} for rework")
                     claim_id = self.client.claim_task(task_id, self.ai_identifier)
                     if claim_id:
@@ -643,11 +643,11 @@ class WorkerAgent:
         
         # Handle normal claiming if not already handled above
         if not claim_id:
-            if status == "claimed" and existing_claim_id:
-                logger.info(f"Worker: Resuming already claimed task: {title} ({task_id}). Claim: {existing_claim_id}")
+            if (status == "claimed" or status == "rejected") and existing_claim_id:
+                logger.info(f"Worker: Resuming/Reworking task: {title} ({task_id}). Status: {status}. Claim: {existing_claim_id}")
                 claim_id = existing_claim_id
-            elif status == "available" and task_id:
-                logger.info(f"Worker attempting to claim available task: {title} ({task_id})")
+            elif (status == "available" or status == "rejected") and task_id:
+                logger.info(f"Worker attempting to claim task: {title} ({task_id}). Status: {status}")
                 claim_id = self.client.claim_task(task_id, self.ai_identifier)
                 
                 # If claim failed, check if we already own it
