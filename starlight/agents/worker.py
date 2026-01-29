@@ -732,34 +732,16 @@ class WorkerAgent:
         
         # Copy AGENTS_WORKING_GUIDE.md into sandbox directory for context
         try:
-            # Try multiple potential locations for the guide
-            potential_sources = []
-            
-            # 1. Environment variable (Docker/set environment)
-            if os.getenv("AGENTS_WORKING_GUIDE_PATH"):
-                potential_sources.append(os.getenv("AGENTS_WORKING_GUIDE_PATH"))
-            
-            # 2. Project root (3 levels up from agents/worker.py)
+            # Find the project root (3 levels up from agents/worker.py)
             project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-            potential_sources.append(os.path.join(project_root, "AGENTS_WORKING_GUIDE.md"))
-            
-            # 3. Current working directory fallback
-            potential_sources.append(os.path.join(os.getcwd(), "AGENTS_WORKING_GUIDE.md"))
-            
+            agents_guide_src = os.path.join(project_root, "AGENTS_WORKING_GUIDE.md")
             agents_guide_dest = os.path.join(contract_results_dir, "AGENTS.md")
-            guide_copied = False
-            
-            for agents_guide_src in potential_sources:
-                if os.path.exists(agents_guide_src):
-                    import shutil
-                    shutil.copy2(agents_guide_src, agents_guide_dest)
-                    logger.info(f"Added AGENTS.md guide to worker sandbox: {agents_guide_dest} (from {agents_guide_src})")
-                    guide_copied = True
-                    break
-            
-            if not guide_copied:
-                logger.warning(f"AGENTS_WORKING_GUIDE.md not found in any location: {potential_sources}")
-                
+            if os.path.exists(agents_guide_src):
+                import shutil
+                shutil.copy2(agents_guide_src, agents_guide_dest)
+                logger.info(f"Added AGENTS.md guide to worker sandbox: {agents_guide_dest}")
+            else:
+                logger.warning(f"AGENTS_WORKING_GUIDE.md not found at: {agents_guide_src}")
         except Exception as e:
             logger.error(f"Failed to copy AGENTS_WORKING_GUIDE.md to sandbox: {e}")
         
