@@ -600,13 +600,17 @@ def run_agents_loop():
         while agent_running:
             try:
                 # 1. Worker looks for wishes and creates proposals
+                logger.info("Agent loop iteration: Starting worker.process_wishes()")
                 worker.process_wishes()
 
                 # 2. Watcher looks for proposals (audits/approves them) and tasks
+                logger.info("Agent loop iteration: Starting watcher.run_once()")
                 tasks = watcher.run_once()
+                logger.info(f"Agent loop iteration: Found {len(tasks)} available tasks")
                 
                 # 3. Worker processes available tasks
-                for task in tasks:
+                for i, task in enumerate(tasks):
+                    logger.info(f"Agent loop iteration: Processing task {i+1}/{len(tasks)}")
                     worker.process_task(task)
                 
                 # 3. Wait
@@ -615,8 +619,14 @@ def run_agents_loop():
                     if not agent_running:
                         break
                     time.sleep(1)
+                
+                # Clear any stale flags that might prevent next iteration
+                if agent_running:
+                    logger.info("Agent loop iteration completed, starting next cycle")
             except Exception as e:
                 logger.error(f"Agent loop error: {e}")
+                import traceback
+                logger.error(f"Agent loop traceback: {traceback.format_exc()}")
                 time.sleep(5)
     except Exception as e:
          logger.critical(f"Failed to initialize agents: {e}")
