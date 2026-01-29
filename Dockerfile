@@ -67,6 +67,10 @@ COPY starlight/ ./starlight/
 # Copy models and metadata
 COPY models_dist/ ./models/
 
+# Copy agent documentation
+COPY AGENTS_WORKING_GUIDE.md ./
+COPY docs/agents/ ./docs/agents/
+
 # Ensure permissions for starlight user on home, app and opencode opts
 RUN chown -R starlight:starlight /app /home/starlight /opt/opencode
 
