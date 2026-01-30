@@ -30,6 +30,35 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)
         )
     return True
 
+async def restore_existing_functions(app: FastAPI):
+    """Discovers and reloads existing api.py files from the results directory."""
+    logger.info("🔄 Scanning for existing agent APIs to restore...")
+    requests = dynamic_loader.discover_existing()
+    
+    count = 0
+    for req in requests:
+        try:
+            # Re-use the loading logic
+            loaded_module = dynamic_loader.load_function(req)
+            func = dynamic_loader.get_function(req.visible_pixel_hash, req.function_name)
+            
+            if func:
+                app.add_api_route(
+                    loaded_module.endpoint_path,
+                    func,
+                    methods=[loaded_module.method],
+                    name=f"agent_{loaded_module.module_id[:8]}",
+                    operation_id=f"agent_{loaded_module.visible_pixel_hash}_{loaded_module.function_name}",
+                    include_in_schema=True
+                )
+                count += 1
+        except Exception as e:
+            logger.warning(f"Failed to restore API for {req.visible_pixel_hash}: {e}")
+            
+    if count > 0:
+        logger.info(f"✅ Successfully restored {count} agent APIs.")
+        app.openapi_schema = None
+
 def create_dynamic_app() -> FastAPI:
     """Create FastAPI app with dynamic loading capabilities."""
     app = FastAPI(
@@ -37,6 +66,10 @@ def create_dynamic_app() -> FastAPI:
         description="Secure dynamic loading of agent-developed functions",
         version="1.0.0"
     )
+    
+    @app.on_event("startup")
+    async def startup_event():
+        await restore_existing_functions(app)
     
     # Add CORS middleware
     app.add_middleware(

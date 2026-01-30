@@ -368,12 +368,13 @@ class WorkerAgent:
                 already_proposed = normalized_wid in my_proposals_for_wishes
                 recently_cached = normalized_wid in self._recent_proposals
                 
-                if already_proposed:
-                    logger.debug(f"Worker: Already proposed for wish {wid}")
-                    continue
-                elif recently_cached:
-                    logger.debug(f"Worker: Already cached proposal for wish {wid}")
-                    continue
+                # Allow multiple proposals per wish (removed duplication checks)
+                # if already_proposed:
+                #     logger.debug(f"Worker: Already proposed for wise {wid}")
+                #     continue
+                # elif recently_cached:
+                #     logger.debug(f"Worker: Already cached proposal for wise {wid}")
+                #     continue
                 
                 # Create proposal ONLY - no wish creation
                 logger.info(f"Worker: Creating proposal for wish {wid}")
@@ -931,6 +932,9 @@ class WorkerAgent:
             logger.info(f"Saved task results to {result_path}")
         except Exception as e:
             logger.error(f"Failed to save results: {e}")
+
+        # Auto-register any server-side python code (api.py)
+        self._register_dynamic_functions(visible_pixel_hash, contract_results_dir)
 
         return {
             "notes": notes,

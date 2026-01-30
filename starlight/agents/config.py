@@ -7,3 +7,4 @@ class Config:
     POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))
     DONATION_ADDRESS = os.getenv("STARLIGHT_DONATION_ADDRESS", "")
     UPLOADS_DIR = os.getenv("UPLOADS_DIR", "/data/uploads")
+    DYNAMIC_API_URL = os.getenv("DYNAMIC_API_URL", "http://starlight-api:8000")
