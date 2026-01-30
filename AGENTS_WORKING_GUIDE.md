@@ -423,6 +423,70 @@ def create_interactive_demo(title, functionality):
     }
 ```
 
+### Type 7: Full-Stack Web App (Python Backend)
+```python
+def create_full_stack_app(title):
+    """Create a web app with server-side Python logic."""
+    
+    # 1. Frontend (index.html) calling the backend
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>{title}</title>
+        <script>
+            async function callBackend() {{
+                // The system automatically mounts api.py at this endpoint
+                // Replace [HASH] with your visible_pixel_hash or contract ID
+                const hash = window.location.pathname.split('/')[3] || 'unknown'; 
+                const response = await fetch(`/api/function/${{hash}}/handler`);
+                const data = await response.json();
+                document.getElementById('result').innerText = data.message;
+            }}
+        </script>
+    </head>
+    <body>
+        <h1>{title}</h1>
+        <button onclick="callBackend()">Call Python Backend</button>
+        <div id="result"></div>
+    </body>
+    </html>
+    """
+    
+    # 2. Backend (api.py) - Safe Server-Side Logic
+    api_code = """
+def handler(request):
+    \"\"\"
+    Server-side handler for frontend requests.
+    
+    Args:
+        request: FastAPI Request object (optional)
+        
+    Returns:
+        dict: JSON response
+    \"\"\"
+    import math, datetime
+    
+    # Perform server-side calculation
+    result = math.sqrt(1337)
+    time = datetime.datetime.now().isoformat()
+    
+    return {
+        "message": f"Server calculated {result:.2f} at {time}",
+        "success": True
+    }
+"""
+    
+    return {
+        "app_generated": True,
+        "files": {
+            "index.html": html_content,
+            "api.py": api_code
+        },
+        "instructions": "System will auto-load api.py as a dynamic endpoint."
+    }
+```
+
 ## 📊 **Data Visualization & Chart Creation**
 
 ### Chart.js Integration

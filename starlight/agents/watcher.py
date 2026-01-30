@@ -151,6 +151,10 @@ class WatcherAgent:
         proposals = self.client.get_proposals()
         if proposals is None:
             return
+
+        # Cache open contracts to avoid fetching for every proposal
+        open_contracts = self.client.get_open_contracts()
+        contracts_map = {c.get("contract_id"): c for c in open_contracts if isinstance(c, dict)}
             
         for proposal in proposals:
             if not isinstance(proposal, dict):
@@ -164,6 +168,31 @@ class WatcherAgent:
                     logger.debug(f"Watcher: Proposal {pid} already rejected. Skipping audit.")
                     self.seen_proposals.add(pid)  # Mark as seen to avoid rechecking
                     continue
+
+                # BUDGET CHECK
+                contract_id = proposal.get("contract_id")
+                proposal_budget = float(proposal.get("budget_sats", 0))
+                
+                if contract_id and contract_id in contracts_map:
+                    contract = contracts_map[contract_id]
+                    contract_price = float(contract.get("price", 0))
+                    price_unit = contract.get("price_unit", "btc").lower()
+                    
+                    # Convert contract price to sats if needed
+                    if price_unit == "btc":
+                        contract_budget_sats = contract_price * 100_000_000
+                    else:
+                        contract_budget_sats = contract_price
+                        
+                    if proposal_budget > contract_budget_sats and contract_budget_sats > 0:
+                        rejection_reason = f"Budget exceeded: Proposal {proposal_budget} sats > Wish {contract_budget_sats} sats"
+                        logger.warning(f"Watcher: Rejecting proposal {pid} - {rejection_reason}")
+                        
+                        self.rejected_proposals.add(pid)
+                        self.seen_proposals.add(pid)
+                        self.rejection_cache[pid] = rejection_reason
+                        self._notify_worker_of_rejection(pid, rejection_reason)
+                        continue
                     
                 logger.info(f"Watcher auditing pending proposal {pid}...")
                 

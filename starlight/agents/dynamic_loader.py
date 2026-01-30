@@ -7,7 +7,7 @@ import os
 import importlib.util
 import ast
 import logging
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 from fastapi import HTTPException
 from pydantic import BaseModel
 import uuid
@@ -216,6 +216,34 @@ class DynamicLoader:
     def get_module_info(self, module_id: str) -> Optional[LoadedModule]:
         """Get information about a loaded module."""
         return self.loaded_modules.get(module_id)
+
+    def discover_existing(self) -> List[LoadRequest]:
+        """Scans the filesystem for existing api.py files in sandboxes."""
+        requests = []
+        results_dir = os.path.join(Config.UPLOADS_DIR, "results")
+        
+        if not os.path.exists(results_dir):
+            return []
+            
+        for vph in os.listdir(results_dir):
+            sandbox_path = os.path.join(results_dir, vph)
+            if not os.path.isdir(sandbox_path):
+                continue
+                
+            api_py = os.path.join(sandbox_path, "api.py")
+            if os.path.exists(api_py):
+                # Verify it has a handler function
+                try:
+                    with open(api_py, 'r') as f:
+                        if "def handler(" in f.read():
+                            requests.append(LoadRequest(
+                                visible_pixel_hash=vph,
+                                function_name="handler",
+                                module_name="api"
+                            ))
+                except Exception:
+                    continue
+        return requests
 
 # Global instance
 dynamic_loader = DynamicLoader()
