@@ -39,8 +39,27 @@ from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Default blocks directory (overridable via env)
-BLOCKS_DIR = os.environ.get("BLOCKS_DIR", "blocks")
+def validate_safe_path(path: str, allowed_bases: List[str]) -> str:
+    """Validate path is within allowed base directories to prevent directory traversal."""
+    abs_path = os.path.abspath(path)
+    for base in allowed_bases:
+        abs_base = os.path.abspath(base)
+        if abs_path == abs_base or abs_path.startswith(abs_base + os.sep):
+            return abs_path
+    
+    # If no match found, use first allowed base as safe default
+    return os.path.abspath(allowed_bases[0])
+
+# Default blocks directory (override via env for testing only)
+# SECURITY: Restrict to safe subdirectories to prevent path traversal
+# Include common Docker mount points and production paths
+ALLOWED_BLOCKS_BASES = [
+    "blocks", "./blocks", "../blocks", "../../blocks",  # Development paths
+    "/data/blocks", "/app/blocks", "/starlight/blocks",  # Docker/container paths
+    "/var/lib/starlight/blocks"  # System installation paths
+]
+_env_blocks = os.environ.get("BLOCKS_DIR", "blocks")
+BLOCKS_DIR = validate_safe_path(_env_blocks, ALLOWED_BLOCKS_BASES)
 STARGATE_STEGO_CALLBACK_URL = os.environ.get("STARGATE_STEGO_CALLBACK_URL", "")
 STARGATE_STEGO_CALLBACK_SECRET = os.environ.get("STARGATE_STEGO_CALLBACK_SECRET", "")
 
@@ -391,7 +410,12 @@ if SCANNER_AVAILABLE:
     try:
         from scanner import StarlightScanner
 
-        model_path = "models/detector_balanced.pth"
+        # SECURITY: Validate model path is within expected directories
+        ALLOWED_MODEL_BASES = ["models", "./models", "../models", "../../models"]
+        model_rel_path = "detector_balanced.pth"
+        model_base = validate_safe_path("models", ALLOWED_MODEL_BASES)
+        model_path = os.path.join(model_base, model_rel_path)
+        
         if os.path.exists(model_path):
             scanner_instance = StarlightScanner(model_path, num_workers=4, quiet=True)
             logger.info(f"Scanner initialized with model: {model_path}")
@@ -541,11 +565,14 @@ async def verify_api_key(authorization: str = Header(None)):
 
 # Import agent manager
 AGENT_MANAGER_AVAILABLE = False
-get_manager = None
-start_agents = None
-stop_agents = None
-get_agent_status = None
-process_cycle = None
+from typing import Callable, Dict, Any, Optional
+
+# Type hints for agent manager functions - these will be properly typed after import
+get_manager: Any = None
+start_agents: Any = None  
+stop_agents: Any = None
+get_agent_status: Any = None
+process_cycle: Any = None
 
 try:
     from starlight.agents.agent_manager import (
@@ -573,10 +600,10 @@ def run_agents_loop():
     """Backward compatibility wrapper using new agentManager."""
     global agent_running
     
-    if AGENT_MANAGER_AVAILABLE:
+    if AGENT_MANAGER_AVAILABLE and get_manager is not None:
         # Use the new modular agentManager
         manager = get_manager()
-        if manager.initialize():
+        if manager and hasattr(manager, 'initialize') and manager.initialize():
             agent_running = manager.start(blocking=True)
             logger.info("Agent loop started using AgentManager")
             return agent_running
@@ -685,7 +712,7 @@ async def health_check():
     scanner_status = {
         "model_loaded": scanner_instance is not None,
         "model_version": "v4-prod" if scanner_instance else "none",
-        "model_path": "models/detector_balanced.pth",
+        "model_path": "models/detector_balanced.pth",  # Relative path for security
         "device": "cpu",  # Would detect actual device
     }
 
@@ -1428,7 +1455,7 @@ async def get_legacy_agent_status():
 
 # Updated status endpoint
 @app.get("/agents/status", tags=["Agents"])
-async def get_agent_status():
+async def get_agents_status():
     """Get the status of the autonomous agents"""
     if AGENT_MANAGER_AVAILABLE and get_agent_status:
         # Get status from the new AgentManager
