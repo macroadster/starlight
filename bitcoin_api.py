@@ -658,11 +658,49 @@ def run_agents_loop():
     except Exception as e:
          logger.critical(f"Failed to initialize agents: {e}")
 
+async def restore_existing_functions(app: FastAPI):
+    """Discovers and reloads existing api.py files from the results directory."""
+    logger.info("🔄 Scanning for existing agent APIs to restore...")
+    try:
+        requests = dynamic_loader.discover_existing()
+        
+        count = 0
+        for req in requests:
+            try:
+                # Re-use the loading logic
+                # For bitcoin_api, we want them under /sandbox/api/handler
+                req.endpoint_path = f"/sandbox/api/{req.visible_pixel_hash}/{req.function_name}"
+                
+                loaded_module = dynamic_loader.load_function(req)
+                func = dynamic_loader.get_function(req.visible_pixel_hash, req.function_name)
+                
+                if func:
+                    app.add_api_route(
+                        loaded_module.endpoint_path,
+                        func,
+                        methods=[loaded_module.method],
+                        name=f"sandbox_{loaded_module.module_id[:8]}",
+                        operation_id=f"sandbox_api_{loaded_module.visible_pixel_hash}_{loaded_module.function_name}",
+                        include_in_schema=True
+                    )
+                    count += 1
+            except Exception as e:
+                logger.warning(f"Failed to restore API for {req.visible_pixel_hash}: {e}")
+                
+        if count > 0:
+            logger.info(f"✅ Successfully restored {count} agent APIs.")
+            app.openapi_schema = None
+    except Exception as e:
+        logger.error(f"Error during API restoration: {e}")
+
 # FastAPI application
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starlight Bitcoin Scanning API starting up...")
+    
+    # Restore existing functions
+    await restore_existing_functions(app)
     
     # Start Autonomous Agents
     global agent_running, agent_thread
