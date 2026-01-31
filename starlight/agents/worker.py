@@ -658,7 +658,20 @@ class WorkerAgent:
                     claim_id = self._find_my_existing_claim(task)
         
         if not claim_id:
-            logger.warning(f"Failed to secure claim for task {task_id}. It might have been taken by someone else.")
+            # Check current task status to determine why claim failed
+            current_status = self.client.get_task_status(task_id)
+            if current_status:
+                task_status = current_status.get("status", "").lower()
+                claimed_by = current_status.get("claimed_by", "")
+                
+                if task_status == "approved" or task_status == "completed":
+                    logger.info(f"Task {task_id} is already {task_status} (claimed by {claimed_by}). Skipping.")
+                elif task_status == "claimed" and claimed_by != self.ai_identifier:
+                    logger.info(f"Task {task_id} is already claimed by another agent ({claimed_by}). Skipping.")
+                else:
+                    logger.warning(f"Failed to secure claim for task {task_id}. Status: {task_status}, claimed_by: {claimed_by}")
+            else:
+                logger.warning(f"Failed to secure claim for task {task_id}. Could not fetch current status.")
             return False
         
         # Log priority status
