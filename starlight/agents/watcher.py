@@ -136,7 +136,10 @@ class WatcherAgent:
                 if not is_ours and Config.DONATION_ADDRESS:
                     is_ours = claimed_by == Config.DONATION_ADDRESS.lower()
                 
-                if (status == "available" or ((status == "claimed" or status == "rejected") and is_ours)) and task_id:
+                # Logic Error Fix: Ensure task is not claimed by another agent
+                is_claimed_by_others = claimed_by and not is_ours
+                
+                if not is_claimed_by_others and (status == "available" or ((status == "claimed" or status == "rejected") and is_ours)) and task_id:
                     task["proposal_id"] = proposal.get("id")
                     task["proposal_title"] = proposal.get("title")
                     available_tasks.append(task)

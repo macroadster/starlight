@@ -95,19 +95,6 @@ class StargateClient:
             return None
         except requests.RequestException as e:
             logger.error(f"MCP call failed for {tool}: {e}")
-            return None
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data.get("success"):
-                error = data.get("error", "Unknown error")
-                logger.error(f"MCP Tool '{tool}' failed: {error}")
-                return None
-                
-            return data.get("result")
-        except requests.RequestException as e:
-            logger.error(f"MCP Call '{tool}' failed: {e}")
             if getattr(e, 'response', None) is not None:
                 logger.error(f"Response: {e.response.text}")
             return None
