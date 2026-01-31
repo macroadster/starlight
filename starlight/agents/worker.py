@@ -8,6 +8,7 @@ from typing import Dict, Set, Optional, Any
 from .client import StargateClient
 from .config import Config
 from .opencode_client import OpenCodeMCPClient
+from .dynamic_loader import dynamic_loader, LoadRequest
 
 logger = logging.getLogger(__name__)
 
@@ -933,12 +934,30 @@ class WorkerAgent:
         except Exception as e:
             logger.error(f"Failed to save results: {e}")
 
-        # Auto-register any server-side python code (api.py)
-        self._register_dynamic_functions(visible_pixel_hash, contract_results_dir)
-
         return {
             "notes": notes,
             "result_file": public_url,
             "artifacts_dir": f"/uploads/results/{visible_pixel_hash}/",
             "completion_proof": str(uuid.uuid4())
         }
+
+    def _register_dynamic_functions(self, visible_pixel_hash: str, contract_results_dir: str):
+        """Register api.py files from the worker's sandbox as dynamic endpoints."""
+        try:
+            api_py_path = os.path.join(contract_results_dir, "api.py")
+            if os.path.exists(api_py_path):
+                logger.info(f"Found api.py in sandbox: {api_py_path}")
+                try:
+                    request = LoadRequest(
+                        visible_pixel_hash=visible_pixel_hash,
+                        function_name="handler",
+                        module_name="api"
+                    )
+                    loaded_module = dynamic_loader.load_function(request)
+                    logger.info(f"Successfully registered dynamic function: {loaded_module.endpoint_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to register api.py: {e}")
+            else:
+                logger.debug(f"No api.py found in sandbox: {api_py_path}")
+        except Exception as e:
+            logger.error(f"Error during dynamic function registration: {e}")
