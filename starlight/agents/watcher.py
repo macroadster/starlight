@@ -195,12 +195,10 @@ class WatcherAgent:
                         continue
                     
                 logger.info(f"Watcher auditing pending proposal {pid}...")
-                
+
                 if self._audit_proposal(proposal):
-                    logger.info(f"Proposal {pid} passed audit. Approving...")
-                    if pid and self.client.approve_proposal(pid):
-                        logger.info(f"Proposal {pid} approved.")
-                        self.seen_proposals.add(pid)
+                    logger.info(f"Proposal {pid} passed audit. Waiting for wish creator to approve.")
+                    self.seen_proposals.add(pid)
                 else:
                     logger.warning(f"Proposal {pid} failed audit. Marking as rejected.")
                     if pid:
@@ -208,7 +206,7 @@ class WatcherAgent:
                         self.seen_proposals.add(pid)  # Also add to seen to avoid reprocessing
                         rejection_reason = self.rejection_cache.get(pid, "Failed audit")
                         logger.info(f"Watcher: Rejected proposal {pid}: {rejection_reason}")
-                        
+
                         # Notify worker about rejection for revision purposes
                         self._notify_worker_of_rejection(pid, rejection_reason)
 
