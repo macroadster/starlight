@@ -123,6 +123,21 @@ class WatcherAgent:
                 continue
 
             tasks = proposal.get("tasks", [])
+            
+            # LIVE TASK FETCHING: Fetch the actual tasks to avoid stale state in list_proposals
+            contract_id = proposal.get("contract_id") or (tasks[0].get("contract_id") if tasks and isinstance(tasks[0], dict) else None)
+            if not contract_id:
+                # Fallback: some proposals use the proposal ID as the contract ID
+                contract_id = proposal.get("id")
+            
+            if contract_id:
+                try:
+                    live_tasks = self.client.get_tasks(contract_id)
+                    if live_tasks:
+                        tasks = live_tasks
+                except Exception as e:
+                    logger.debug(f"Watcher: Could not fetch live tasks for {contract_id}: {e}")
+
             for task in tasks:
                 if not isinstance(task, dict):
                     continue
