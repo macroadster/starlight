@@ -439,7 +439,7 @@ def create_full_stack_app(title):
                 // The system automatically mounts api.py at this endpoint
                 // Replace [HASH] with your visible_pixel_hash or contract ID
                 const hash = window.location.pathname.split('/')[3] || 'unknown'; 
-                const response = await fetch(`/api/function/${{hash}}/handler`);
+                const response = await fetch(`/sandbox/api/${{hash}}/handler`);
                 const data = await response.json();
                 document.getElementById('result').innerText = data.message;
             }}
