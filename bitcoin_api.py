@@ -604,7 +604,7 @@ def run_agents_loop():
         # Use the new modular agentManager
         manager = get_manager()
         if manager and hasattr(manager, 'initialize') and manager.initialize():
-            agent_running = manager.start(blocking=True)
+            agent_running = manager.start(blocking=True, max_cycles=None)
             logger.info("Agent loop started using AgentManager")
             return agent_running
     

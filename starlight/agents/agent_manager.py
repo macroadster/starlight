@@ -30,7 +30,7 @@ class AgentManager:
         
         # Container-specific optimizations
         self.cycle_count = 0
-        self.max_cycles = 1000  # Prevent infinite loops in container
+        self.max_cycles = 10000  # High limit to prevent infinite loops in container
         
     def initialize(self, client: Optional[StargateClient] = None, 
                   ai_identifier: str = AgentConfig.AI_IDENTIFIER):
