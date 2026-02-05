@@ -416,9 +416,9 @@ class WorkerAgent:
             try:
                 # Ask OpenCode to generate a systematic plan for the wish
                 prompt = (
-                    f"Create an elite technical implementation plan for this wish: '{text}'.\n"
+                    f"Create an plan for this wish: '{text}'.\n"
                     f"Decompose the work into logical, actionable tasks (e.g. using '### Task X: Title' headers). For each task, describe the implementation steps and technical deliverables.\n"
-                    f"Focus on expert engineering practices and clear documentation."
+                    f"Focus on expert practices and clear documentation."
                 )
                 result = self.opencode_client.run(prompt, timeout=300)  # 5 minutes for proposal creation
                 if result and result.strip():
@@ -439,9 +439,9 @@ class WorkerAgent:
             try:
                 # Ask OpenCode to generate a systematic plan for the wish
                 prompt = (
-                    f"Create an elite technical implementation plan for this wish: '{text}'.\n"
+                    f"Create an plan for this wish: '{text}'.\n"
                     f"Decompose the work into logical, actionable tasks (e.g. using '### Task X: Title' headers). For each task, describe the implementation steps and technical deliverables.\n"
-                    f"Focus on expert engineering practices and clear documentation."
+                    f"Focus on expert practices and clear documentation."
                 )
                 cmd = ["opencode", "run", prompt]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # 5 minutes for proposal creation
