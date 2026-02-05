@@ -734,6 +734,9 @@ class WorkerAgent:
         finally:
             if task_id:
                 self.active_tasks.discard(task_id)
+                # Clear task-specific memory to get fresh context for next task
+                if task_id in self._rejected_tasks:
+                    del self._rejected_tasks[task_id]
 
     def _perform_work(self, task: Dict) -> Dict:
         """Executes work efficiently with crash prevention."""
@@ -749,6 +752,40 @@ class WorkerAgent:
         # Extract skills to inspire the agent
         skills = task.get("skills", ["general engineering"])
         skills_str = ", ".join(skills) if isinstance(skills, list) else str(skills)
+
+        # Fetch full context: proposal + submission history
+        proposal_id = task.get("proposal_id")
+        if proposal_id:
+            # Get proposal context
+            proposals = self.client.get_proposals()
+            proposal = next((p for p in proposals if p.get("id") == proposal_id), None)
+            if proposal:
+                task["proposal_context"] = proposal.get("description_md", "")
+                task["proposal_title"] = proposal.get("title", "")
+
+        # Get submission history for this task
+        if task_id != str(uuid.uuid4()):  # Only if we have a real task_id
+            try:
+                submissions = self.client.get_submissions()
+                if submissions:
+                    task_submissions = [s for s in submissions if s.get("task_id") == task_id]
+                    
+                    if task_submissions:
+                        # Sort by timestamp to get most recent
+                        task_submissions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+                        latest_submission = task_submissions[0]
+                        
+                        task["previous_submissions"] = {
+                            "latest": latest_submission,
+                            "all": task_submissions
+                        }
+                        
+                        # Extract notes and rejection reasons
+                        deliverables = latest_submission.get("deliverables", {})
+                        task["previous_work"] = deliverables.get("notes", "")
+                        task["submission_history"] = [s.get("deliverables", {}).get("notes", "") for s in task_submissions]
+            except Exception as e:
+                logger.warning(f"Failed to fetch submission history for task {task_id}: {e}")
 
         # Determine data directory for results using visible_pixel_hash for isolation
         base_uploads_dir = Config.UPLOADS_DIR
@@ -821,17 +858,45 @@ class WorkerAgent:
 
                     work_type = task.get("work_type", "new work").upper()
                     
-                    if rejection_feedback:
+                    if rejection_feedback and task.get("previous_work"):
                         prompt = (
-                            f"REWORK REQUIRED: Your previous submission for '{title}' was REJECTED.\n"
-                            f"FEEDBACK: '{rejection_feedback}'.\n\n"
+                            f"REWORK REQUIRED - Previous submission was REJECTED.\n"
+                            f"PREVIOUS WORK: {task['previous_work'][:1000]}...\n"
+                            f"REJECTION FEEDBACK: '{rejection_feedback}'\n"
+                            f"FULL PROPOSAL CONTEXT: {task.get('proposal_context', 'N/A')}\n\n"
+                            f"TASK: Fix all issues and provide corrected implementation.\n"
+                            f"Build upon your previous work but address all rejection points.\n\n"
+                            f"{base_instruction}"
+                        )
+                        logger.info(f"Worker: Executing REWORK for {title} - Feedback: {rejection_feedback}")
+                    elif task.get("previous_work"):
+                        prompt = (
+                            f"CONTINUATION WORK - Based on previous submission.\n"
+                            f"PREVIOUS WORK: {task['previous_work'][:1000]}...\n"
+                            f"PROPOSAL CONTEXT: {task.get('proposal_context', 'N/A')}\n\n"
+                            f"{base_instruction}"
+                        )
+                        logger.info(f"Worker: Executing CONTINUATION for {title}")
+                    elif rejection_feedback:
+                        prompt = (
+                            f"REWORK REQUIRED: Your submission for '{title}' was REJECTED.\n"
+                            f"FEEDBACK: '{rejection_feedback}'.\n"
+                            f"PROPOSAL CONTEXT: {task.get('proposal_context', 'N/A')}\n\n"
                             f"TASK: Fix all identified issues and provide a corrected implementation.\n"
                             f"Focus on addressing each rejection point specifically.\n\n"
                             f"{base_instruction}"
                         )
                         logger.info(f"Worker: Executing REWORK for {title} - Feedback: {rejection_feedback}")
                     else:
-                        prompt = base_instruction
+                        # Add proposal context even for new work
+                        if task.get("proposal_context"):
+                            prompt = (
+                                f"NEW WORK - Full proposal context provided.\n"
+                                f"PROPOSAL CONTEXT: {task['proposal_context']}\n\n"
+                                f"{base_instruction}"
+                            )
+                        else:
+                            prompt = base_instruction
                         logger.info(f"Worker: Executing NEW WORK for {title}")
                     
                     result = self.opencode_client.run(prompt, timeout=3600)  # 1 hour timeout for complex tasks
@@ -874,17 +939,45 @@ class WorkerAgent:
 
                     work_type = task.get("work_type", "new work").upper()
                     
-                    if rejection_feedback:
+                    if rejection_feedback and task.get("previous_work"):
                         prompt = (
-                            f"REWORK REQUIRED: Your previous submission for '{title}' was REJECTED.\n"
-                            f"FEEDBACK: '{rejection_feedback}'.\n\n"
+                            f"REWORK REQUIRED - Previous submission was REJECTED.\n"
+                            f"PREVIOUS WORK: {task['previous_work'][:1000]}...\n"
+                            f"REJECTION FEEDBACK: '{rejection_feedback}'\n"
+                            f"FULL PROPOSAL CONTEXT: {task.get('proposal_context', 'N/A')}\n\n"
+                            f"TASK: Fix all issues and provide corrected implementation.\n"
+                            f"Build upon your previous work but address all rejection points.\n\n"
+                            f"{base_instruction}"
+                        )
+                        logger.info(f"Worker: Executing REWORK for {title} - Feedback: {rejection_feedback}")
+                    elif task.get("previous_work"):
+                        prompt = (
+                            f"CONTINUATION WORK - Based on previous submission.\n"
+                            f"PREVIOUS WORK: {task['previous_work'][:1000]}...\n"
+                            f"PROPOSAL CONTEXT: {task.get('proposal_context', 'N/A')}\n\n"
+                            f"{base_instruction}"
+                        )
+                        logger.info(f"Worker: Executing CONTINUATION for {title}")
+                    elif rejection_feedback:
+                        prompt = (
+                            f"REWORK REQUIRED: Your submission for '{title}' was REJECTED.\n"
+                            f"FEEDBACK: '{rejection_feedback}'.\n"
+                            f"PROPOSAL CONTEXT: {task.get('proposal_context', 'N/A')}\n\n"
                             f"TASK: Fix all identified issues and provide a corrected implementation.\n"
                             f"Focus on addressing each rejection point specifically.\n\n"
                             f"{base_instruction}"
                         )
                         logger.info(f"Worker: Executing REWORK for {title} - Feedback: {rejection_feedback}")
                     else:
-                        prompt = base_instruction
+                        # Add proposal context even for new work
+                        if task.get("proposal_context"):
+                            prompt = (
+                                f"NEW WORK - Full proposal context provided.\n"
+                                f"PROPOSAL CONTEXT: {task['proposal_context']}\n\n"
+                                f"{base_instruction}"
+                            )
+                        else:
+                            prompt = base_instruction
                         logger.info(f"Worker: Executing NEW WORK for {title}")
                     
                     cmd = ["opencode", "run", prompt]
@@ -908,10 +1001,17 @@ class WorkerAgent:
             
             status_line = "Rework Applied" if rejection_feedback else "Implementation Complete"
             
+            # Build context-aware fallback
+            context_info = ""
+            if task.get("proposal_context"):
+                context_info = f"\n**Proposal Context:** Available in full implementation"
+            if task.get("previous_work"):
+                context_info += f"\n**Previous Work:** Built upon existing submission"
+            
             opencode_output = (
                 f"## Task Implementation: {title}\n\n"
                 f"**Status:** {status_line}\n"
-                f"**Description:** {description}\n\n"
+                f"**Description:** {description}{context_info}\n\n"
                 f"### Implementation Details\n"
                 f"- Analyzed requirements for task completion\n"
                 f"- Applied technical solution using {skills_str}\n"
@@ -927,6 +1027,8 @@ class WorkerAgent:
             )
             if rejection_feedback:
                 opencode_output += f"\n\n**Rework Note:** Addressed feedback: {rejection_feedback}"
+            if task.get("proposal_context"):
+                opencode_output += f"\n\n**Note:** Full proposal context was considered during implementation."
 
         notes = (
             f"# Task Report: {title}\n\n"
