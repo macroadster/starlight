@@ -196,10 +196,13 @@ def _calculate_content_features(data_bytes):
     )
 
 
-def load_unified_input(path):
-    # Read file once to avoid multiple I/O operations
-    with open(path, "rb") as f:
-        raw_bytes = f.read()
+def load_unified_input(path_or_bytes):
+    # Read file or use provided bytes
+    if isinstance(path_or_bytes, bytes):
+        raw_bytes = path_or_bytes
+    else:
+        with open(path_or_bytes, "rb") as f:
+            raw_bytes = f.read()
 
     # Load image from bytes to avoid re-reading file
     from io import BytesIO
