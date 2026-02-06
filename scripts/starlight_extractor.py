@@ -189,11 +189,18 @@ def extract_message_best_effort(bits, bit_order="msb-first"):
             return None, bits
 
 
-def extract_alpha(image_path, bit_order="lsb-first"):
+import io
+
+def _open_image(image_source):
+    if isinstance(image_source, bytes):
+        return Image.open(io.BytesIO(image_source))
+    return Image.open(image_source)
+
+def extract_alpha(image_source, bit_order="lsb-first"):
     """
     Extract alpha channel steganography.
     """
-    img = Image.open(image_path)
+    img = _open_image(image_source)
     if img.mode != "RGBA":
         return None, None
 
@@ -273,11 +280,11 @@ def extract_bits_by_strategy(img, strategy, max_bits):
     return bits
 
 
-def extract_lsb(image_path, max_bits=1000000, bit_order="none"):
+def extract_lsb(image_source, max_bits=1000000, bit_order="none"):
     """
     Extract generic LSB steganography.
     """
-    img = Image.open(image_path)
+    img = _open_image(image_source)
     strategies = ["rgba_flat", "rgb_flat", "rgb_interleaved", "red", "green", "blue"]
 
     best_message = None
@@ -343,11 +350,11 @@ def calculate_message_confidence(message):
     return max(0.0, min(100.0, score))
 
 
-def extract_palette(image_path, bit_order="msb-first"):
+def extract_palette(image_source, bit_order="msb-first"):
     """
     Extract palette-based steganography.
     """
-    img = Image.open(image_path)
+    img = _open_image(image_source)
     if img.mode != "P":
         img = img.convert("L")
 
@@ -375,11 +382,11 @@ def extract_palette(image_path, bit_order="msb-first"):
     return None, None
 
 
-def extract_exif(image_path, bit_order=None):
+def extract_exif(image_source, bit_order=None):
     """
     Extract data hidden in EXIF metadata.
     """
-    img = Image.open(image_path)
+    img = _open_image(image_source)
     message = None
     exif_dict = None
 
@@ -388,7 +395,7 @@ def extract_exif(image_path, bit_order=None):
             if "exif" in img.info:
                 exif_dict = piexif.load(img.info["exif"])
             else:
-                exif_dict = piexif.load(image_path)
+                exif_dict = piexif.load(image_source)
         except Exception:
             pass
 
@@ -431,14 +438,16 @@ def extract_exif(image_path, bit_order=None):
     return message, None
 
 
-def extract_eoi(image_path, bit_order=None):
+def extract_eoi(image_source, bit_order=None):
     """
     Extract data hidden after image end marker.
     """
     try:
-        img = Image.open(image_path)
-        with open(image_path, "rb") as f:
-            data = f.read()
+        if isinstance(image_source, bytes):
+            data = image_source
+        else:
+            with open(image_source, "rb") as f:
+                data = f.read()
 
         if data.startswith(b"\xff\xd8"):  # JPEG
             end_pos = data.rfind(b"\xff\xd9")

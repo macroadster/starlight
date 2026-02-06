@@ -349,7 +349,7 @@ def init_worker(model_path):
         SESSION = model
 
 
-def _scan_logic(image_path, session, extract_message=False):
+def _scan_logic(image_source, session, extract_message=False):
     """The actual scanning logic, independent of the execution context."""
 
     global METHOD_MAP, BIT_ORDER_MAP, MODEL_TYPE, DEVICE
@@ -357,9 +357,15 @@ def _scan_logic(image_path, session, extract_message=False):
     try:
         # Check if image needs patch-based scanning
         from PIL import Image
+        from io import BytesIO
 
-        img = Image.open(image_path)
+        if isinstance(image_source, bytes):
+            img = Image.open(BytesIO(image_source))
+        else:
+            img = Image.open(image_source)
+
         img_size = img.size  # (width, height)
+        img_format = img.format.lower() if img.format else "unknown"
 
         # If image is larger than 256x256, use patch-based scanning
         if img_size[0] > 256 or img_size[1] > 256:
@@ -375,7 +381,7 @@ def _scan_logic(image_path, session, extract_message=False):
             palette_lsb,
             format_features,
             content_features,
-        ) = load_unified_input(image_path)
+        ) = load_unified_input(image_source)
 
         # LSB is returned as HWC (256, 256, 3) from load_unified_input.
         # Permute to CHW (3, 256, 256) to match model input expectation.
@@ -482,7 +488,7 @@ def _scan_logic(image_path, session, extract_message=False):
             try:
                 alpha_extractor = extraction_functions.get("alpha")
                 if alpha_extractor:
-                    msg, _ = alpha_extractor(image_path)
+                    msg, _ = alpha_extractor(image_source)
                     if msg:
                         is_stego = True
                         stego_prob = max(stego_prob, 0.99)
@@ -499,7 +505,7 @@ def _scan_logic(image_path, session, extract_message=False):
             try:
                 eoi_extractor = extraction_functions.get("eoi")
                 if eoi_extractor:
-                    msg, _ = eoi_extractor(image_path)
+                    msg, _ = eoi_extractor(image_source)
                     if msg:
                         is_stego = True
                         stego_prob = max(stego_prob, 0.95)
@@ -512,7 +518,8 @@ def _scan_logic(image_path, session, extract_message=False):
                 extraction_error = str(e)
 
         result = {
-            "file_path": str(image_path),
+            "file_path": str(image_source) if not isinstance(image_source, bytes) else "memory",
+            "image_format": img_format,
             "is_stego": bool(is_stego),
             "stego_probability": float(stego_prob),
             "method_id": method_val,
@@ -527,7 +534,7 @@ def _scan_logic(image_path, session, extract_message=False):
         if extract_message and extracted_message is None:
             try:
                 extracted_message = _extract_message(
-                    image_path, stego_type, bit_order_type
+                    image_source, stego_type, bit_order_type
                 )
             except Exception as e:
                 extraction_error = str(e)
@@ -555,8 +562,8 @@ def _scan_logic(image_path, session, extract_message=False):
         return result
 
     except Exception as e:
-        error_message = f"Could not process {image_path}: {e}"
-        return {"file_path": str(image_path), "error": error_message}
+        error_message = f"Could not process {image_source}: {e}"
+        return {"file_path": str(image_source) if not isinstance(image_source, bytes) else "memory", "error": error_message}
 
 
 def scan_image_worker(image_path):
@@ -585,7 +592,7 @@ def scan_batch_worker(image_paths):
     return results
 
 
-def _extract_message(image_path, stego_type, predicted_bit_order="none"):
+def _extract_message(image_source, stego_type, predicted_bit_order="none"):
     extractor_method_name = stego_type
     if stego_type == "lsb.rgb":
         extractor_method_name = "lsb"
@@ -610,14 +617,14 @@ def _extract_message(image_path, stego_type, predicted_bit_order="none"):
         # Try with predicted bit order if it matches the method's capabilities
         # (currently only implemented in starlight_extractor.py functions if we update them,
         # but most extractors there try multiple internal strategies)
-        message, _ = extractor(image_path)
+        message, _ = extractor(image_source)
         if message:
             return message
     return None
 
 
 def _process_inference_result(
-    image_path,
+    image_source,
     stego_logits,
     method_id,
     method_probs,
@@ -642,7 +649,7 @@ def _process_inference_result(
     bit_order_type = BIT_ORDER_MAP.get(bit_order_id[0], "none")
 
     result = {
-        "file_path": str(image_path),
+        "file_path": str(image_source) if not isinstance(image_source, bytes) else "memory",
         "is_stego": bool(is_stego),
         "stego_probability": float(stego_prob),
         "method_id": int(method_id[0]),
@@ -656,7 +663,7 @@ def _process_inference_result(
 
     if extract_message:
         try:
-            message = _extract_message(image_path, stego_type, bit_order_type)
+            message = _extract_message(image_source, stego_type, bit_order_type)
             if message:
                 result["extracted_message"] = message
                 if not is_stego:
@@ -678,8 +685,8 @@ class StarlightScanner:
             print(f"[INIT] Model path set to: {self.model_path}")
             print(f"[INIT] Fast scanner configured (workers={self.num_workers})")
 
-    def scan_file(self, file_path):
-        """Scans a single image file."""
+    def scan_file(self, image_source):
+        """Scans a single image file or raw bytes."""
         global MODEL_TYPE, DEVICE
 
         # Initialize model for single file scan
@@ -719,7 +726,7 @@ class StarlightScanner:
             model.eval()
             session = model
 
-        return _scan_logic(file_path, session, extract_message=True)
+        return _scan_logic(image_source, session, extract_message=True)
 
     def scan_directory(self, path, quiet=False):
         image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}

@@ -427,60 +427,48 @@ if SCANNER_AVAILABLE:
 
 # Background task for async scanning
 async def scan_image_async(
-    image_data: bytes, options: ScanOptions, request_id: str
+    image_data: bytes, options: ScanOptions, request_id: str, filename: Optional[str] = None
 ) -> ScanResult:
     """Background task for image scanning"""
     try:
-        # Save image data to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
-            temp_file.write(image_data)
-            temp_path = temp_file.name
+        if scanner_instance is not None:
+            # Use Starlight scanner directly on memory
+            result = scanner_instance.scan_file(image_data)
 
-        try:
-            if scanner_instance is not None:
-                # Use Starlight scanner
-                result = scanner_instance.scan_file(temp_path)
+            # Convert to ScanResult format
+            scan_result = ScanResult(
+                is_stego=result.get("is_stego", False),
+                stego_probability=result.get("stego_probability", 0.0),
+                stego_type=result.get("stego_type"),
+                confidence=result.get("confidence", 0.0),
+                prediction="stego" if result.get("is_stego") else "clean",
+                method_id=result.get("method_id"),
+                extracted_message=(
+                    result.get("extracted_message")
+                    if options.extract_message
+                    else None
+                ),
+                extraction_error=result.get("extraction_error"),
+            )
 
-                # Convert to ScanResult format
-                scan_result = ScanResult(
-                    is_stego=result.get("is_stego", False),
-                    stego_probability=result.get("stego_probability", 0.0),
-                    stego_type=result.get("stego_type"),
-                    confidence=result.get("confidence", 0.0),
-                    prediction="stego" if result.get("is_stego") else "clean",
-                    method_id=result.get("method_id"),
-                    extracted_message=(
-                        result.get("extracted_message")
-                        if options.extract_message
-                        else None
-                    ),
-                    extraction_error=result.get("extraction_error"),
-                )
+            # Apply confidence threshold
+            if scan_result.stego_probability < options.confidence_threshold:
+                scan_result.is_stego = False
+                scan_result.prediction = "clean"
 
-                # Apply confidence threshold
-                if scan_result.stego_probability < options.confidence_threshold:
-                    scan_result.is_stego = False
-                    scan_result.prediction = "clean"
-
-                return scan_result
-            else:
-                # Stub response when scanner not available
-                return ScanResult(
-                    is_stego=False,
-                    stego_probability=0.1,
-                    stego_type=None,
-                    confidence=0.9,
-                    prediction="clean",
-                    method_id=None,
-                    extracted_message=None,
-                    extraction_error=None,
-                )
-        finally:
-            # Clean up temporary file
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
+            return scan_result
+        else:
+            # Stub response when scanner not available
+            return ScanResult(
+                is_stego=False,
+                stego_probability=0.1,
+                stego_type=None,
+                confidence=0.9,
+                prediction="clean",
+                method_id=None,
+                extracted_message=None,
+                extraction_error=None,
+            )
 
     except Exception as e:
         logger.error(f"Error scanning image for request {request_id}: {e}")
@@ -823,7 +811,7 @@ async def scan_transaction(
             for img_data in extracted_images:
                 # Scan image asynchronously
                 scan_result = await scan_image_async(
-                    img_data["data"], request.scan_options, request_id
+                    img_data["data"], request.scan_options, request_id, filename=f"tx_{request.transaction_id}_{img_data['index']}.{img_data['format']}"
                 )
 
                 images.append(
@@ -891,7 +879,7 @@ async def scan_image(
         )
 
         # Scan image
-        scan_result = await scan_image_async(image_data, options, request_id)
+        scan_result = await scan_image_async(image_data, options, request_id, filename=filename)
 
         # Get image info
         filename = image.filename or "unknown"
@@ -1036,7 +1024,7 @@ async def scan_batch(
                     item_stego_count = 0
                     for img_data in images:
                         scan_result = await scan_image_async(
-                            img_data["data"], request.scan_options, request_id
+                            img_data["data"], request.scan_options, request_id, filename=f"item_{img_data['index']}.{img_data['format']}"
                         )
                         if scan_result.is_stego:
                             item_stego_count += 1
@@ -1062,7 +1050,7 @@ async def scan_batch(
                         raise ValueError("Image data is required for image type items")
                     image_data = base64.b64decode(item.image_data)
                     scan_result = await scan_image_async(
-                        image_data, request.scan_options, request_id
+                        image_data, request.scan_options, request_id, filename=item.item_id
                     )
 
                     if scan_result.is_stego:
@@ -1126,69 +1114,56 @@ async def extract_message(
         # Read image data
         image_data = await image.read()
 
-        # Save to temporary file for extraction
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
-            temp_file.write(image_data)
-            temp_path = temp_file.name
+        if scanner_instance:
+            # Use scanner to extract message directly from memory
+            result = scanner_instance.scan_file(image_data)
 
-        try:
-            if scanner_instance:
-                # Use scanner to extract message
-                result = scanner_instance.scan_file(temp_path)
-
-                extraction_result = ExtractionResult(
-                    message_found=bool(result.get("extracted_message")),
-                    message=result.get("extracted_message"),
-                    method_used=result.get("stego_type"),
-                    method_confidence=result.get("confidence"),
-                    extraction_details={
-                        "bits_extracted": (
-                            len(result.get("extracted_message", "")) * 8
-                            if result.get("extracted_message")
-                            else 0
-                        ),
-                        "encoding": "utf-8",
-                        "corruption_detected": False,
-                    },
-                )
-            else:
-                # Stub response
-                extraction_result = ExtractionResult(
-                    message_found=False,
-                    message=None,
-                    method_used=None,
-                    method_confidence=None,
-                    extraction_details={
-                        "bits_extracted": 0,
-                        "encoding": "utf-8",
-                        "corruption_detected": False,
-                    },
-                )
-
-            filename = image.filename or "unknown"
-            image_info = {
-                "filename": filename,
-                "size_bytes": len(image_data),
-                "format": (
-                    filename.split(".")[-1].lower() if "." in filename else "unknown"
-                ),
-            }
-
-            processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-
-            return ExtractResponse(
-                extraction_result=extraction_result,
-                image_info=image_info,
-                processing_time_ms=processing_time,
-                request_id=request_id,
+            extraction_result = ExtractionResult(
+                message_found=bool(result.get("extracted_message")),
+                message=result.get("extracted_message"),
+                method_used=result.get("stego_type"),
+                method_confidence=result.get("confidence"),
+                extraction_details={
+                    "bits_extracted": (
+                        len(result.get("extracted_message", "")) * 8
+                        if result.get("extracted_message")
+                        else 0
+                    ),
+                    "encoding": "utf-8",
+                    "corruption_detected": False,
+                },
+            )
+        else:
+            # Stub response
+            extraction_result = ExtractionResult(
+                message_found=False,
+                message=None,
+                method_used=None,
+                method_confidence=None,
+                extraction_details={
+                    "bits_extracted": 0,
+                    "encoding": "utf-8",
+                    "corruption_detected": False,
+                },
             )
 
-        finally:
-            # Clean up temporary file
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
+        filename = image.filename or "unknown"
+        detected_format = result.get("image_format") if scanner_instance else (filename.split(".")[-1].lower() if "." in filename else "unknown")
+        
+        image_info = {
+            "filename": filename,
+            "size_bytes": len(image_data),
+            "format": detected_format,
+        }
+
+        processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+        return ExtractResponse(
+            extraction_result=extraction_result,
+            image_info=image_info,
+            processing_time_ms=processing_time,
+            request_id=request_id,
+        )
 
     except Exception as e:
         logger.error(f"Error extracting message: {e}")
@@ -1342,7 +1317,7 @@ async def scan_block(
                 try:
                     # Scan image
                     scan_result = await scan_image_async(
-                        open(image_path, "rb").read(), request.scan_options, request_id
+                        open(image_path, "rb").read(), request.scan_options, request_id, filename=image_file
                     )
 
                     # Get inscription info
