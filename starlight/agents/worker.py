@@ -24,11 +24,6 @@ class WorkerAgent:
         self._recent_proposals: Set[str] = set()
         self._rejected_tasks: Dict[str, str] = {}  # task_id -> rejection_reason
         
-        # Proposal revision tracking
-        self._rejected_proposals: Dict[str, Dict] = {}  # proposal_id -> rejection_info
-        self._revision_attempts: Dict[str, int] = {}  # wish_id -> revision_count
-        self._max_revisions_per_wish = 3  # Prevent endless revisions
-        
         # Persistent storage key for this agent instance
         self.storage_key = f"worker_state_{ai_identifier.lower().replace('-', '_')}"
         
@@ -100,9 +95,7 @@ class WorkerAgent:
                     self.seen_wishes = set(state.get("seen_wishes", []))
                     self._recent_proposals = set(state.get("recent_proposals", []))
                     self._rejected_tasks = state.get("rejected_tasks", {})
-                    self._revision_attempts = state.get("revision_attempts", {})
-                    self._rejected_proposals = state.get("rejected_proposals", {})
-                    logger.info(f"Worker loaded persisted state from file with {len(self.seen_wishes)} wishes, {len(self._rejected_tasks)} rejected tasks, {len(self._revision_attempts)} revision attempts")
+                    logger.info(f"Worker loaded persisted state from file with {len(self.seen_wishes)} wishes, {len(self._rejected_tasks)} rejected tasks")
         except Exception as e:
             logger.warning(f"Failed to load persisted state from file: {e}")
 
@@ -112,8 +105,6 @@ class WorkerAgent:
             "seen_wishes": list(self.seen_wishes),
             "recent_proposals": list(self._recent_proposals),
             "rejected_tasks": self._rejected_tasks,
-            "revision_attempts": self._revision_attempts,
-            "rejected_proposals": self._rejected_proposals,
             "last_updated": time.time()
         }
         
@@ -170,124 +161,6 @@ class WorkerAgent:
             logger.error(f"Resource check failed: {e}")
             return True  # Assume OK if check fails
 
-    def _load_rejection_reason(self, proposal_id: str) -> str:
-        """Load rejection reason from file storage if available."""
-        try:
-            # File storage only (MCP not available)
-            import json
-            rejection_file = f"rejection_{proposal_id}.json"
-            try:
-                with open(rejection_file, 'r') as f:
-                    rejection_info = json.load(f)
-                reason = rejection_info.get("rejection_reason")
-                if reason:
-                    logger.info(f"Worker: Loaded rejection reason from file: {reason}")
-                    return reason
-            except FileNotFoundError:
-                pass
-                
-        except Exception as e:
-            logger.warning(f"Failed to load rejection reason for {proposal_id}: {e}")
-            
-        return "Proposal rejected - no specific reason provided"
-
-    def _check_for_revision_opportunities(self, proposals: list):
-        """Check for rejected proposals that can be revised."""
-        my_hash = self.client._api_key_hash()
-        revision_candidates = []
-        
-        for proposal in proposals:
-            if not isinstance(proposal, dict):
-                continue
-                
-            pid = proposal.get("id")
-            status = proposal.get("status", "").lower()
-            vph = proposal.get("visible_pixel_hash")
-            
-            # Only consider my rejected proposals
-            if status != "rejected" or not vph or not pid:
-                continue
-                
-            # Check if I created this proposal
-            p_meta = proposal.get("metadata") or {}
-            p_creator = p_meta.get("creator_api_key_hash")
-            if p_creator != my_hash:
-                continue
-                
-            # Check if any OTHER proposal for same wish was approved
-            wish_has_approved = False
-            for other in proposals:
-                if (other.get("visible_pixel_hash") == vph and 
-                    other.get("id") != pid and
-                    other.get("status", "").lower() in ["approved", "active"]):
-                    wish_has_approved = True
-                    break
-            
-            # If no other proposal approved, this is revision candidate
-            if not wish_has_approved:
-                # Load rejection reason for this candidate
-                rejection_reason = self._load_rejection_reason(pid)
-                
-                # Cache rejection info for future use
-                self._rejected_proposals[pid] = {
-                    "reason": rejection_reason,
-                    "timestamp": time.time()
-                }
-                
-                revision_candidates.append({
-                    "proposal_id": pid,
-                    "wish_id": vph,
-                    "proposal": proposal,
-                    "rejection_reason": rejection_reason
-                })
-        
-        return revision_candidates
-
-    def _attempt_proposal_revision(self, revision_candidate: dict) -> bool:
-        """Attempt to revise a rejected proposal."""
-        proposal_id = revision_candidate["proposal_id"]
-        wish_id = revision_candidate["wish_id"]
-        rejected_proposal = revision_candidate["proposal"]
-        
-        # Check revision limits
-        revision_count = self._revision_attempts.get(wish_id, 0)
-        if revision_count >= self._max_revisions_per_wish:
-            logger.info(f"Worker: Max revisions ({self._max_revisions_per_wish}) reached for wish {wish_id}")
-            return False
-        
-        # Track revision attempt
-        self._revision_attempts[wish_id] = revision_count + 1
-        
-        # Get the original wish for context
-        wishes = self.client.get_open_contracts()
-        original_wish = None
-        for wish in wishes:
-            if isinstance(wish, dict):
-                wid = wish.get("contract_id", "").replace("wish-", "")
-                if wid == wish_id:
-                    original_wish = wish
-                    break
-        
-        if not original_wish:
-            logger.warning(f"Worker: Could not find original wish for revision of {proposal_id}")
-            return False
-        
-        # Get rejection reason if available
-        rejection_info = self._rejected_proposals.get(proposal_id, {})
-        rejection_reason = rejection_info.get("reason", "Proposal was rejected")
-        
-        logger.info(f"Worker: Attempting revision {revision_count + 1}/{self._max_revisions_per_wish} for rejected proposal {proposal_id}")
-        logger.info(f"Worker: Rejection reason: {rejection_reason}")
-        
-        # Create improved proposal
-        if self._create_revised_proposal(original_wish, rejected_proposal, rejection_reason, wish_id):
-            self._recent_proposals.add(wish_id)  # Prevent duplicate revisions
-            logger.info(f"Worker: Successfully revised proposal for wish {wish_id}")
-            return True
-        
-        logger.warning(f"Worker: Failed to revise proposal {proposal_id}")
-        return False
-
     def process_wishes(self):
         """Scans for wishes and creates proposals ONLY - no wish creation."""
         try:
@@ -308,33 +181,28 @@ class WorkerAgent:
                 
             my_hash = self.client._api_key_hash()
             proposals = self.client.get_proposals()
-            
-            # PRIORITY 1: Check for revision opportunities first
-            revision_candidates = self._check_for_revision_opportunities(proposals)
-            if revision_candidates:
-                logger.info(f"Worker: Found {len(revision_candidates)} revision candidates")
-                
-                # Attempt revision for first candidate (rate limited)
-                if self._attempt_proposal_revision(revision_candidates[0]):
-                    # Save state after successful revision
-                    self._save_state()
-                    return  # Only one revision per cycle
-            
+
             # Map wish_id -> boolean (did I propose for this?)
             my_proposals_for_wishes = set()
-            
+            # Count ALL proposals per wish (from any creator) to enforce limit
+            proposals_count_per_wish: Dict[str, int] = {}
+            MAX_PROPOSALS_PER_WISH = 5
+
             for p in proposals:
                 if not isinstance(p, dict):
                     continue
-                
+
                 vph = p.get("visible_pixel_hash")
                 if not vph:
                     continue
-                
+
+                # Count proposals per wish
+                proposals_count_per_wish[vph] = proposals_count_per_wish.get(vph, 0) + 1
+
                 # Check if I created this proposal by looking at metadata
                 p_meta = p.get("metadata") or {}
                 p_creator = p_meta.get("creator_api_key_hash")
-                
+
                 if p_creator == my_hash:
                     my_proposals_for_wishes.add(vph)
 
@@ -365,18 +233,22 @@ class WorkerAgent:
                 # Normalize wish ID (remove wish- prefix if present)
                 normalized_wid = wid.replace("wish-", "")
                 
-                # Check if already proposed
+                # Check if already proposed - prevent duplicate proposals for same wish
                 already_proposed = normalized_wid in my_proposals_for_wishes
                 recently_cached = normalized_wid in self._recent_proposals
-                
-                # Allow multiple proposals per wish (removed duplication checks)
-                # if already_proposed:
-                #     logger.debug(f"Worker: Already proposed for wise {wid}")
-                #     continue
-                # elif recently_cached:
-                #     logger.debug(f"Worker: Already cached proposal for wise {wid}")
-                #     continue
-                
+                # Check if wish already has max proposals
+                current_proposal_count = proposals_count_per_wish.get(normalized_wid, 0)
+
+                if already_proposed:
+                    logger.debug(f"Worker: Already proposed for wish {wid}, skipping")
+                    continue
+                elif recently_cached:
+                    logger.debug(f"Worker: Already cached proposal for wish {wid}, skipping")
+                    continue
+                elif current_proposal_count >= MAX_PROPOSALS_PER_WISH:
+                    logger.debug(f"Worker: Wish {wid} already has {current_proposal_count} proposals (max {MAX_PROPOSALS_PER_WISH}), skipping")
+                    continue
+
                 # Create proposal ONLY - no wish creation
                 logger.info(f"Worker: Creating proposal for wish {wid}")
                 if self._create_proposal_for_wish(wish):
@@ -472,120 +344,6 @@ class WorkerAgent:
             return True
         else:
             logger.error(f"Failed to create proposal for wish {wid}")
-            return False
-
-    def _create_revised_proposal(self, wish: Dict, rejected_proposal: Dict, rejection_reason: str, wish_id: str) -> bool:
-        """Create an improved proposal based on rejection feedback."""
-        wish_text = wish.get("title", "No description provided")
-        old_title = rejected_proposal.get("title", "")
-        old_description = rejected_proposal.get("description_md", "")
-        
-        # Generate improved proposal using OpenCode
-        title = f"REVISED Proposal for: {wish_text.splitlines()[0][:50]}"
-        description = (
-            f"REVISED PROPOSAL - Previous version was rejected.\n"
-            f"Original Wish: '{wish_text}'\n"
-            f"Rejection Reason: {rejection_reason}\n\n"
-            f"### Improved Implementation Plan\n"
-            f"Based on the feedback, here is a corrected and enhanced approach:\n\n"
-            f"### Task 1: Address Rejection Issues\n"
-            f"Fix all identified problems from the rejection: {rejection_reason}\n\n"
-            f"### Task 2: Complete Original Wish Requirements\n"
-            f"Fulfill the original wish: {wish_text}"
-        )
-        
-        # Try MCP client first for revision generation
-        if self.opencode_client.is_available():
-            logger.info(f"Using OpenCode MCP to generate revised proposal for wish {wish_id}")
-            try:
-                prompt = (
-                    f"REVISE and improve this rejected proposal.\n\n"
-                    f"ORIGINAL WISH: '{wish_text}'\n\n"
-                    f"REJECTED PROPOSAL:\n"
-                    f"Title: {old_title}\n"
-                    f"Plan: {old_description[:1000]}...\n\n"
-                    f"REJECTION REASON: {rejection_reason}\n\n"
-                    f"INSTRUCTIONS:\n"
-                    f"1. Fix all issues mentioned in the rejection reason\n"
-                    f"2. Create a more detailed, technical implementation plan\n"
-                    f"3. Avoid previous mistakes and weak points\n"
-                    f"4. Provide specific, actionable tasks with clear deliverables\n"
-                    f"5. Make the proposal significantly better than the rejected version\n\n"
-                    f"Generate a comprehensive, technically sound proposal that addresses the rejection feedback."
-                )
-                result = self.opencode_client.run(prompt, timeout=1800)  # 30 minutes for revision generation
-                if result and result.strip():
-                    description = result.strip()
-                    # Heuristic for title - find the first good line
-                    lines = [l for l in description.splitlines() if l.strip() and not l.strip().startswith('#')]
-                    if lines:
-                        title = lines[0].strip()
-                        if len(title) > 100:
-                            title = title[:97] + "..."
-                    # Add revision prefix to title
-                    if not title.upper().startswith("REVISED"):
-                        title = f"REVISED: {title}"
-            except Exception as e:
-                logger.error(f"Failed to use OpenCode MCP for proposal revision: {e}")
-        
-        # Fallback to subprocess if available
-        elif self.opencode_path:
-            import subprocess
-            logger.info(f"Using OpenCode subprocess to generate revised proposal for wish {wish_id}")
-            try:
-                prompt = (
-                    f"REVISE and improve this rejected proposal.\n\n"
-                    f"ORIGINAL WISH: '{wish_text}'\n\n"
-                    f"REJECTED PROPOSAL:\n"
-                    f"Title: {old_title}\n"
-                    f"Plan: {old_description[:1000]}...\n\n"
-                    f"REJECTION REASON: {rejection_reason}\n\n"
-                    f"INSTRUCTIONS:\n"
-                    f"1. Fix all issues mentioned in the rejection reason\n"
-                    f"2. Create a more detailed, technical implementation plan\n"
-                    f"3. Avoid previous mistakes and weak points\n"
-                    f"4. Provide specific, actionable tasks with clear deliverables\n"
-                    f"5. Make the proposal significantly better than the rejected version\n\n"
-                    f"Generate a comprehensive, technically sound proposal that addresses the rejection feedback."
-                )
-                cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)  # 30 minutes for revision generation
-                if result.returncode == 0 and result.stdout.strip():
-                    description = result.stdout.strip()
-                    # Heuristic for title - find the first good line
-                    lines = [l for l in description.splitlines() if l.strip() and not l.strip().startswith('#')]
-                    if lines:
-                        title = lines[0].strip()
-                        if len(title) > 100:
-                            title = title[:97] + "..."
-                    # Add revision prefix to title
-                    if not title.upper().startswith("REVISED"):
-                        title = f"REVISED: {title}"
-            except Exception as e:
-                logger.error(f"Failed to use OpenCode subprocess for proposal revision: {e}")
-
-        # Create revised proposal
-        proposal_data = {
-            "title": title,
-            "description_md": description,
-            "budget_sats": 1000,
-            "visible_pixel_hash": wish_id,
-            "contract_id": wish.get("contract_id"),
-            "metadata": {
-                "creator_api_key_hash": self.client._api_key_hash(),
-                "revision_of": rejected_proposal.get("id"),
-                "revision_number": self._revision_attempts.get(wish_id, 0),
-                "rejection_reason": rejection_reason
-            }
-        }
-        
-        logger.info(f"Worker creating REVISED proposal for wish {wish_id}")
-        pid = self.client.create_proposal(proposal_data)
-        if pid:
-            logger.info(f"REVISED proposal created successfully: {pid} for wish {wish_id}")
-            return True
-        else:
-            logger.error(f"Failed to create REVISED proposal for wish {wish_id}")
             return False
 
     def process_task(self, task: Dict) -> bool:
