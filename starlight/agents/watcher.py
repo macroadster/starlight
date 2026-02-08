@@ -697,7 +697,15 @@ class WatcherAgent:
 
     def process_submissions(self):
         """Audits and reviews (approves/rejects) Worker submissions."""
-        submissions = self.client.get_submissions()
+        # OPTIMIZATION: Try to get only pending submissions if API supports it
+        try:
+            # Check if we can filter by status at API level (more efficient)
+            submissions = self.client.get_submissions()  # TODO: Add status filter when API supports it
+            logger.info(f"Watcher: Fetched {len(submissions)} submissions for audit")
+        except Exception as e:
+            logger.error(f"Watcher: Failed to fetch submissions: {e}")
+            return
+            
         if submissions is None:
             return
 

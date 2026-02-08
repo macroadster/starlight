@@ -521,27 +521,93 @@ class WorkerAgent:
                 task["proposal_context"] = proposal.get("description_md", "")
                 task["proposal_title"] = proposal.get("title", "")
 
-        # Get submission history for this task
+# OPTIMIZATION: Instead of fetching ALL submissions system-wide and filtering locally,
+        # we use a hierarchical approach:
+        # 1. Get task status first (fast, may include submission info)
+        # 2. Only fetch submissions if needed, filtered by contract_id if available
+        # 3. Fallback to full submissions scan only when necessary
+        # This reduces API calls from O(N) where N=total submissions to O(1) or O(M) where M=submissions per contract
         if task_id != str(uuid.uuid4()):  # Only if we have a real task_id
             try:
-                submissions = self.client.get_submissions()
-                if submissions:
-                    task_submissions = [s for s in submissions if s.get("task_id") == task_id]
+                # PERFORMANCE METRIC: Track optimization effectiveness
+                fetch_start_time = time.time()
+                used_task_status_only = False
+                used_contract_filter = False
+                
+                # PRIORITY 1: Get task status which may include submission/rejection info
+                task_status = self.client.get_task_status(task_id)
+                if task_status:
+                    # Extract submission/rejection info from task status
+                    task["task_status"] = task_status
                     
-                    if task_submissions:
-                        # Sort by timestamp to get most recent
-                        task_submissions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-                        latest_submission = task_submissions[0]
-                        
+                    # Check for rejection feedback in task status
+                    rejection_reason = (
+                        task_status.get("rejection_reason") or 
+                        task_status.get("last_rejection_reason") or 
+                        task_status.get("feedback") or
+                        task_status.get("audit_feedback")
+                    )
+                    if rejection_reason:
+                        task["rejection_feedback"] = rejection_feedback
+                        logger.info(f"Worker: Found rejection feedback in task status for {task_id}: {rejection_reason}")
+                    
+                    # Check for latest submission in task status
+                    latest_submission = task_status.get("latest_submission") or task_status.get("submission")
+                    if latest_submission:
                         task["previous_submissions"] = {
-                            "latest": latest_submission,
-                            "all": task_submissions
+                            "latest": latest_submission
                         }
-                        
-                        # Extract notes and rejection reasons
                         deliverables = latest_submission.get("deliverables", {})
                         task["previous_work"] = deliverables.get("notes", "")
-                        task["submission_history"] = [s.get("deliverables", {}).get("notes", "") for s in task_submissions]
+                        used_task_status_only = True
+                        logger.info(f"Worker: OPTIMIZED - Found latest submission in task status for {task_id} (no API fetch needed)")
+                
+                # PRIORITY 2: Only fetch submissions if task status didn't provide enough info
+                if not task_status or not task_status.get("latest_submission"):
+                    logger.info(f"Worker: Task status incomplete for {task_id}, fetching submissions...")
+                    # Use contract_id to filter submissions at API level if available
+                    contract_id = task.get("contract_id") or task.get("proposal_id")
+                    if contract_id:
+                        submissions = self.client.get_submissions(contract_id)
+                        used_contract_filter = True
+                        logger.info(f"Worker: OPTIMIZED - Fetched {len(submissions)} submissions for contract {contract_id} (filtered)")
+                    else:
+                        # Fallback to filtered submissions (less efficient but necessary)
+                        logger.warning(f"Worker: No contract_id available for task {task_id}, fetching all submissions (UNOPTIMIZED)")
+                        submissions = self.client.get_submissions()
+                    
+                    if submissions:
+                        task_submissions = [s for s in submissions if s.get("task_id") == task_id]
+                        
+                        if task_submissions:
+                            # Sort by timestamp to get most recent
+                            task_submissions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+                            latest_submission = task_submissions[0]
+                            
+                            task["previous_submissions"] = {
+                                "latest": latest_submission,
+                                "all": task_submissions
+                            }
+                            
+                            # Extract notes and rejection reasons
+                            deliverables = latest_submission.get("deliverables", {})
+                            task["previous_work"] = deliverables.get("notes", "")
+                            task["submission_history"] = [s.get("deliverables", {}).get("notes", "") for s in task_submissions]
+                            logger.info(f"Worker: Found {len(task_submissions)} submissions for task {task_id}")
+                        else:
+                            logger.info(f"Worker: No submissions found for task {task_id}")
+                    else:
+                        logger.info(f"Worker: No submissions available for task {task_id}")
+                
+                # PERFORMANCE LOGGING: Track optimization metrics
+                fetch_time = time.time() - fetch_start_time
+                if used_task_status_only:
+                    logger.info(f"Worker: PERFORMANCE - Task context fetched in {fetch_time:.3f}s using task status only (OPTIMAL)")
+                elif used_contract_filter:
+                    logger.info(f"Worker: PERFORMANCE - Task context fetched in {fetch_time:.3f}s using contract filter (GOOD)")
+                else:
+                    logger.warning(f"Worker: PERFORMANCE - Task context fetched in {fetch_time:.3f}s using full submissions scan (SUBOPTIMAL)")
+                        
             except Exception as e:
                 logger.warning(f"Failed to fetch submission history for task {task_id}: {e}")
 
