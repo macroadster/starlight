@@ -167,8 +167,9 @@ class WatcherAgent:
 
     def process_pending_proposals(self):
         """Finds and approves pending proposals after auditing them."""
-        proposals = self.client.get_proposals()
-        if proposals is None:
+        # Optimization: Filter by status to avoid fetching all proposals
+        proposals = self.client.get_proposals(status="pending")
+        if not proposals:
             return
 
         # Cache open contracts to avoid fetching for every proposal
@@ -697,16 +698,16 @@ class WatcherAgent:
 
     def process_submissions(self):
         """Audits and reviews (approves/rejects) Worker submissions."""
-        # OPTIMIZATION: Try to get only pending submissions if API supports it
+        # Optimization: Filter by status to avoid fetching all submissions
         try:
-            # Check if we can filter by status at API level (more efficient)
-            submissions = self.client.get_submissions()  # TODO: Add status filter when API supports it
+            submissions = self.client.get_submissions(status="submitted")
+            submissions.extend(self.client.get_submissions(status="pending_review"))
             logger.info(f"Watcher: Fetched {len(submissions)} submissions for audit")
         except Exception as e:
             logger.error(f"Watcher: Failed to fetch submissions: {e}")
             return
             
-        if submissions is None:
+        if not submissions:
             return
 
         for sub in submissions:
