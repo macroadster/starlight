@@ -121,9 +121,12 @@ class StargateClient:
             return result.get("contracts") or []
         return result if isinstance(result, list) else []
 
-    def get_proposals(self) -> List[Dict]:
-         """Fetches proposals using MCP."""
-         result = self.mcp_call("list_proposals")
+    def get_proposals(self, status: Optional[str] = None) -> List[Dict]:
+         """Fetches proposals using MCP, optionally filtered by status."""
+         args = {}
+         if status:
+             args["status"] = status
+         result = self.mcp_call("list_proposals", args)
          if result is None:
              return []
          if isinstance(result, dict):
@@ -202,11 +205,13 @@ class StargateClient:
         result = self.mcp_call("submit_work", args)
         return result is not None
 
-    def get_submissions(self, contract_id: Optional[str] = None) -> List[Dict]:
-        """Fetches submissions, optionally filtered by contract_id."""
+    def get_submissions(self, contract_id: Optional[str] = None, status: Optional[str] = None) -> List[Dict]:
+        """Fetches submissions, optionally filtered by contract_id or status."""
         params = {}
         if contract_id:
             params["contract_id"] = contract_id
+        if status:
+            params["status"] = status
         data = self._request("GET", "/api/smart_contract/submissions", params=params)
         if data is None:
             return []
