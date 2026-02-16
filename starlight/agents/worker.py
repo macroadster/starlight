@@ -675,7 +675,9 @@ class WorkerAgent:
                         f"1. Provide specific implementation details\n"
                         f"2. Include actual code examples or execution steps\n"
                         f"3. Show evidence of completion\n"
-                        f"4. Keep response concise and actionable\n\n"
+                        f"4. Keep response concise and actionable\n"
+                        f"5. COMPLETE PROJECT: Always include an 'index.html' with navigation to provide a complete frontend for your project.\n"
+                        f"6. PERSISTENT MEMORY: Use 'memory.md' to maintain state, context, and important decisions across multiple tasks for this contract. Review it at the start of each task and update it with significant changes.\n\n"
                         f"Follow security guidelines in AGENTS.md - only allowed imports and operations.\n"
                         f"Focus on delivering working solutions, not theoretical discussions."
                     )
@@ -756,7 +758,9 @@ class WorkerAgent:
                         f"1. Provide specific implementation details\n"
                         f"2. Include actual code examples or execution steps\n"
                         f"3. Show evidence of completion\n"
-                        f"4. Keep response concise and actionable\n\n"
+                        f"4. Keep response concise and actionable\n"
+                        f"5. COMPLETE PROJECT: Always include an 'index.html' with navigation to provide a complete frontend for your project.\n"
+                        f"6. PERSISTENT MEMORY: Use 'memory.md' to maintain state, context, and important decisions across multiple tasks for this contract. Review it at the start of each task and update it with significant changes.\n\n"
                         f"Follow security guidelines in AGENTS.md - only allowed imports and operations.\n"
                         f"Focus on delivering working solutions, not theoretical discussions."
                     )
@@ -870,6 +874,11 @@ class WorkerAgent:
             with open(result_path, "w") as f:
                 f.write(notes)
             logger.info(f"Saved task results to {result_path}")
+            
+            # Post-processing: Register APIs and ensure frontend
+            self._register_dynamic_functions(visible_pixel_hash, contract_results_dir)
+            self._ensure_frontend(visible_pixel_hash, contract_results_dir)
+            
         except Exception as e:
             logger.error(f"Failed to save results: {e}")
 
@@ -879,6 +888,89 @@ class WorkerAgent:
             "artifacts_dir": f"/uploads/results/{visible_pixel_hash}/",
             "completion_proof": str(uuid.uuid4())
         }
+
+    def _ensure_frontend(self, visible_pixel_hash: str, contract_results_dir: str):
+        """Ensures that the project has an index.html and basic navigation."""
+        try:
+            index_path = os.path.join(contract_results_dir, "index.html")
+            memory_path = os.path.join(contract_results_dir, "memory.md")
+            
+            memory_content = ""
+            if os.path.exists(memory_path):
+                try:
+                    with open(memory_path, "r") as f:
+                        memory_content = f.read()
+                except Exception:
+                    memory_content = "Could not read memory.md"
+
+            if not os.path.exists(index_path):
+                logger.info(f"Creating default index.html for {visible_pixel_hash}")
+                
+                # List files in the directory for navigation
+                try:
+                    files = os.listdir(contract_results_dir)
+                    # Filter out index.html and hidden files, and put memory.md at the top if it exists
+                    other_files = [f for f in files if f not in ["index.html", "memory.md"] and not f.startswith(".")]
+                    
+                    files_html = ""
+                    if os.path.exists(memory_path):
+                        files_html += f'<li><a href="memory.md">🧠 memory.md (Persistent Context)</a></li>'
+                    
+                    files_html += "".join([f'<li><a href="{f}">{f}</a></li>' for f in other_files])
+                except Exception:
+                    files_html = "<li>No additional files found</li>"
+                
+                memory_display = ""
+                if memory_content:
+                    memory_display = f"""
+    <div class="memory-box">
+        <h2>🧠 Persistent Memory (memory.md)</h2>
+        <pre style="white-space: pre-wrap; background: #fff; padding: 1em; border: 1px solid #ddd; border-radius: 4px;">{html.escape(memory_content)}</pre>
+    </div>"""
+
+                content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Project Results - {visible_pixel_hash}</title>
+    <style>
+        body {{ font-family: sans-serif; margin: 2em; line-height: 1.6; max-width: 800px; margin: auto; padding: 2em; background: #f4f7f6; }}
+        .container {{ background: white; padding: 2em; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        h1 {{ color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 0.5em; }}
+        h2 {{ color: #34495e; margin-top: 1.5em; }}
+        ul {{ list-style-type: none; padding: 0; }}
+        li {{ margin-bottom: 0.5em; padding: 0.8em; background: #f9f9f9; border-radius: 4px; border-left: 3px solid #ddd; transition: all 0.2s; }}
+        li:hover {{ transform: translateX(5px); border-left-color: #3498db; }}
+        a {{ text-decoration: none; color: #3498db; font-weight: bold; display: block; }}
+        .api-link {{ background: #e8f4fd; padding: 1.5em; border-radius: 8px; margin-top: 2em; border-left: 5px solid #3498db; }}
+        .memory-box {{ background: #fffef0; padding: 1.5em; border-radius: 8px; margin-top: 2rem; border-left: 5px solid #f1c40f; }}
+        code {{ background: #eee; padding: 0.2em 0.4em; border-radius: 3px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Project: {visible_pixel_hash}</h1>
+        <p>This project was automatically generated by Starlight Agent.</p>
+        
+        {memory_display}
+
+        <h2>Project Deliverables</h2>
+        <ul>
+            {files_html}
+        </ul>
+        
+        <div class="api-link">
+            <h2>Dynamic API</h2>
+            <p>If this project includes an <code>api.py</code>, it has been registered as a dynamic endpoint.</p>
+            <p>You can try executing the handler at: <br>
+            <a href="{Config.DYNAMIC_API_URL}/function/{visible_pixel_hash}/handler">{Config.DYNAMIC_API_URL}/function/{visible_pixel_hash}/handler</a></p>
+        </div>
+    </div>
+</body>
+</html>"""
+                with open(index_path, "w") as f:
+                    f.write(content)
+        except Exception as e:
+            logger.error(f"Error ensuring frontend: {e}")
 
     def _register_dynamic_functions(self, visible_pixel_hash: str, contract_results_dir: str):
         """Register api.py files from the worker's sandbox as dynamic endpoints."""

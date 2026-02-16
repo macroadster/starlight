@@ -21,6 +21,14 @@ This is your isolated workspace where you should:
 - Test implementations
 - Create deliverables
 
+### 🧠 **Persistent Memory (memory.md)**
+Every project sandbox includes (or should include) a `memory.md` file. 
+- **Purpose**: This file serves as your long-term memory for the current contract across multiple tasks.
+- **Usage**: 
+    1. **Read it first**: At the start of every task, check `memory.md` for context from previous tasks, architectural decisions, and progress state.
+    2. **Update it last**: Before completing a task, update `memory.md` with any new decisions, important state changes, or information that will be useful for the next task.
+- **Content**: Keep it structured, concise, and focused on technical state and project progress.
+
 ## 🛡️ **Security & Constraints**
 
 ### ✅ **Allowed Operations**
