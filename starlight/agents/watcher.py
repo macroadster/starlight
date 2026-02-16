@@ -759,6 +759,8 @@ class WatcherAgent:
                 else:
                     visible_pixel_hash = contract_id
                 logger.info(f"Derived visible_pixel_hash from contract_id: {visible_pixel_hash}")
+            else:
+                logger.warning(f"Unknown visible_pixel_hash - submission keys: {list(sub.keys())}, task keys: {list(sub.get('task', {}).keys())}, proposal keys: {list(sub.get('proposal', {}).keys())}")
         
         # Determine artifacts directory - prefer explicit path, but construct from visible_pixel_hash if missing
         if not artifacts_dir:
