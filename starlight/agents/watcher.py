@@ -760,7 +760,17 @@ class WatcherAgent:
                     visible_pixel_hash = contract_id
                 logger.info(f"Derived visible_pixel_hash from contract_id: {visible_pixel_hash}")
             else:
-                logger.warning(f"Unknown visible_pixel_hash - submission keys: {list(sub.keys())}, task keys: {list(sub.get('task', {}).keys())}, proposal keys: {list(sub.get('proposal', {}).keys())}")
+                # Try to fetch task details using task_id
+                task_id = sub.get("task_id")
+                if task_id:
+                    try:
+                        task_info = self.client.get_task_status(task_id)
+                        if task_info:
+                            visible_pixel_hash = task_info.get("visible_pixel_hash") or task_info.get("task", {}).get("visible_pixel_hash") or "unknown"
+                            if visible_pixel_hash != "unknown":
+                                logger.info(f"Derived visible_pixel_hash from task: {visible_pixel_hash}")
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch task {task_id}: {e}")
         
         # Determine artifacts directory - prefer explicit path, but construct from visible_pixel_hash if missing
         if not artifacts_dir:
