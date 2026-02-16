@@ -121,6 +121,15 @@ class StargateClient:
             return result.get("contracts") or []
         return result if isinstance(result, list) else []
 
+    def get_contract(self, contract_id: str) -> Optional[Dict]:
+        """Fetches a specific contract by ID."""
+        result = self.mcp_call("get_contract", {"contract_id": contract_id})
+        if result is None:
+            return None
+        if isinstance(result, dict):
+            return result.get("contracts", [result])[0] if result.get("contracts") else result
+        return None
+
     def get_proposals(self, status: Optional[str] = None) -> List[Dict]:
          """Fetches proposals using MCP, optionally filtered by status."""
          args = {}
