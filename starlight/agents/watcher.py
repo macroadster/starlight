@@ -755,10 +755,13 @@ class WatcherAgent:
             if task_id:
                 try:
                     task_info = self.client.get_task_status(task_id)
+                    logger.warning(f"Task info for {task_id}: {task_info}")
                     if task_info:
                         contract_id = task_info.get("contract_id")
+                        logger.warning(f"Contract ID from task: {contract_id}")
                         if contract_id:
                             contract = self.client.get_contract(contract_id)
+                            logger.warning(f"Contract: {contract}")
                             if contract:
                                 visible_pixel_hash = contract.get("metadata", {}).get("visible_pixel_hash") or "unknown"
                                 if visible_pixel_hash != "unknown":
