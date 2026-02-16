@@ -749,17 +749,17 @@ class WatcherAgent:
             "unknown"
         )
         
-        # Fallback: get visible_pixel_hash from task's merkle_proof
+        # Fallback: use contract_id directly (it's the directory name)
         if visible_pixel_hash == "unknown":
             task_id = sub.get("task_id")
             if task_id:
                 try:
                     task_info = self.client.get_task_status(task_id)
                     if task_info:
-                        # Try merkle_proof.visible_pixel_hash first
-                        visible_pixel_hash = task_info.get("merkle_proof", {}).get("visible_pixel_hash") or "unknown"
-                        if visible_pixel_hash != "unknown":
-                            logger.info(f"Derived visible_pixel_hash from task merkle_proof: {visible_pixel_hash}")
+                        contract_id = task_info.get("contract_id")
+                        if contract_id:
+                            visible_pixel_hash = contract_id
+                            logger.info(f"Using contract_id as visible_pixel_hash: {visible_pixel_hash}")
                 except Exception as e:
                     logger.warning(f"Failed to derive visible_pixel_hash from task: {e}")
         
