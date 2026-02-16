@@ -744,6 +744,10 @@ class WatcherAgent:
         # Extract contract identifier for isolation
         visible_pixel_hash = sub.get("visible_pixel_hash") or sub.get("task", {}).get("visible_pixel_hash") or "unknown"
         
+        # Determine artifacts directory - prefer explicit path, but construct from visible_pixel_hash if missing
+        if not artifacts_dir:
+            artifacts_dir = os.path.join(Config.UPLOADS_DIR, "results", visible_pixel_hash)
+        
         # Find the worker's artifacts directory directly
         audit_dir = None
         artifacts_available = False
