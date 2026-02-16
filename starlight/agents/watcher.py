@@ -749,6 +749,17 @@ class WatcherAgent:
             "unknown"
         )
         
+        # Fallback: derive from contract_id if available (e.g., "wish-xxx" -> "wish-xxx")
+        if visible_pixel_hash == "unknown":
+            contract_id = sub.get("contract_id")
+            if contract_id:
+                normalized = contract_id.replace("wish-", "") if contract_id.startswith("wish-") else contract_id
+                if normalized != contract_id:
+                    visible_pixel_hash = f"wish-{normalized}"
+                else:
+                    visible_pixel_hash = contract_id
+                logger.info(f"Derived visible_pixel_hash from contract_id: {visible_pixel_hash}")
+        
         # Determine artifacts directory - prefer explicit path, but construct from visible_pixel_hash if missing
         if not artifacts_dir:
             artifacts_dir = os.path.join(Config.UPLOADS_DIR, "results", visible_pixel_hash)
