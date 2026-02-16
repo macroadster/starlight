@@ -749,28 +749,22 @@ class WatcherAgent:
             "unknown"
         )
         
-        # Fallback: derive from contract_id if available (e.g., "wish-xxx" -> "wish-xxx")
+        # Fallback: get contract_id from task, then fetch contract for visible_pixel_hash
         if visible_pixel_hash == "unknown":
-            contract_id = sub.get("contract_id")
-            if contract_id:
-                normalized = contract_id.replace("wish-", "") if contract_id.startswith("wish-") else contract_id
-                if normalized != contract_id:
-                    visible_pixel_hash = f"wish-{normalized}"
-                else:
-                    visible_pixel_hash = contract_id
-                logger.info(f"Derived visible_pixel_hash from contract_id: {visible_pixel_hash}")
-            else:
-                # Try to fetch task details using task_id
-                task_id = sub.get("task_id")
-                if task_id:
-                    try:
-                        task_info = self.client.get_task_status(task_id)
-                        if task_info:
-                            visible_pixel_hash = task_info.get("visible_pixel_hash") or task_info.get("task", {}).get("visible_pixel_hash") or "unknown"
-                            if visible_pixel_hash != "unknown":
-                                logger.info(f"Derived visible_pixel_hash from task: {visible_pixel_hash}")
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch task {task_id}: {e}")
+            task_id = sub.get("task_id")
+            if task_id:
+                try:
+                    task_info = self.client.get_task_status(task_id)
+                    if task_info:
+                        contract_id = task_info.get("contract_id")
+                        if contract_id:
+                            contract = self.client.get_contract(contract_id)
+                            if contract:
+                                visible_pixel_hash = contract.get("metadata", {}).get("visible_pixel_hash") or "unknown"
+                                if visible_pixel_hash != "unknown":
+                                    logger.info(f"Derived visible_pixel_hash from contract {contract_id}: {visible_pixel_hash}")
+                except Exception as e:
+                    logger.warning(f"Failed to derive visible_pixel_hash: {e}")
         
         # Determine artifacts directory - prefer explicit path, but construct from visible_pixel_hash if missing
         if not artifacts_dir:
