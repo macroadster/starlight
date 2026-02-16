@@ -742,7 +742,12 @@ class WatcherAgent:
         artifacts_dir = deliverables.get("artifacts_dir", "")
         
         # Extract contract identifier for isolation
-        visible_pixel_hash = sub.get("visible_pixel_hash") or sub.get("task", {}).get("visible_pixel_hash") or "unknown"
+        visible_pixel_hash = (
+            sub.get("visible_pixel_hash") or 
+            sub.get("task", {}).get("visible_pixel_hash") or 
+            sub.get("proposal", {}).get("visible_pixel_hash") or 
+            "unknown"
+        )
         
         # Determine artifacts directory - prefer explicit path, but construct from visible_pixel_hash if missing
         if not artifacts_dir:
@@ -759,7 +764,7 @@ class WatcherAgent:
                     # Convert from URL path to filesystem path
                     # Robust path reconstruction: replace URL prefix with filesystem base
                     rel_path = artifacts_dir.replace("/uploads/", "", 1).strip("/")
-                    hash_component = rel_path.split("/")[-1]
+                    hash_component = rel_path.split("/")[-1].rstrip("/")
                     
                     # Try multiple potential locations (dev vs kubernetes)
                     potential_paths = [
