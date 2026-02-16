@@ -753,9 +753,14 @@ class WatcherAgent:
                 # Handle both relative and absolute paths
                 if artifacts_dir.startswith("/uploads/"):
                     # Convert from URL path to filesystem path
-                    hash_component = artifacts_dir.strip("/").split("/")[-1]
+                    # Robust path reconstruction: replace URL prefix with filesystem base
+                    rel_path = artifacts_dir.replace("/uploads/", "", 1).strip("/")
+                    hash_component = rel_path.split("/")[-1]
+                    
                     # Try multiple potential locations (dev vs kubernetes)
                     potential_paths = [
+                        os.path.join(Config.UPLOADS_DIR, rel_path),
+                        rel_path,
                         os.path.join(Config.UPLOADS_DIR, "results", hash_component),
                         os.path.join("results", hash_component)
                     ]
@@ -799,7 +804,17 @@ class WatcherAgent:
         
         # Add artifacts info to prompt if available
         if artifacts_available:
-            prompt += f"\n4. Artifacts are available in current directory - examine files for evidence.\n\n"
+            try:
+                import subprocess
+                files_structure = subprocess.check_output(["ls", "-R", audit_dir], text=True, timeout=5)
+                prompt += (
+                    f"\n4. Artifacts are available in current directory and subdirectories.\n"
+                    f"Structure:\n{files_structure}\n"
+                    f"YOU MUST explore all subdirectories recursively (e.g. using `ls -R` or `find .`) to find technical evidence.\n"
+                    f"Verify the existence and quality of all files claimed to be created in the report.\n\n"
+                )
+            except Exception:
+                prompt += f"\n4. Artifacts are available in current directory - examine files and subdirectories recursively for evidence.\n\n"
         else:
             prompt += f"\n4. No artifacts directory available - rely on report content only.\n\n"
             

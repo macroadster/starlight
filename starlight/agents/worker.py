@@ -725,7 +725,7 @@ class WorkerAgent:
                             prompt = base_instruction
                         logger.info(f"Worker: Executing NEW WORK for {title}")
                     
-                    result = self.opencode_client.run(prompt, timeout=3600)  # 1 hour timeout for complex tasks
+                    result = self.opencode_client.run(prompt, timeout=3600, workdir=contract_results_dir)  # 1 hour timeout for complex tasks
                 finally:
                     # Always restore original working directory
                     os.chdir(original_cwd)
