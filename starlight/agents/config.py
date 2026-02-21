@@ -8,3 +8,5 @@ class Config:
     DONATION_ADDRESS = os.getenv("STARLIGHT_DONATION_ADDRESS", "")
     UPLOADS_DIR = os.getenv("UPLOADS_DIR", "/data/uploads")
     DYNAMIC_API_URL = os.getenv("DYNAMIC_API_URL", "http://starlight-api:8000")
+    WATCHER_ENABLED = os.getenv("STARLIGHT_WATCHER_ENABLED", "true").lower() == "true"
+    WORKER_ENABLED = os.getenv("STARLIGHT_WORKER_ENABLED", "true").lower() == "true"
