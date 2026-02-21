@@ -47,9 +47,10 @@ class AgentManager:
                 logger.warning("No DONATION_ADDRESS configured. Write operations might fail.")
 
             # Initialize agents
-            self.watcher = WatcherAgent(self.client, ai_identifier)
-            self.worker = WorkerAgent(self.client, ai_identifier)
+            self.watcher = WatcherAgent(self.client, ai_identifier) if AgentConfig.WATCHER_ENABLED else None
+            self.worker = WorkerAgent(self.client, ai_identifier) if AgentConfig.WORKER_ENABLED else None
             
+            logger.info(f"Watcher enabled: {AgentConfig.WATCHER_ENABLED}, Worker enabled: {AgentConfig.WORKER_ENABLED}")
             logger.info("AgentManager initialized successfully")
             return True
             
@@ -63,7 +64,7 @@ class AgentManager:
             logger.warning("Agents are already running")
             return False
             
-        if not self.watcher or not self.worker:
+        if not self.watcher and not self.worker:
             logger.error("Agents not initialized. Call initialize() first.")
             return False
             
@@ -111,13 +112,16 @@ class AgentManager:
                 logger.info("Agent thread stopped successfully")
         
         # Save final state
-        if self.watcher and self.worker:
+        if self.watcher:
             try:
                 self.watcher._save_state()
-                self.worker._save_state()
-                logger.info("Final agent state saved")
             except Exception as e:
-                logger.error(f"Failed to save final state: {e}")
+                logger.error(f"Failed to save watcher state: {e}")
+        if self.worker:
+            try:
+                self.worker._save_state()
+            except Exception as e:
+                logger.error(f"Failed to save worker state: {e}")
         
         return True
     
@@ -132,14 +136,18 @@ class AgentManager:
                     logger.info(f"Agent cycle {self.cycle_count}/{self.max_cycles}")
                 
                 # 1. Worker looks for wishes and creates proposals
-                self.worker.process_wishes()
+                if self.worker:
+                    self.worker.process_wishes()
 
                 # 2. Watcher looks for proposals (audits/approves them) and tasks
-                tasks = self.watcher.run_once()
+                tasks = []
+                if self.watcher:
+                    tasks = self.watcher.run_once()
                 
                 # 3. Worker processes available tasks
-                for task in tasks:
-                    self.worker.process_task(task)
+                if self.worker:
+                    for task in tasks:
+                        self.worker.process_task(task)
                 
                 # 4. Wait with adaptive timing
                 if not tasks:
@@ -151,8 +159,10 @@ class AgentManager:
                 # Graceful exit check for container environment
                 if self.cycle_count >= self.max_cycles:
                     logger.info("Reached maximum cycles, performing graceful shutdown...")
-                    self.watcher._save_state()
-                    self.worker._save_state()
+                    if self.watcher:
+                        self.watcher._save_state()
+                    if self.worker:
+                        self.worker._save_state()
                     break
                     
         except Exception as e:
@@ -175,29 +185,33 @@ class AgentManager:
                 "ai_identifier": AgentConfig.AI_IDENTIFIER,
                 "poll_interval": AgentConfig.POLL_INTERVAL,
                 "donation_address": AgentConfig.DONATION_ADDRESS,
+                "watcher_enabled": AgentConfig.WATCHER_ENABLED,
+                "worker_enabled": AgentConfig.WORKER_ENABLED,
             }
         }
     
     def process_single_cycle(self) -> Dict[str, Any]:
         """Execute a single agent cycle and return results."""
-        if not self.watcher or not self.worker:
+        if not self.watcher and not self.worker:
             return {"error": "Agents not initialized"}
             
         try:
             self.cycle_count += 1
             
             # Execute one full cycle
-            self.worker.process_wishes()
-            tasks = self.watcher.run_once()
+            if self.worker:
+                self.worker.process_wishes()
+            tasks = self.watcher.run_once() if self.watcher else []
             
             processed_tasks = []
-            for task in tasks:
-                result = self.worker.process_task(task)
-                processed_tasks.append({
-                    "task_id": task.get("task_id"),
-                    "success": bool(result),
-                    "task": task
-                })
+            if self.worker:
+                for task in tasks:
+                    result = self.worker.process_task(task)
+                    processed_tasks.append({
+                        "task_id": task.get("task_id"),
+                        "success": bool(result),
+                        "task": task
+                    })
             
             return {
                 "cycle": self.cycle_count,

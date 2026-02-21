@@ -609,24 +609,30 @@ def run_agents_loop():
         else:
             logger.warning("No DONATION_ADDRESS configured. Write operations might fail.")
         
-        watcher = WatcherAgent(client, ai_identifier=AgentConfig.AI_IDENTIFIER)
-        worker = WorkerAgent(client, ai_identifier=AgentConfig.AI_IDENTIFIER)
+        watcher = WatcherAgent(client, ai_identifier=AgentConfig.AI_IDENTIFIER) if AgentConfig.WATCHER_ENABLED else None
+        worker = WorkerAgent(client, ai_identifier=AgentConfig.AI_IDENTIFIER) if AgentConfig.WORKER_ENABLED else None
+        
+        logger.info(f"Watcher enabled: {AgentConfig.WATCHER_ENABLED}, Worker enabled: {AgentConfig.WORKER_ENABLED}")
         
         while agent_running:
             try:
                 # 1. Worker looks for wishes and creates proposals
-                logger.info("Agent loop iteration: Starting worker.process_wishes()")
-                worker.process_wishes()
+                if worker:
+                    logger.info("Agent loop iteration: Starting worker.process_wishes()")
+                    worker.process_wishes()
 
                 # 2. Watcher looks for proposals (audits/approves them) and tasks
-                logger.info("Agent loop iteration: Starting watcher.run_once()")
-                tasks = watcher.run_once()
-                logger.info(f"Agent loop iteration: Found {len(tasks)} available tasks")
+                tasks = []
+                if watcher:
+                    logger.info("Agent loop iteration: Starting watcher.run_once()")
+                    tasks = watcher.run_once()
+                    logger.info(f"Agent loop iteration: Found {len(tasks)} available tasks")
                 
                 # 3. Worker processes available tasks
-                for i, task in enumerate(tasks):
-                    logger.info(f"Agent loop iteration: Processing task {i+1}/{len(tasks)}")
-                    worker.process_task(task)
+                if worker:
+                    for i, task in enumerate(tasks):
+                        logger.info(f"Agent loop iteration: Processing task {i+1}/{len(tasks)}")
+                        worker.process_task(task)
                 
                 # 3. Wait
                 # Use a loop for sleep to allow faster shutdown
