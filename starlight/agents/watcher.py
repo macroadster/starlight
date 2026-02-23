@@ -107,20 +107,34 @@ class WatcherAgent:
     def find_available_tasks(self) -> List[Dict]:
         """Scans for available or already claimed tasks in active/approved proposals."""
         available_tasks = []
-        proposals = self.client.get_proposals()
+        all_tasks_scanned = []
         
-        if proposals is None:
-            logger.warning("Watcher: find_available_tasks received None from get_proposals")
-            return []
+        # Paginate through all proposals
+        proposals = []
+        page_size = 100
+        offset = 0
+        while True:
+            page = self.client.get_proposals(limit=page_size, offset=offset)
+            if not page:
+                break
+            proposals.extend(page)
+            logger.info(f"Watcher: Fetched proposal page (offset={offset}, count={len(page)})")
+            if len(page) < page_size:
+                break
+            offset += page_size
+        
+        logger.info(f"Watcher: Total proposals fetched: {len(proposals)}")
 
         for proposal in proposals:
             if not isinstance(proposal, dict):
                 logger.warning(f"Watcher: find_available_tasks received non-dict proposal: {proposal}")
                 continue
 
-            # ONLY look for tasks in proposals that are already approved/active
+            # ONLY look for tasks in proposals that are available or active/approved
             p_status = proposal.get("status", "").lower()
-            if p_status not in ["active", "approved", "published"]:
+            # Proposals with status: available, active, approved, published are actionable
+            if p_status not in ["available", "active", "approved", "published"]:
+                logger.info(f"Watcher: Skipping proposal {proposal.get('id')} - status: {p_status}")
                 continue
 
             tasks = proposal.get("tasks", [])
@@ -136,12 +150,26 @@ class WatcherAgent:
                     live_tasks = self.client.get_tasks(contract_id)
                     if live_tasks:
                         tasks = live_tasks
+                        logger.info(f"Watcher: Fetched {len(tasks)} live tasks for contract {contract_id}")
+                        # Log status distribution
+                        status_counts = {}
+                        for t in live_tasks:
+                            s = t.get("status", "unknown")
+                            status_counts[s] = status_counts.get(s, 0) + 1
+                        logger.info(f"Watcher: Task status distribution for {contract_id}: {status_counts}")
+                        # Log sample of task data to debug
+                        if tasks:
+                            sample = tasks[0]
+                            logger.info(f"Watcher: Sample task from API: {sample.get('task_id')}, status={sample.get('status')}, claimed_by={sample.get('claimed_by')}")
+                    else:
+                        logger.info(f"Watcher: No tasks found for contract {contract_id}")
                 except Exception as e:
-                    logger.debug(f"Watcher: Could not fetch live tasks for {contract_id}: {e}")
+                    logger.info(f"Watcher: Could not fetch live tasks for {contract_id}: {e}")
 
             for task in tasks:
                 if not isinstance(task, dict):
                     continue
+                all_tasks_scanned.append(task)
                 task_id = task.get("task_id")
                 status = task.get("status", "").lower()
                 claimed_by = task.get("claimed_by", "").lower()
@@ -155,13 +183,39 @@ class WatcherAgent:
                 # Logic Error Fix: Ensure task is not claimed by another agent
                 is_claimed_by_others = claimed_by and not is_ours
                 
-                if not is_claimed_by_others and (status == "available" or ((status == "claimed" or status == "rejected") and is_ours)) and task_id:
+                # Task is actionable if: available or rejected (not yet claimed), or claimed/rejected by us
+                is_actionable = status in ["available", "rejected"] or (status == "claimed" and is_ours)
+                
+                # Debug: log why tasks are being filtered
+                if not is_claimed_by_others and not is_actionable:
+                    logger.info(f"Watcher: Task {task_id} filtered - status={status}, claimed_by='{claimed_by}', is_ours={is_ours}")
+                
+                if not is_claimed_by_others and is_actionable and task_id:
                     task["proposal_id"] = proposal.get("id")
                     task["proposal_title"] = proposal.get("title")
                     available_tasks.append(task)
         
-        if available_tasks:
-            logger.info(f"Watcher found {len(available_tasks)} actionable tasks (available or resuming).")
+        total_tasks = len(all_tasks_scanned)
+        available_count = len(available_tasks)
+        
+        # Recalculate with proper "ours" check
+        claimed_by_others = 0
+        available = 0
+        for t in all_tasks_scanned:
+            cb = t.get("claimed_by", "").lower()
+            status = t.get("status", "").lower()
+            is_ours = cb == self.ai_identifier.lower()
+            if not is_ours and Config.DONATION_ADDRESS:
+                is_ours = cb == Config.DONATION_ADDRESS.lower()
+            if cb and not is_ours:
+                claimed_by_others += 1
+            if status == "available":
+                available += 1
+                
+        if available_count > 0:
+            logger.info(f"Watcher: {total_tasks} total tasks scanned, {available_count} actionable (available: {sum(1 for t in available_tasks if t.get('status', '').lower() == 'available')}, resuming: {sum(1 for t in available_tasks if t.get('status', '').lower() in ['claimed', 'rejected'])})")
+        elif total_tasks > 0:
+            logger.info(f"Watcher: {total_tasks} total tasks scanned, 0 actionable (claimed_by_others: {claimed_by_others}, available: {available})")
             
         return available_tasks
 

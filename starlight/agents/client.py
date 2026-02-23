@@ -130,9 +130,9 @@ class StargateClient:
             return result.get("contracts", [result])[0] if result.get("contracts") else result
         return None
 
-    def get_proposals(self, status: Optional[str] = None) -> List[Dict]:
-         """Fetches proposals using MCP, optionally filtered by status."""
-         args = {}
+    def get_proposals(self, status: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
+         """Fetches proposals using MCP, optionally filtered by status. Supports pagination."""
+         args = {"limit": limit, "offset": offset}
          if status:
              args["status"] = status
          result = self.mcp_call("list_proposals", args)
