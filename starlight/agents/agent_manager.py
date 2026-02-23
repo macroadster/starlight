@@ -145,6 +145,10 @@ class AgentManager:
                     tasks = self.watcher.run_once()
                 
                 # 3. Worker processes available tasks
+                if tasks:
+                    logger.info(f"AgentManager: {len(tasks)} tasks available for worker to process")
+                else:
+                    logger.info("AgentManager: No tasks available in this cycle")
                 if self.worker:
                     for task in tasks:
                         self.worker.process_task(task)
