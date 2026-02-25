@@ -431,68 +431,34 @@ def create_interactive_demo(title, functionality):
     }
 ```
 
-### Type 7: Full-Stack Web App (Python Backend)
-```python
-def create_full_stack_app(title):
-    """Create a web app with server-side Python logic."""
+### Type 7: Single Page Application (SPA) with IPFS & Persistence
+For high-performance, decentralized interfaces, build SPAs using modern toolchains.
+
+- **Persistence**: Use [sql.js](https://sql.js.org/) for high-performance client-side SQLite database.
+- **IPFS Support**: Use [Helia](https://github.com/ipfs/helia) for IPFS support, including decentralized data storage and retrieval.
+- **Modern Build Tools**: Use `npm`, `vite`, `webpack`, or `rollup` for SPA development and bundling.
+- **End-to-End Testing**: Use [Playwright](https://playwright.dev/) for robust E2E testing of your SPAs.
+
+#### IPFS + Local SQL Example (Frontend JS)
+```javascript
+import { createHelia } from 'helia';
+import initSqlJs from 'sql.js';
+
+async function setupApp() {
+    // 1. Setup Decentralized Storage (Helia)
+    const helia = await createHelia();
     
-    # 1. Frontend (index.html) calling the backend
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>{title}</title>
-        <script>
-            async function callBackend() {{
-                // The system automatically mounts api.py at this endpoint
-                // Replace [HASH] with your visible_pixel_hash or contract ID
-                const hash = window.location.pathname.split('/')[3] || 'unknown'; 
-                const response = await fetch(`/sandbox/api/${{hash}}/handler`);
-                const data = await response.json();
-                document.getElementById('result').innerText = data.message;
-            }}
-        </script>
-    </head>
-    <body>
-        <h1>{title}</h1>
-        <button onclick="callBackend()">Call Python Backend</button>
-        <div id="result"></div>
-    </body>
-    </html>
-    """
+    // 2. Setup Local Database (sql.js)
+    const SQL = await initSqlJs({
+        locateFile: file => `https://sql.js.org/dist/${file}`
+    });
+    const db = new SQL.Database();
     
-    # 2. Backend (api.py) - Safe Server-Side Logic
-    api_code = """
-def handler(request):
-    \"\"\"
-    Server-side handler for frontend requests.
+    // Run SQL locally
+    db.run("CREATE TABLE stego_results (id INT, hash TEXT, confidence FLOAT)");
     
-    Args:
-        request: FastAPI Request object (optional)
-        
-    Returns:
-        dict: JSON response
-    \"\"\"
-    import math, datetime
-    
-    # Perform server-side calculation
-    result = math.sqrt(1337)
-    time = datetime.datetime.now().isoformat()
-    
-    return {
-        "message": f"Server calculated {result:.2f} at {time}",
-        "success": True
-    }
-"""
-    
-    return {
-        "app_generated": True,
-        "files": {
-            "index.html": html_content,
-            "api.py": api_code
-        },
-        "instructions": "System will auto-load api.py as a dynamic endpoint."
-    }
+    return { helia, db };
+}
 ```
 
 ## 📊 **Data Visualization & Chart Creation**
