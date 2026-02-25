@@ -413,9 +413,19 @@ class WatcherAgent:
         # Fallback to subprocess if available
         if self.opencode_path:
             import subprocess
+            import tempfile
+            import os
             try:
-                cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=audit_dir)  # 10 minutes for comprehensive proposal audit
+                # Write prompt to temp file to avoid Argument list too long error
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as pf:
+                    pf.write(prompt)
+                    prompt_file = pf.name
+                
+                try:
+                    cmd = ["opencode", "run", "-f", prompt_file]
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=audit_dir)  # 10 minutes for comprehensive proposal audit
+                finally:
+                    os.unlink(prompt_file)
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
@@ -662,9 +672,19 @@ class WatcherAgent:
         # Fallback to subprocess if available
         if self.opencode_path:
             import subprocess
+            import tempfile
+            import os
             try:
-                cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=analysis_dir)
+                # Write prompt to temp file to avoid Argument list too long error
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as pf:
+                    pf.write(prompt)
+                    prompt_file = pf.name
+                
+                try:
+                    cmd = ["opencode", "run", "-f", prompt_file]
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=analysis_dir)
+                finally:
+                    os.unlink(prompt_file)
                 
                 if result.returncode != 0:
                     logger.error(f"Semantic analysis failed (exit {result.returncode}): {result.stderr}")
@@ -912,9 +932,19 @@ class WatcherAgent:
         # Fallback to subprocess if available
         if self.opencode_path:
             import subprocess
+            import tempfile
+            import os
             try:
-                cmd = ["opencode", "run", prompt]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=audit_dir)  # 30 minutes for submission audit (thorough analysis)
+                # Write prompt to temp file to avoid Argument list too long error
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as pf:
+                    pf.write(prompt)
+                    prompt_file = pf.name
+                
+                try:
+                    cmd = ["opencode", "run", "-f", prompt_file]
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=audit_dir)  # 30 minutes for submission audit (thorough analysis)
+                finally:
+                    os.unlink(prompt_file)
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
