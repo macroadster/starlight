@@ -976,7 +976,6 @@ class WatcherAgent:
         if self.opencode_path:
             import subprocess
             import tempfile
-            import os
             try:
                 # Write prompt to temp file to avoid Argument list too long error
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as pf:
