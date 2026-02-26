@@ -1,7 +1,11 @@
 import logging
+import glob
 import os
 import time
 import shutil
+import tempfile
+import subprocess
+import json
 from typing import List, Dict, Set, Optional, Any, Tuple
 from .client import StargateClient
 from .config import Config
@@ -95,7 +99,6 @@ class WatcherAgent:
             }
             
             # File storage only (MCP not available)
-            import json
             rejection_file = f"rejection_{proposal_id}.json"
             with open(rejection_file, 'w') as f:
                 json.dump(rejection_info, f)
@@ -398,7 +401,6 @@ class WatcherAgent:
         proposal_id = proposal.get("id", "")
         
         # For proposal audit, use temp directory (no artifacts needed)
-        import tempfile
         audit_dir = tempfile.mkdtemp(prefix="audit_proposal_")
         logger.debug(f"Created temporary audit directory for proposal: {audit_dir}")
         
@@ -432,20 +434,9 @@ class WatcherAgent:
         
         # Fallback to subprocess if available
         if self.opencode_path:
-            import subprocess
-            import tempfile
-            import os
             try:
-                # Write prompt to temp file to avoid Argument list too long error
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as pf:
-                    pf.write(prompt)
-                    prompt_file = pf.name
-                
-                try:
-                    cmd = ["opencode", "run", "-f", prompt_file]
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=audit_dir)  # 10 minutes for comprehensive proposal audit
-                finally:
-                    os.unlink(prompt_file)
+                cmd = ["opencode", "run", prompt]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=audit_dir)  # 10 minutes for comprehensive proposal audit
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
@@ -668,7 +659,6 @@ class WatcherAgent:
         )
         
         # Use temp directory for analysis
-        import tempfile
         analysis_dir = tempfile.mkdtemp(prefix="semantic_analysis_")
         
         # Try MCP client first for efficiency
@@ -691,20 +681,9 @@ class WatcherAgent:
         
         # Fallback to subprocess if available
         if self.opencode_path:
-            import subprocess
-            import tempfile
-            import os
             try:
-                # Write prompt to temp file to avoid Argument list too long error
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as pf:
-                    pf.write(prompt)
-                    prompt_file = pf.name
-                
-                try:
-                    cmd = ["opencode", "run", "-f", prompt_file]
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=analysis_dir)
-                finally:
-                    os.unlink(prompt_file)
+                cmd = ["opencode", "run", prompt]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=analysis_dir)
                 
                 if result.returncode != 0:
                     logger.error(f"Semantic analysis failed (exit {result.returncode}): {result.stderr}")
@@ -913,19 +892,16 @@ class WatcherAgent:
                 if not audit_dir:
                     logger.warning(f"Artifacts directory not found in any location: {potential_paths}")
                     # Fallback to a temp directory if no artifacts found
-                    import tempfile
                     audit_dir = tempfile.mkdtemp(prefix="audit_fallback_")
                     logger.warning(f"No artifacts found, using temp directory: {audit_dir}")
                     
             except Exception as e:
                 logger.error(f"Failed to locate artifacts directory: {e}")
                 # Fallback to temp directory on error
-                import tempfile
                 audit_dir = tempfile.mkdtemp(prefix="audit_error_")
         
         # If no artifacts_dir provided, use temp directory
         if not audit_dir:
-            import tempfile
             audit_dir = tempfile.mkdtemp(prefix="audit_no_artifacts_")
         
         prompt = (
@@ -942,7 +918,6 @@ class WatcherAgent:
         # Add artifacts info to prompt if available
         if artifacts_available:
             try:
-                import subprocess
                 files_structure = subprocess.check_output(["ls", "-R", audit_dir], text=True, timeout=5)
                 prompt += (
                     f"\n4. Artifacts are available in current directory and subdirectories.\n"
@@ -974,19 +949,9 @@ class WatcherAgent:
         
         # Fallback to subprocess if available
         if self.opencode_path:
-            import subprocess
-            import tempfile
             try:
-                # Write prompt to temp file to avoid Argument list too long error
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as pf:
-                    pf.write(prompt)
-                    prompt_file = pf.name
-                
-                try:
-                    cmd = ["opencode", "run", "-f", prompt_file]
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=audit_dir)  # 30 minutes for submission audit (thorough analysis)
-                finally:
-                    os.unlink(prompt_file)
+                cmd = ["opencode", "run", prompt]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=audit_dir)  # 30 minutes for submission audit (thorough analysis)
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
@@ -1014,8 +979,6 @@ class WatcherAgent:
     def _load_state(self):
         """Load persisted state from local file storage."""
         try:
-            import os
-            import json
             # Use current working directory for sandbox compatibility
             state_file = f"{self.storage_key}.json"
             if os.path.exists(state_file):
@@ -1046,8 +1009,6 @@ class WatcherAgent:
         
         # Local file storage only (MCP not available)
         try:
-            import os
-            import json
             state_file = f"{self.storage_key}.json"
             with open(state_file, 'w') as f:
                 json.dump(state_data, f)
@@ -1058,8 +1019,6 @@ class WatcherAgent:
     def _check_disk_space(self):
         """Monitor disk usage and cleanup if needed."""
         try:
-            import shutil
-            import os
             
             # Try multiple common paths for sandbox environments
             paths_to_check = ["/app", ".", "/tmp", os.getcwd()]
@@ -1097,10 +1056,6 @@ class WatcherAgent:
     def _cleanup_files(self):
         """Clean up temporary files and old results."""
         try:
-            import os
-            import glob
-            from .config import Config
-            
             # Clean old task results (keep only recent 100)
             try:
                 results_dir = os.path.join(Config.UPLOADS_DIR, "results")
