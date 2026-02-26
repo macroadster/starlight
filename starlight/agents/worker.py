@@ -4,6 +4,8 @@ import uuid
 import shutil
 import threading
 import os
+import json
+import subprocess
 from typing import Dict, Set, Optional, Any
 from .client import StargateClient
 from .config import Config
@@ -84,8 +86,6 @@ class WorkerAgent:
     def _load_state(self):
         """Load persisted state from local file storage."""
         try:
-            import os
-            import json
             # Use current working directory for sandbox compatibility
             state_file = f"{self.storage_key}.json"
             if os.path.exists(state_file):
@@ -110,8 +110,6 @@ class WorkerAgent:
         
         # Local file storage only (MCP not available)
         try:
-            import os
-            import json
             state_file = f"{self.storage_key}.json"
             with open(state_file, 'w') as f:
                 json.dump(state_data, f)
@@ -122,9 +120,6 @@ class WorkerAgent:
     def _check_resources(self):
         """Monitor system resources and adjust behavior."""
         try:
-            import shutil
-            import os
-            
             # Try multiple common paths for sandbox environments
             paths_to_check = ["/app", ".", "/tmp", os.getcwd()]
             disk_path = None
@@ -306,7 +301,6 @@ class WorkerAgent:
         
         # Fallback to subprocess if available
         elif self.opencode_path:
-            import subprocess
             logger.info(f"Using OpenCode subprocess to generate proposal for wish {wid}")
             try:
                 # Ask OpenCode to generate a systematic plan for the wish
@@ -667,7 +661,6 @@ class WorkerAgent:
             
             for agents_guide_src in potential_sources:
                 if os.path.exists(agents_guide_src):
-                    import shutil
                     shutil.copy2(agents_guide_src, agents_guide_dest)
                     logger.info(f"Added AGENTS.md guide to worker sandbox: {agents_guide_dest} (from {agents_guide_src})")
                     guide_copied = True
@@ -770,7 +763,6 @@ class WorkerAgent:
         
         # Fallback to subprocess if available
         elif self.opencode_path:
-            import subprocess
             logger.info(f"Executing work using OpenCode subprocess: {title}")
             try:
                 # Change to contract-specific working directory for isolation
