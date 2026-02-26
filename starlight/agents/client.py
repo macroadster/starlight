@@ -252,11 +252,30 @@ class StargateClient:
         return None
 
     def review_submission(self, submission_id: str, action: str, notes: str = "") -> bool:
-        """Reviews a submission (approve/reject)."""
+        """Reviews a submission (approve/reject/rework)."""
         url = f"/api/smart_contract/submissions/{submission_id}/review"
         payload = {
-            "action": action, # 'approve', 'reject', or 'review'
+            "action": action, # 'approve', 'reject', 'rework', or 'review'
             "notes": notes
         }
         result = self._request("POST", url, json=payload)
         return result is not None
+
+    def create_rework_request(self, contract_id: str, notes: str) -> bool:
+        """Creates a rework request for a contract using MCP."""
+        result = self.mcp_call("create_contract_rework_request", {
+            "contract_id": contract_id,
+            "notes": notes
+        })
+        return result is not None
+
+    def get_rework_requests(self, contract_id: str) -> List[Dict]:
+        """Fetches rework requests for a contract using MCP."""
+        result = self.mcp_call("get_contract_rework_requests", {
+            "contract_id": contract_id
+        })
+        if result is None:
+            return []
+        if isinstance(result, dict):
+            return result.get("rework_requests") or []
+        return result if isinstance(result, list) else []

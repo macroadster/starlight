@@ -145,26 +145,25 @@ class WatcherAgent:
                 # Fallback: some proposals use the proposal ID as the contract ID
                 contract_id = proposal.get("id")
             
-            if contract_id:
+            # Normalize ID for API calls (strip 'wish-' prefix if present)
+            normalized_contract_id = contract_id.replace("wish-", "") if contract_id else None
+            
+            if normalized_contract_id:
                 try:
-                    live_tasks = self.client.get_tasks(contract_id)
+                    # Fetch live tasks using normalized ID
+                    live_tasks = self.client.get_tasks(normalized_contract_id)
                     if live_tasks:
                         tasks = live_tasks
-                        logger.info(f"Watcher: Fetched {len(tasks)} live tasks for contract {contract_id}")
-                        # Log status distribution
-                        status_counts = {}
-                        for t in live_tasks:
-                            s = t.get("status", "unknown")
-                            status_counts[s] = status_counts.get(s, 0) + 1
-                        logger.info(f"Watcher: Task status distribution for {contract_id}: {status_counts}")
-                        # Log sample of task data to debug
-                        if tasks:
-                            sample = tasks[0]
-                            logger.info(f"Watcher: Sample task from API: {sample.get('task_id')}, status={sample.get('status')}, claimed_by={sample.get('claimed_by')}")
-                    else:
-                        logger.info(f"Watcher: No tasks found for contract {contract_id}")
+                        logger.info(f"Watcher: Fetched {len(tasks)} live tasks for contract {normalized_contract_id}")
+                    
+                    # Fetch contract-level rework requests using normalized ID
+                    rework_requests = self.client.get_rework_requests(normalized_contract_id)
+                    if rework_requests:
+                        logger.info(f"Watcher: Found {len(rework_requests)} rework requests for contract {normalized_contract_id}")
+                        # Attach rework requests to the proposal for visibility
+                        proposal["rework_requests"] = rework_requests
                 except Exception as e:
-                    logger.info(f"Watcher: Could not fetch live tasks for {contract_id}: {e}")
+                    logger.debug(f"Watcher: Could not fetch extra info for {normalized_contract_id}: {e}")
 
             for task in tasks:
                 if not isinstance(task, dict):
@@ -183,8 +182,15 @@ class WatcherAgent:
                 # Logic Error Fix: Ensure task is not claimed by another agent
                 is_claimed_by_others = claimed_by and not is_ours
                 
-                # Task is actionable if: available or rejected (not yet claimed), or claimed/rejected by us
-                is_actionable = status in ["available", "rejected"] or (status == "claimed" and is_ours)
+                # REWORK DETECTION: Check if contract has open rework requests
+                has_contract_rework = False
+                rework_reqs = proposal.get("rework_requests", [])
+                if any(req.get("status", "").lower() == "open" for req in rework_reqs):
+                    has_contract_rework = True
+                
+                # Task is actionable if: available, rejected, or rework (not yet claimed), or claimed/rejected/rework by us
+                # If there's a contract-level rework, any task claimed by us becomes actionable rework
+                is_actionable = status in ["available", "rejected", "rework"] or (status == "claimed" and is_ours)
                 
                 # Debug: log why tasks are being filtered
                 if not is_claimed_by_others and not is_actionable:
@@ -193,6 +199,10 @@ class WatcherAgent:
                 if not is_claimed_by_others and is_actionable and task_id:
                     task["proposal_id"] = proposal.get("id")
                     task["proposal_title"] = proposal.get("title")
+                    # Explicitly mark as rework if contract has rework requests
+                    if has_contract_rework:
+                        task["has_contract_rework"] = True
+                        task["rework_requests"] = rework_reqs
                     available_tasks.append(task)
         
         total_tasks = len(all_tasks_scanned)
@@ -201,19 +211,29 @@ class WatcherAgent:
         # Recalculate with proper "ours" check
         claimed_by_others = 0
         available = 0
+        rework_count = 0
         for t in all_tasks_scanned:
             cb = t.get("claimed_by", "").lower()
             status = t.get("status", "").lower()
             is_ours = cb == self.ai_identifier.lower()
             if not is_ours and Config.DONATION_ADDRESS:
                 is_ours = cb == Config.DONATION_ADDRESS.lower()
+            
             if cb and not is_ours:
                 claimed_by_others += 1
             if status == "available":
                 available += 1
+            # A task is counted as rework if:
+            # 1. status is 'rework'
+            # 2. it's ours and has contract rework
+            # 3. it's available and has contract rework (needs new implementation)
+            if status == "rework" or (is_ours and t.get("has_contract_rework")) or (status == "available" and t.get("has_contract_rework")):
+                rework_count += 1
+                if status == "available":
+                    available -= 1 # Move from available to rework count for clarity
                 
         if available_count > 0:
-            logger.info(f"Watcher: {total_tasks} total tasks scanned, {available_count} actionable (available: {sum(1 for t in available_tasks if t.get('status', '').lower() == 'available')}, resuming: {sum(1 for t in available_tasks if t.get('status', '').lower() in ['claimed', 'rejected'])})")
+            logger.info(f"Watcher: {total_tasks} total tasks scanned, {available_count} actionable (available: {available}, rework: {rework_count}, resuming: {sum(1 for t in available_tasks if t.get('status', '').lower() in ['claimed', 'rejected', 'rework'] and not t.get('has_contract_rework'))})")
         elif total_tasks > 0:
             logger.info(f"Watcher: {total_tasks} total tasks scanned, 0 actionable (claimed_by_others: {claimed_by_others}, available: {available})")
             
@@ -795,15 +815,20 @@ class WatcherAgent:
             if status in ["pending_review", "submitted"] and sub_id not in self.seen_submissions:
                 logger.info(f"Watcher auditing submission {sub_id}...")
                 
-                audit_passed, reason = self._audit_submission(sub)
+                verdict, reason = self._audit_submission(sub)
                 
-                if audit_passed:
+                if verdict == "PASS":
                     logger.info(f"Submission {sub_id} passed audit. Approving...")
                     if sub_id and self.client.review_submission(sub_id, "approve"):
                         logger.info(f"Submission {sub_id} approved.")
                         self.seen_submissions.add(sub_id)
+                elif verdict == "REWORK":
+                    logger.warning(f"Submission {sub_id} requires rework: {reason}")
+                    if sub_id and self.client.review_submission(sub_id, "rework", reason):
+                        logger.info(f"Submission {sub_id} marked for rework.")
+                        self.seen_submissions.add(sub_id)
                 else:
-                    # audit_passed is False, 'reason' contains the Auditor's critique
+                    # verdict is "FAIL", 'reason' contains the Auditor's critique
                     logger.warning(f"Submission {sub_id} failed audit: {reason}")
                     if sub_id and self.client.review_submission(sub_id, "reject", reason):
                         logger.info(f"Submission {sub_id} rejected with feedback.")
@@ -845,6 +870,19 @@ class WatcherAgent:
         audit_dir = None
         artifacts_available = False
         
+        # Fetch contract-level rework requests for context
+        contract_id = sub.get("contract_id") or (sub.get("task", {}).get("contract_id"))
+        rework_context = ""
+        if contract_id:
+            try:
+                rework_reqs = self.client.get_rework_requests(contract_id)
+                if rework_reqs:
+                    rework_context = "\nCONTRACT-LEVEL REWORK REQUESTS:\n"
+                    for i, req in enumerate(rework_reqs):
+                        rework_context += f"{i+1}. {req.get('notes', 'No notes')}\n"
+            except Exception as e:
+                logger.debug(f"Could not fetch rework requests for audit context: {e}")
+
         if artifacts_dir:
             try:
                 # Handle both relative and absolute paths
@@ -892,11 +930,13 @@ class WatcherAgent:
         
         prompt = (
             f"Audit this work submission report.\n"
-            f"Report: {notes[:2000]}\n\n"
+            f"Report: {notes[:2000]}\n"
+            f"{rework_context}\n"
             f"CRITERIA:\n"
             f"1. Must contain technical evidence (code, logs, pseudo-code).\n"
             f"2. Must NOT be generic or conversational filler.\n"
             f"3. Must demonstrate task completion.\n"
+            f"4. Must address any relevant rework requests listed above.\n"
         )
         
         # Add artifacts info to prompt if available
@@ -915,7 +955,7 @@ class WatcherAgent:
         else:
             prompt += f"\n4. No artifacts directory available - rely on report content only.\n\n"
             
-        prompt += "Respond with a single line: 'VERDICT: PASS' or 'VERDICT: FAIL - <reason>'."
+        prompt += "Respond with a single line: 'VERDICT: PASS', 'VERDICT: REWORK - <reason>', or 'VERDICT: FAIL - <reason>'."
         
         # Try MCP client first for efficiency
         if self.opencode_client.is_available():
@@ -923,9 +963,12 @@ class WatcherAgent:
                 output = self.opencode_client.run(prompt, timeout=1800, workdir=audit_dir)  # 30 minutes for submission audit (thorough analysis)
                 if output:
                     output = output.strip()
-                    if "VERDICT: PASS" in output.upper() or "PASS" in output.upper().split()[:5]:
-                        return True, ""
-                    return False, output
+                    upper_output = output.upper()
+                    if "VERDICT: PASS" in upper_output or (upper_output.split() and upper_output.split()[0] == "PASS"):
+                        return "PASS", ""
+                    if "VERDICT: REWORK" in upper_output or "REWORK" in upper_output:
+                        return "REWORK", output
+                    return "FAIL", output
             except Exception as e:
                 logger.error(f"OpenCode MCP submission audit failed: {e}")
         
@@ -948,13 +991,17 @@ class WatcherAgent:
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
-                    return False, "Audit tool failed"
+                    return "FAIL", "Audit tool failed"
 
                 output = result.stdout.strip()
-                if "VERDICT: PASS" in output.upper() or "PASS" in output.upper().split()[:5]:
-                    return True, ""
+                upper_output = output.upper()
+                if "VERDICT: PASS" in upper_output or (upper_output.split() and upper_output.split()[0] == "PASS"):
+                    return "PASS", ""
                 
-                return False, output
+                if "VERDICT: REWORK" in upper_output or "REWORK" in upper_output:
+                    return "REWORK", output
+
+                return "FAIL", output
             except subprocess.TimeoutExpired:
                 logger.error(f"Auditor: OpenCode timed out after 300s for submission {sub.get('id')}")
                 return False, "Audit timed out"

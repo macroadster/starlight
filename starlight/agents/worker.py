@@ -61,7 +61,7 @@ class WorkerAgent:
                 if details:
                     status = details.get("status", "").lower()
                     # Task is incomplete if still claimed by us and not completed
-                    if status in ["claimed", "in_progress", "rejected"]:
+                    if status in ["claimed", "in_progress", "rejected", "rework"]:
                         claimed_by = details.get("claimed_by", "").lower()
                         is_ours = claimed_by == self.ai_identifier.lower()
                         if not is_ours and Config.DONATION_ADDRESS:
@@ -366,8 +366,17 @@ class WorkerAgent:
         claim_id = None
         rejection_feedback = None
         
+        # CONTRACT-LEVEL REWORK: Check if task has contract-level rework requests
+        if task.get("has_contract_rework"):
+            rework_reqs = task.get("rework_requests", [])
+            open_reqs = [req for req in rework_reqs if req.get("status", "").lower() == "open"]
+            if open_reqs:
+                # Concatenate all open rework notes
+                rejection_feedback = "\n".join([f"CONTRACT REWORK: {req.get('notes')}" for req in open_reqs])
+                logger.info(f"Worker: Task {task_id} has CONTRACT-LEVEL rework requests: {rejection_feedback}")
+
         # PRIORITY: Check local rejection cache first (handles race conditions)
-        if task_id and task_id in self._rejected_tasks:
+        if not rejection_feedback and task_id and task_id in self._rejected_tasks:
             rejection_feedback = self._rejected_tasks[task_id]
             logger.info(f"Worker: Found cached rejection for task {task_id}: {rejection_feedback}")
         else:
@@ -389,24 +398,24 @@ class WorkerAgent:
             
             if rejection_feedback:
                 logger.info(f"Worker: Task {task_id} REJECTED. Reason: {rejection_feedback}. PRIORITY REWORK...")
-                # For rejected tasks, try to claim immediately (higher priority)
-                if (status == "available" or status == "rejected") and task_id:
-                    logger.info(f"Worker: Priority claiming rejected task {task_id} for rework")
+                # For rejected/rework tasks, try to claim immediately (higher priority)
+                if (status == "available" or status == "rejected" or status == "rework") and task_id:
+                    logger.info(f"Worker: Priority claiming rejected/rework task {task_id} for rework")
                     claim_id = self.client.claim_task(task_id, self.ai_identifier)
                     if claim_id:
-                        logger.info(f"Worker: Successfully claimed rejected task {task_id} for rework")
+                        logger.info(f"Worker: Successfully claimed rejected/rework task {task_id} for rework")
                     else:
                         # Check if we already own it from previous attempt
                         claim_id = self._find_my_existing_claim(task)
                         if claim_id:
-                            logger.info(f"Worker: Found existing claim for rejected task {task_id}")
+                            logger.info(f"Worker: Found existing claim for rejected/rework task {task_id}")
         
         # Handle normal claiming if not already handled above
         if not claim_id:
-            if (status == "claimed" or status == "rejected") and existing_claim_id:
+            if (status == "claimed" or status == "rejected" or status == "rework") and existing_claim_id:
                 logger.info(f"Worker: Resuming/Reworking task: {title} ({task_id}). Status: {status}. Claim: {existing_claim_id}")
                 claim_id = existing_claim_id
-            elif (status == "available" or status == "rejected") and task_id:
+            elif (status == "available" or status == "rejected" or status == "rework") and task_id:
                 logger.info(f"Worker attempting to claim task: {title} ({task_id}). Status: {status}")
                 claim_id = self.client.claim_task(task_id, self.ai_identifier)
                 
@@ -422,9 +431,14 @@ class WorkerAgent:
                 task_status = current_status.get("status", "").lower()
                 claimed_by = current_status.get("claimed_by", "")
                 
+                # Check if it's ours
+                is_ours = claimed_by.lower() == self.ai_identifier.lower()
+                if not is_ours and Config.DONATION_ADDRESS:
+                    is_ours = claimed_by.lower() == Config.DONATION_ADDRESS.lower()
+
                 if task_status == "approved" or task_status == "completed":
                     logger.info(f"Task {task_id} is already {task_status} (claimed by {claimed_by}). Skipping.")
-                elif task_status == "claimed" and claimed_by != self.ai_identifier:
+                elif task_status == "claimed" and not is_ours:
                     logger.info(f"Task {task_id} is already claimed by another agent ({claimed_by}). Skipping.")
                 else:
                     logger.warning(f"Failed to secure claim for task {task_id}. Status: {task_status}, claimed_by: {claimed_by}")
@@ -462,9 +476,10 @@ class WorkerAgent:
                 claimed_by = t.get("claimed_by", "").lower()
                 active_claim_id = t.get("active_claim_id")
                 
-                is_ours = claimed_by == self.ai_identifier.lower()
-                if not is_ours and Config.DONATION_ADDRESS:
-                    is_ours = claimed_by == Config.DONATION_ADDRESS.lower()
+                is_ours = (
+                    claimed_by == self.ai_identifier.lower() or 
+                    (Config.DONATION_ADDRESS and claimed_by == Config.DONATION_ADDRESS.lower())
+                )
 
                 if is_ours and active_claim_id:
                     logger.info(f"Worker: Found existing claim for {task_id}: {active_claim_id}")
@@ -507,6 +522,21 @@ class WorkerAgent:
         visible_pixel_hash = task.get("visible_pixel_hash") or contract_id
         rejection_feedback = task.get("rejection_feedback")
         
+        # Fetch contract-level rework requests (New mechanism)
+        rework_context = ""
+        if contract_id and contract_id != "unassigned":
+            try:
+                # Normalize contract ID (strip 'wish-' prefix if present)
+                norm_id = contract_id.replace("wish-", "")
+                rework_reqs = self.client.get_rework_requests(norm_id)
+                if rework_reqs:
+                    rework_context = "\nCONTRACT-LEVEL REWORK REQUESTS:\n"
+                    for i, req in enumerate(rework_reqs):
+                        rework_context += f"{i+1}. {req.get('notes', 'No notes')}\n"
+                    logger.info(f"Worker: Found {len(rework_reqs)} rework requests for contract {norm_id}")
+            except Exception as e:
+                logger.debug(f"Worker: Could not fetch rework requests for context: {e}")
+
         # Extract skills to inspire the agent
         skills = task.get("skills", ["general engineering"])
         skills_str = ", ".join(skills) if isinstance(skills, list) else str(skills)
@@ -669,6 +699,7 @@ class WorkerAgent:
                     base_instruction = (
                         f"You are a practical engineer implementing: '{description}'.\n"
                         f"Skills: [{skills_str}].\n\n"
+                        f"{rework_context}\n"
                         f"IMPORTANT: Read AGENTS.md in your current directory for complete working guidelines!\n\n"
                         f"TASK: Complete this work efficiently and provide concrete results.\n\n"
                         f"REQUIREMENTS:\n"
@@ -752,6 +783,7 @@ class WorkerAgent:
                     base_instruction = (
                         f"You are a practical engineer implementing: '{description}'.\n"
                         f"Skills: [{skills_str}].\n\n"
+                        f"{rework_context}\n"
                         f"IMPORTANT: Read AGENTS.md in your current directory for complete working guidelines!\n\n"
                         f"TASK: Complete this work efficiently and provide concrete results.\n\n"
                         f"REQUIREMENTS:\n"
