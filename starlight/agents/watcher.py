@@ -259,6 +259,12 @@ class WatcherAgent:
             pid = proposal.get("id")
             status = proposal.get("status", "").lower()
             
+            if status in ["approved", "rejected", "confirmed"]:
+                logger.debug(f"Watcher: Proposal {pid} already {status}. Skipping audit.")
+                if pid:
+                    self.seen_proposals.add(pid)
+                continue
+            
             if status == "pending" and pid and pid not in self.seen_proposals:
                 # Check if already rejected (avoid re-auditing)
                 if pid in self.rejected_proposals:
@@ -920,15 +926,15 @@ class WatcherAgent:
             try:
                 files_structure = subprocess.check_output(["ls", "-R", audit_dir], text=True, timeout=5)
                 prompt += (
-                    f"\n4. Artifacts are available in current directory and subdirectories.\n"
+                    f"\n5. Artifacts are available in current directory and subdirectories.\n"
                     f"Structure:\n{files_structure}\n"
                     f"YOU MUST explore all subdirectories recursively (e.g. using `ls -R` or `find .`) to find technical evidence.\n"
                     f"Verify the existence and quality of all files claimed to be created in the report.\n\n"
                 )
             except Exception:
-                prompt += f"\n4. Artifacts are available in current directory - examine files and subdirectories recursively for evidence.\n\n"
+                prompt += f"\n5. Artifacts are available in current directory - examine files and subdirectories recursively for evidence.\n\n"
         else:
-            prompt += f"\n4. No artifacts directory available - rely on report content only.\n\n"
+            prompt += f"\n5. No artifacts directory available - rely on report content only.\n\n"
             
         prompt += "Respond with a single line: 'VERDICT: PASS', 'VERDICT: REWORK - <reason>', or 'VERDICT: FAIL - <reason>'."
         
@@ -940,32 +946,33 @@ class WatcherAgent:
                     output = output.strip()
                     upper_output = output.upper()
                     if "VERDICT: PASS" in upper_output or (upper_output.split() and upper_output.split()[0] == "PASS"):
-                        return "PASS", ""
+                        return True, ""
                     if "VERDICT: REWORK" in upper_output or "REWORK" in upper_output:
-                        return "REWORK", output
-                    return "FAIL", output
+                        return False, output
+                    return False, output
             except Exception as e:
                 logger.error(f"OpenCode MCP submission audit failed: {e}")
         
         # Fallback to subprocess if available
         if self.opencode_path:
             try:
+                logger.error(prompt)
                 cmd = ["opencode", "run", prompt]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=audit_dir)  # 30 minutes for submission audit (thorough analysis)
                 
                 if result.returncode != 0:
                     logger.error(f"Auditor: OpenCode failed (exit {result.returncode}): {result.stderr}")
-                    return "FAIL", "Audit tool failed"
+                    return False, "Audit tool failed"
 
                 output = result.stdout.strip()
                 upper_output = output.upper()
                 if "VERDICT: PASS" in upper_output or (upper_output.split() and upper_output.split()[0] == "PASS"):
-                    return "PASS", ""
+                    return True, ""
                 
                 if "VERDICT: REWORK" in upper_output or "REWORK" in upper_output:
-                    return "REWORK", output
+                    return False, output
 
-                return "FAIL", output
+                return False, output
             except subprocess.TimeoutExpired:
                 logger.error(f"Auditor: OpenCode timed out after 300s for submission {sub.get('id')}")
                 return False, "Audit timed out"
