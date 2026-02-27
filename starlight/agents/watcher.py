@@ -137,7 +137,7 @@ class WatcherAgent:
             p_status = proposal.get("status", "").lower()
             # Proposals with status: available, active, approved, published are actionable
             if p_status not in ["available", "active", "approved", "published"]:
-                logger.info(f"Watcher: Skipping proposal {proposal.get('id')} - status: {p_status}")
+                logger.debug(f"Watcher: Skipping proposal {proposal.get('id')} - status: {p_status}")
                 continue
 
             tasks = proposal.get("tasks", [])
@@ -197,7 +197,7 @@ class WatcherAgent:
                 
                 # Debug: log why tasks are being filtered
                 if not is_claimed_by_others and not is_actionable:
-                    logger.info(f"Watcher: Task {task_id} filtered - status={status}, claimed_by='{claimed_by}', is_ours={is_ours}")
+                    logger.debug(f"Watcher: Task {task_id} filtered - status={status}, claimed_by='{claimed_by}', is_ours={is_ours}")
                 
                 if not is_claimed_by_others and is_actionable and task_id:
                     task["proposal_id"] = proposal.get("id")
