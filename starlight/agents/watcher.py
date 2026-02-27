@@ -924,11 +924,15 @@ class WatcherAgent:
         # Add artifacts info to prompt if available
         if artifacts_available:
             try:
-                files_structure = subprocess.check_output(["ls", "-R", audit_dir], text=True, timeout=5)
+                files_structure = subprocess.check_output(
+                    ["find", ".", "-type", "f", "!", "-path", "*/node_modules/*", "!", "-path", "*/.git/*", "!", "-path", "*/dist/*", "!", "-path", "*/build/*", "!", "-path", "*/__pycache__/*", "-print"],
+                    text=True, timeout=5, cwd=audit_dir
+                )
+                files_structure = files_structure[:10000]
                 prompt += (
                     f"\n5. Artifacts are available in current directory and subdirectories.\n"
-                    f"Structure:\n{files_structure}\n"
-                    f"YOU MUST explore all subdirectories recursively (e.g. using `ls -R` or `find .`) to find technical evidence.\n"
+                    f"Files (excluding node_modules, .git, dist, build):\n{files_structure}\n"
+                    f"YOU MUST explore relevant subdirectories to find technical evidence.\n"
                     f"Verify the existence and quality of all files claimed to be created in the report.\n\n"
                 )
             except Exception:
@@ -956,7 +960,6 @@ class WatcherAgent:
         # Fallback to subprocess if available
         if self.opencode_path:
             try:
-                logger.error(prompt)
                 cmd = ["opencode", "run", prompt]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=audit_dir)  # 30 minutes for submission audit (thorough analysis)
                 
