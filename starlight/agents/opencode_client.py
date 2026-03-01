@@ -32,12 +32,10 @@ class OpenCodeMCPClient:
         """Test if OpenCode MCP tools are available."""
         try:
             # Direct test without using self.run() to avoid circular dependency
+            # Use get_scanner_info as a safe connectivity check
             payload = {
-                "tool": "opencode_run",
-                "arguments": {
-                    "prompt": "hello",
-                    "timeout": 5
-                }
+                "tool": "get_scanner_info",
+                "arguments": {}
             }
             
             response = requests.post(self.mcp_url, headers=self.headers, json=payload, timeout=10)
