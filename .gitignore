@@ -38,3 +38,8 @@ experiments
 
 # Local scratch files
 x.png
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
