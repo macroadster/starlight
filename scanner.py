@@ -36,16 +36,17 @@ NO_HEURISTICS = False  # Global flag to disable heuristics for benchmarking
 # ONNX support removed due to Python 3.14 compatibility issues
 
 
-# Import PyTorch model class
+# Import PyTorch model class - V2 with stream projections
 class BalancedStarlightDetector(nn.Module):
-    """Balanced model with weighted metadata processing to reduce EXIF dominance"""
+    """V2: Compact model with stream projections and lightweight attention."""
 
-    def __init__(self, meta_weight=0.1):
+    def __init__(self, meta_weight=0.3, proj_dim=64):
         super(BalancedStarlightDetector, self).__init__()
 
-        self.meta_weight = meta_weight  # Weight to reduce metadata dominance
+        self.meta_weight = meta_weight
+        self.proj_dim = proj_dim
 
-        # Metadata stream (now 2048 features instead of 1024)
+        # Metadata stream
         self.meta_conv = nn.Sequential(
             nn.Conv1d(1, 32, kernel_size=7, stride=2, padding=3),
             nn.BatchNorm1d(32),
@@ -58,6 +59,7 @@ class BalancedStarlightDetector(nn.Module):
             nn.ReLU(),
             nn.AdaptiveAvgPool1d(16),
         )
+        self.meta_proj = nn.Linear(128 * 16, proj_dim)
 
         # Alpha stream
         self.alpha_conv = nn.Sequential(
@@ -70,8 +72,9 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8),
+            nn.AdaptiveAvgPool2d(4),
         )
+        self.alpha_proj = nn.Linear(64 * 4 * 4, proj_dim)
 
         # LSB stream
         self.lsb_conv = nn.Sequential(
@@ -84,31 +87,29 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8),
+            nn.AdaptiveAvgPool2d(4),
         )
+        self.lsb_proj = nn.Linear(64 * 4 * 4, proj_dim)
 
         # Palette stream
         self.palette_fc = nn.Sequential(
-            nn.Linear(768, 256),
+            nn.Linear(768, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 64),
+            nn.Linear(128, proj_dim),
         )
 
         # Format features stream
         self.format_features_fc = nn.Sequential(
-            nn.Linear(6, 32), nn.ReLU(), nn.Linear(32, 16)
+            nn.Linear(6, 32), nn.ReLU(), nn.Linear(32, 32)
         )
 
         # Content features stream
         self.content_features_fc = nn.Sequential(
-            nn.Linear(6, 32), nn.ReLU(), nn.Linear(32, 16)
+            nn.Linear(6, 32), nn.ReLU(), nn.Linear(32, 32)
         )
 
-        # Pixel tensor processing (new stream)
+        # Pixel tensor processing
         self.pixel_conv = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(16),
@@ -119,10 +120,11 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8),
+            nn.AdaptiveAvgPool2d(4),
         )
+        self.pixel_proj = nn.Linear(64 * 4 * 4, proj_dim)
 
-        # Palette LSB processing (new stream)
+        # Palette LSB processing
         self.palette_lsb_conv = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(16),
@@ -133,47 +135,32 @@ class BalancedStarlightDetector(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(8),
+            nn.AdaptiveAvgPool2d(4),
         )
+        self.palette_lsb_proj = nn.Linear(64 * 4 * 4, proj_dim)
 
-        # Attention Mechanisms - Enabled for EOI/EXIF Detection
-        self.eoi_attention = nn.Sequential(
-            nn.Linear(2048, 512),  # Metadata stream features
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),  # Attention weight for EOI
+        # Lightweight stream gating
+        n_streams = 8
+        self.fusion_dim = 6 * proj_dim + 2 * 32  # 448
+        self.stream_gate = nn.Sequential(
+            nn.Linear(self.fusion_dim, n_streams),
             nn.Sigmoid(),
         )
-
-        self.exif_attention = nn.Sequential(
-            nn.Linear(2048, 512),  # Metadata stream features
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),  # Attention weight for EXIF
-            nn.Sigmoid(),
-        )
-
-        # Fusion and classification
-        # Original fusion dim + 512 for attention features (256 * 2)
-        # self.fusion_dim = 128 * 16 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 * 8 * 8 + 64 + 16 + 16  # Original: 18528
-        self.fusion_dim = 18528 + 512  # Adding attention features
 
         self.fusion = nn.Sequential(
-            nn.Linear(self.fusion_dim, 512),
+            nn.Linear(self.fusion_dim, 256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(512, 256),
+            nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 128 + 64),  # 128 for embedding, 64 for classification
+            nn.Dropout(0.2),
+            nn.Linear(128, 128 + 64),
         )
 
         # Heads
         self.stego_head = nn.Linear(64, 1)
-        self.method_head = nn.Linear(64, 5)  # alpha, palette, lsb.rgb, exif, raw
-        self.bit_order_head = nn.Linear(64, 3)  # lsb-first, msb-first, none
+        self.method_head = nn.Linear(64, 5)
+        self.bit_order_head = nn.Linear(64, 3)
         self.embedding_head = nn.Linear(64, 64)
 
     def forward(
@@ -187,75 +174,67 @@ class BalancedStarlightDetector(nn.Module):
         format_features,
         content_features,
     ):
-        # Pixel tensor stream (new)
+        # Pixel stream -> project
         pixel_tensor = self.pixel_conv(pixel_tensor)
         pixel_tensor = pixel_tensor.reshape(pixel_tensor.size(0), -1)
+        pixel_tensor = self.pixel_proj(pixel_tensor)
 
-        # Metadata stream with weighting
-        meta_features = meta  # Keep original features for attention
-        meta = meta.unsqueeze(1)  # Add channel dimension
+        # Metadata stream -> project
+        meta = meta.unsqueeze(1)
         meta = self.meta_conv(meta)
         meta = meta.reshape(meta.size(0), -1)
-        meta = meta * self.meta_weight  # Apply weighting to reduce dominance
+        meta = self.meta_proj(meta) * self.meta_weight
 
-        # Calculate attention scores
-        eoi_attn = self.eoi_attention(meta_features)
-        exif_attn = self.exif_attention(meta_features)
-
-        # Create attention features
-        # Expand attention weights to feature dimensions (simple scaling for now)
-        eoi_feat = torch.ones(meta.size(0), 256).to(meta.device) * eoi_attn
-        exif_feat = torch.ones(meta.size(0), 256).to(meta.device) * exif_attn
-
-        attention_features = torch.cat([eoi_feat, exif_feat], dim=1)
-
-        # Alpha stream
+        # Alpha stream -> project
         alpha = self.alpha_conv(alpha)
         alpha = alpha.reshape(alpha.size(0), -1)
+        alpha = self.alpha_proj(alpha)
 
-        # LSB stream - ensure CHW format
-        if lsb.dim() == 4 and lsb.shape[1] == 256:  # (N, H, W, C) format
-            lsb = lsb.permute(0, 3, 1, 2)  # NHWC -> NCHW
-        elif lsb.dim() == 4:  # Already in (N, C, H, W) format
-            pass  # Already correct
-        elif lsb.dim() == 3 and lsb.shape[0] == 256:  # (H, W, C) format
-            lsb = lsb.permute(2, 0, 1).unsqueeze(0)  # HWC -> CHW -> NCHW
-        elif lsb.dim() == 3:  # (C, H, W) format
-            lsb = lsb.unsqueeze(0)  # Add batch dimension
+        # LSB stream - ensure CHW format, then project
+        if lsb.dim() == 4 and lsb.shape[1] == 256:
+            lsb = lsb.permute(0, 3, 1, 2)
+        elif lsb.dim() == 4:
+            pass
+        elif lsb.dim() == 3 and lsb.shape[0] == 256:
+            lsb = lsb.permute(2, 0, 1).unsqueeze(0)
+        elif lsb.dim() == 3:
+            lsb = lsb.unsqueeze(0)
         else:
             raise ValueError(f"Unexpected LSB tensor shape: {lsb.shape}")
 
         lsb = self.lsb_conv(lsb)
         lsb = lsb.reshape(lsb.size(0), -1)
+        lsb = self.lsb_proj(lsb)
 
         # Palette stream
         palette = self.palette_fc(palette)
 
-        # Palette LSB stream (new)
+        # Palette LSB stream -> project
         palette_lsb = self.palette_lsb_conv(palette_lsb)
         palette_lsb = palette_lsb.reshape(palette_lsb.size(0), -1)
+        palette_lsb = self.palette_lsb_proj(palette_lsb)
 
-        # Format features stream
+        # Format and content features
         format_features = self.format_features_fc(format_features)
-
-        # Content features stream
         content_features = self.content_features_fc(content_features)
 
-        # Fusion of all 8 streams + attention features
-        fused = torch.cat(
-            [
-                pixel_tensor,
-                meta,
-                alpha,
-                lsb,
-                palette,
-                palette_lsb,
-                format_features,
-                content_features,
-                attention_features,
-            ],
+        # Concatenate all streams
+        all_streams = torch.cat(
+            [pixel_tensor, meta, alpha, lsb, palette, palette_lsb,
+             format_features, content_features],
             dim=1,
         )
+
+        # Lightweight stream gating
+        gate_weights = self.stream_gate(all_streams)
+        streams = [pixel_tensor, meta, alpha, lsb, palette, palette_lsb,
+                   format_features, content_features]
+        dims = [self.proj_dim] * 6 + [32, 32]
+        gated = []
+        for i, (s, d) in enumerate(zip(streams, dims)):
+            gated.append(s * gate_weights[:, i:i+1])
+
+        fused = torch.cat(gated, dim=1)
         fused = self.fusion(fused)
 
         # Split into embedding and classification features
