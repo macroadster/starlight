@@ -10,8 +10,10 @@ __pycache__/
 # Ignore model files (too large for repo)
 *.onnx
 *.pth
+*.gguf
 **/*.onnx
 **/*.pth
+**/*.gguf
 
 # Ignore generated datasets (keep only source code)
 clean/
