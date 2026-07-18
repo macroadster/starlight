@@ -1,0 +1,1326 @@
+{
+  "arch": "BalancedStarlightDetector",
+  "general.name": "starlight-detector-balanced-v2",
+  "meta": {
+    "general.name": "starlight-detector-balanced-v2",
+    "starlight.meta_weight": "0.3",
+    "starlight.proj_dim": "64",
+    "starlight.fusion_dim": "448",
+    "starlight.arch": "BalancedStarlightDetector"
+  },
+  "n_tensors_exported": 128,
+  "n_skipped": 15,
+  "skipped": [
+    {
+      "name": "meta_conv.1.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "meta_conv.4.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "meta_conv.7.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "alpha_conv.1.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "alpha_conv.4.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "alpha_conv.7.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "lsb_conv.1.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "lsb_conv.4.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "lsb_conv.7.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "pixel_conv.1.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "pixel_conv.4.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "pixel_conv.7.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "palette_lsb_conv.1.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "palette_lsb_conv.4.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    },
+    {
+      "name": "palette_lsb_conv.7.num_batches_tracked",
+      "dtype": "int64",
+      "shape": [],
+      "reason": "non-float buffer (e.g. num_batches_tracked); not needed for eval"
+    }
+  ],
+  "tensors": {
+    "meta_conv.0.weight": {
+      "shape": [
+        32,
+        1,
+        7
+      ],
+      "dtype": "F32",
+      "nbytes": 896,
+      "role": "conv1d",
+      "numel": 224
+    },
+    "meta_conv.0.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "meta_conv.1.weight": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "meta_conv.1.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "meta_conv.1.running_mean": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "meta_conv.1.running_var": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "meta_conv.3.weight": {
+      "shape": [
+        64,
+        32,
+        5
+      ],
+      "dtype": "F32",
+      "nbytes": 40960,
+      "role": "conv1d",
+      "numel": 10240
+    },
+    "meta_conv.3.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "meta_conv.4.weight": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "meta_conv.4.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "meta_conv.4.running_mean": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "meta_conv.4.running_var": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "meta_conv.6.weight": {
+      "shape": [
+        128,
+        64,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 98304,
+      "role": "conv1d",
+      "numel": 24576
+    },
+    "meta_conv.6.bias": {
+      "shape": [
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 512,
+      "role": "bias",
+      "numel": 128
+    },
+    "meta_conv.7.weight": {
+      "shape": [
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 512,
+      "role": "bn",
+      "numel": 128
+    },
+    "meta_conv.7.bias": {
+      "shape": [
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 512,
+      "role": "bn",
+      "numel": 128
+    },
+    "meta_conv.7.running_mean": {
+      "shape": [
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 512,
+      "role": "bn",
+      "numel": 128
+    },
+    "meta_conv.7.running_var": {
+      "shape": [
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 512,
+      "role": "bn",
+      "numel": 128
+    },
+    "meta_proj.weight": {
+      "shape": [
+        64,
+        2048
+      ],
+      "dtype": "F32",
+      "nbytes": 524288,
+      "role": "linear",
+      "numel": 131072
+    },
+    "meta_proj.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "alpha_conv.0.weight": {
+      "shape": [
+        16,
+        2,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 1152,
+      "role": "conv",
+      "numel": 288
+    },
+    "alpha_conv.0.bias": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bias",
+      "numel": 16
+    },
+    "alpha_conv.1.weight": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "alpha_conv.1.bias": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "alpha_conv.1.running_mean": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "alpha_conv.1.running_var": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "alpha_conv.3.weight": {
+      "shape": [
+        32,
+        16,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 18432,
+      "role": "conv",
+      "numel": 4608
+    },
+    "alpha_conv.3.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "alpha_conv.4.weight": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "alpha_conv.4.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "alpha_conv.4.running_mean": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "alpha_conv.4.running_var": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "alpha_conv.6.weight": {
+      "shape": [
+        64,
+        32,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 73728,
+      "role": "conv",
+      "numel": 18432
+    },
+    "alpha_conv.6.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "alpha_conv.7.weight": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "alpha_conv.7.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "alpha_conv.7.running_mean": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "alpha_conv.7.running_var": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "alpha_proj.weight": {
+      "shape": [
+        64,
+        1024
+      ],
+      "dtype": "F32",
+      "nbytes": 262144,
+      "role": "linear",
+      "numel": 65536
+    },
+    "alpha_proj.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "lsb_conv.0.weight": {
+      "shape": [
+        16,
+        3,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 1728,
+      "role": "conv",
+      "numel": 432
+    },
+    "lsb_conv.0.bias": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bias",
+      "numel": 16
+    },
+    "lsb_conv.1.weight": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "lsb_conv.1.bias": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "lsb_conv.1.running_mean": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "lsb_conv.1.running_var": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "lsb_conv.3.weight": {
+      "shape": [
+        32,
+        16,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 18432,
+      "role": "conv",
+      "numel": 4608
+    },
+    "lsb_conv.3.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "lsb_conv.4.weight": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "lsb_conv.4.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "lsb_conv.4.running_mean": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "lsb_conv.4.running_var": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "lsb_conv.6.weight": {
+      "shape": [
+        64,
+        32,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 73728,
+      "role": "conv",
+      "numel": 18432
+    },
+    "lsb_conv.6.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "lsb_conv.7.weight": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "lsb_conv.7.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "lsb_conv.7.running_mean": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "lsb_conv.7.running_var": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "lsb_proj.weight": {
+      "shape": [
+        64,
+        1024
+      ],
+      "dtype": "F32",
+      "nbytes": 262144,
+      "role": "linear",
+      "numel": 65536
+    },
+    "lsb_proj.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "palette_fc.0.weight": {
+      "shape": [
+        128,
+        768
+      ],
+      "dtype": "F32",
+      "nbytes": 393216,
+      "role": "linear",
+      "numel": 98304
+    },
+    "palette_fc.0.bias": {
+      "shape": [
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 512,
+      "role": "bias",
+      "numel": 128
+    },
+    "palette_fc.3.weight": {
+      "shape": [
+        64,
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 32768,
+      "role": "linear",
+      "numel": 8192
+    },
+    "palette_fc.3.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "format_features_fc.0.weight": {
+      "shape": [
+        32,
+        6
+      ],
+      "dtype": "F32",
+      "nbytes": 768,
+      "role": "linear",
+      "numel": 192
+    },
+    "format_features_fc.0.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "format_features_fc.2.weight": {
+      "shape": [
+        32,
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 4096,
+      "role": "linear",
+      "numel": 1024
+    },
+    "format_features_fc.2.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "content_features_fc.0.weight": {
+      "shape": [
+        32,
+        6
+      ],
+      "dtype": "F32",
+      "nbytes": 768,
+      "role": "linear",
+      "numel": 192
+    },
+    "content_features_fc.0.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "content_features_fc.2.weight": {
+      "shape": [
+        32,
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 4096,
+      "role": "linear",
+      "numel": 1024
+    },
+    "content_features_fc.2.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "pixel_conv.0.weight": {
+      "shape": [
+        16,
+        3,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 1728,
+      "role": "conv",
+      "numel": 432
+    },
+    "pixel_conv.0.bias": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bias",
+      "numel": 16
+    },
+    "pixel_conv.1.weight": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "pixel_conv.1.bias": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "pixel_conv.1.running_mean": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "pixel_conv.1.running_var": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "pixel_conv.3.weight": {
+      "shape": [
+        32,
+        16,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 18432,
+      "role": "conv",
+      "numel": 4608
+    },
+    "pixel_conv.3.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "pixel_conv.4.weight": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "pixel_conv.4.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "pixel_conv.4.running_mean": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "pixel_conv.4.running_var": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "pixel_conv.6.weight": {
+      "shape": [
+        64,
+        32,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 73728,
+      "role": "conv",
+      "numel": 18432
+    },
+    "pixel_conv.6.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "pixel_conv.7.weight": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "pixel_conv.7.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "pixel_conv.7.running_mean": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "pixel_conv.7.running_var": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "pixel_proj.weight": {
+      "shape": [
+        64,
+        1024
+      ],
+      "dtype": "F32",
+      "nbytes": 262144,
+      "role": "linear",
+      "numel": 65536
+    },
+    "pixel_proj.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "palette_lsb_conv.0.weight": {
+      "shape": [
+        16,
+        1,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 576,
+      "role": "conv",
+      "numel": 144
+    },
+    "palette_lsb_conv.0.bias": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bias",
+      "numel": 16
+    },
+    "palette_lsb_conv.1.weight": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "palette_lsb_conv.1.bias": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "palette_lsb_conv.1.running_mean": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "palette_lsb_conv.1.running_var": {
+      "shape": [
+        16
+      ],
+      "dtype": "F32",
+      "nbytes": 64,
+      "role": "bn",
+      "numel": 16
+    },
+    "palette_lsb_conv.3.weight": {
+      "shape": [
+        32,
+        16,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 18432,
+      "role": "conv",
+      "numel": 4608
+    },
+    "palette_lsb_conv.3.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bias",
+      "numel": 32
+    },
+    "palette_lsb_conv.4.weight": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "palette_lsb_conv.4.bias": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "palette_lsb_conv.4.running_mean": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "palette_lsb_conv.4.running_var": {
+      "shape": [
+        32
+      ],
+      "dtype": "F32",
+      "nbytes": 128,
+      "role": "bn",
+      "numel": 32
+    },
+    "palette_lsb_conv.6.weight": {
+      "shape": [
+        64,
+        32,
+        3,
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 73728,
+      "role": "conv",
+      "numel": 18432
+    },
+    "palette_lsb_conv.6.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "palette_lsb_conv.7.weight": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "palette_lsb_conv.7.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "palette_lsb_conv.7.running_mean": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "palette_lsb_conv.7.running_var": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bn",
+      "numel": 64
+    },
+    "palette_lsb_proj.weight": {
+      "shape": [
+        64,
+        1024
+      ],
+      "dtype": "F32",
+      "nbytes": 262144,
+      "role": "linear",
+      "numel": 65536
+    },
+    "palette_lsb_proj.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    },
+    "stream_gate.0.weight": {
+      "shape": [
+        8,
+        448
+      ],
+      "dtype": "F32",
+      "nbytes": 14336,
+      "role": "linear",
+      "numel": 3584
+    },
+    "stream_gate.0.bias": {
+      "shape": [
+        8
+      ],
+      "dtype": "F32",
+      "nbytes": 32,
+      "role": "bias",
+      "numel": 8
+    },
+    "fusion.0.weight": {
+      "shape": [
+        256,
+        448
+      ],
+      "dtype": "F32",
+      "nbytes": 458752,
+      "role": "linear",
+      "numel": 114688
+    },
+    "fusion.0.bias": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32",
+      "nbytes": 1024,
+      "role": "bias",
+      "numel": 256
+    },
+    "fusion.3.weight": {
+      "shape": [
+        128,
+        256
+      ],
+      "dtype": "F32",
+      "nbytes": 131072,
+      "role": "linear",
+      "numel": 32768
+    },
+    "fusion.3.bias": {
+      "shape": [
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 512,
+      "role": "bias",
+      "numel": 128
+    },
+    "fusion.6.weight": {
+      "shape": [
+        192,
+        128
+      ],
+      "dtype": "F32",
+      "nbytes": 98304,
+      "role": "linear",
+      "numel": 24576
+    },
+    "fusion.6.bias": {
+      "shape": [
+        192
+      ],
+      "dtype": "F32",
+      "nbytes": 768,
+      "role": "bias",
+      "numel": 192
+    },
+    "stego_head.weight": {
+      "shape": [
+        1,
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "linear",
+      "numel": 64
+    },
+    "stego_head.bias": {
+      "shape": [
+        1
+      ],
+      "dtype": "F32",
+      "nbytes": 4,
+      "role": "bias",
+      "numel": 1
+    },
+    "method_head.weight": {
+      "shape": [
+        5,
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 1280,
+      "role": "linear",
+      "numel": 320
+    },
+    "method_head.bias": {
+      "shape": [
+        5
+      ],
+      "dtype": "F32",
+      "nbytes": 20,
+      "role": "bias",
+      "numel": 5
+    },
+    "bit_order_head.weight": {
+      "shape": [
+        3,
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 768,
+      "role": "linear",
+      "numel": 192
+    },
+    "bit_order_head.bias": {
+      "shape": [
+        3
+      ],
+      "dtype": "F32",
+      "nbytes": 12,
+      "role": "bias",
+      "numel": 3
+    },
+    "embedding_head.weight": {
+      "shape": [
+        64,
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 16384,
+      "role": "linear",
+      "numel": 4096
+    },
+    "embedding_head.bias": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32",
+      "nbytes": 256,
+      "role": "bias",
+      "numel": 64
+    }
+  },
+  "notes": [
+    "Tensor names match PyTorch state_dict keys exactly.",
+    "Layout: row-major float32, same as torch contiguous CPU float32.",
+    "BN num_batches_tracked (int64) skipped \u2014 eval uses running_mean/var.",
+    "GGUF writer matches Trin internal/weights.WriteGGUFF32."
+  ]
+}
