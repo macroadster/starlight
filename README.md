@@ -6,21 +6,61 @@ The blockchain, beginning with the **Bitcoin Genesis Block**, serves as a living
 
 ---
 
-## Quick Start / Usage
+## Quick Start / Training Pipeline
 
-To immediately begin generating datasets, training the model, and running detection, please refer to the comprehensive instructions in the [**USAGE.md**](USAGE.md) file.
+This repository is **training-only**. The production inference path is **Stargate / Trin** (Go), which loads **GGUF** weights published to Hugging Face. GGUF is the source of truth — not a local Python API on `:8080`.
 
-## Local API dev (no containers)
+Canonical flow: **dataset → train → export GGUF → publish HF**.
 
 ```bash
-cd starlight
+# 1. Install
 pip install -r requirements.txt
-./scripts/run_api_dev.sh  # defaults: PORT=8080, BLOCKS_DIR=./blocks
-# Docs: http://localhost:8080/docs  (OpenAPI), health: http://localhost:8080/health
-# Metrics: http://localhost:8080/metrics (Prometheus)
+
+# 2. Generate data / verify integrity
+python3 data_generator.py --limit 10          # or per-submission generators under datasets/
+python3 diag.py
+
+# 3. Train BalancedStarlightDetector
+python3 trainer.py --epochs 20 --batch_size 16 --out models/detector_balanced.pth
+# or (when available): make train
+
+# 4. Export GGUF (primary artifact for Stargate/Trin)
+python3 scripts/export_starlight_gguf.py \
+  --input models/detector_balanced.pth \
+  --output models/starlight.gguf \
+  --name-map models/starlight_gguf_map.json
+# or: make export-gguf
+
+# 5. Publish to Hugging Face
+HF_TOKEN=hf_... ./scripts/publish_to_hf.sh
+# or: HF_TOKEN=hf_... make publish-hf
 ```
 
-Environment overrides: `STARGATE_API_KEY` (defaults to `demo-api-key`), `ALLOW_ANONYMOUS_SCAN=true` for local testing, `BLOCKS_DIR` for cached blocks.
+### Local evaluation (optional, not a product API)
+
+```bash
+python3 scanner.py /path/to/image.png --json
+python3 scanner.py /path/to/images/ --workers 4
+```
+
+`scanner.py` is for offline eval during development. Do **not** treat a local uvicorn / FastAPI server as the product surface.
+
+### Inference serving
+
+- **Serve** models via **Stargate / Trin** (Go), not this Python repo.
+- **Download** production weights from Hugging Face GGUF:
+  - Repo: [macroadster/starlight-prod](https://huggingface.co/macroadster/starlight-prod)
+  - GGUF: `https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight.gguf`
+  - Map: `https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight_gguf_map.json`
+
+### Docs
+
+| Doc | Purpose |
+|-----|---------|
+| [**USAGE.md**](USAGE.md) | Full train / export / publish workflow |
+| [**docs/GGUF_EXPORT.md**](docs/GGUF_EXPORT.md) | GGUF layout, tensor contract, parity |
+| [**docs/hf_guide.md**](docs/hf_guide.md) | Hugging Face repos and Stargate download URLs |
+| [**DATASET_GUIDELINES.md**](DATASET_GUIDELINES.md) | Contributing datasets |
 
 ---
 
@@ -49,7 +89,7 @@ The accompanying resources in this repository, such as **[bitcoin_white_paper_2.
 The training protocol focuses on three key areas to ensure a robust and scalable solution:
 
 * **Diverse Datasets**: Steganalysis requires a vast, labeled dataset of both "clean" images and images with hidden data. This protocol encourages the community to contribute to the creation of such a dataset, ensuring the AI is trained on a wide range of steganographic techniques. See **[DATASET_GUIDELINES.md](DATASET_GUIDELINES.md)** for detailed instructions on contributing high-quality datasets.
-* **AI Models and Architectures**: We recommend using AI models, particularly deep learning architectures, that are tailored for steganalysis. While models like Convolutional Neural Networks (CNNs) are highly effective for image analysis, the protocol is designed to support and evaluate **various AI approaches on diverse datasets**. This flexibility applies to the steganography methods used for dataset creation.
+* **AI Models and Architectures**: We recommend using AI models, particularly deep learning architectures, that are tailored for steganalysis. The production detector is **`BalancedStarlightDetector`**, exported to **GGUF** for Stargate/Trin. The protocol remains flexible across steganography methods used for dataset creation.
 * **Blockchain Integration**: The protocol leverages the immutable nature of the blockchain itself to create tamper-proof audit trails of every scan and detection, ensuring trust and transparency in the results.
 
 ---

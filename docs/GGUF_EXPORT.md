@@ -159,9 +159,31 @@ Trin (Go) smoke:
 go run /tmp/verify_starlight_gguf.go /path/to/starlight/models/starlight.gguf
 ```
 
+## Publish to Hugging Face
+
+After a successful export (+ parity), publish GGUF as the production artifact for Stargate:
+
+```bash
+# Primary artifacts: models/starlight.gguf + models/starlight_gguf_map.json
+HF_TOKEN=hf_... ./scripts/publish_to_hf.sh
+# or: make publish-hf
+```
+
+Default repo: **[macroadster/starlight-prod](https://huggingface.co/macroadster/starlight-prod)**
+
+Stargate download URLs:
+
+```
+https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight.gguf
+https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight_gguf_map.json
+```
+
+See [hf_guide.md](hf_guide.md) for env overrides (`HF_REPO`, `GGUF_PATH`, …) and optional secondary ONNX/PTH uploads.
+
 ## Notes
 
 - Do **not** retrain here — export only.
 - `*.pth` / `*.onnx` are gitignored; commit the name map + scripts + docs.
 - A random-init GGUF is ~3–4 MB and may be committed for CI fixtures if useful;
   regenerate with `--init-random --seed 0` for a reproducible shape artifact.
+- Production inference is **Stargate / Trin** loading GGUF — not a local Python ONNX API.

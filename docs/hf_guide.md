@@ -1,58 +1,76 @@
 # Hugging Face Deployment Guide
 
-## Starlight Model Repositories
+Starlight production weights for **Stargate / Trin** are published as **GGUF**. GGUF is the source of truth; ONNX (if present) is optional/legacy only.
 
-### Production Repository: [macroadster/starlight-prod](https://huggingface.co/macroadster/starlight-prod)
-- **Purpose**: Production-ready steganography detection model
-- **Model**: `detector_balanced.onnx` (0.32% false positive rate)
-- **Features**: 
-  - No special cases or rules
-  - Optimized for CPU inference
-  - Supports multiple steganography methods (LSB, EXIF, EOI)
+## Production Repository
 
-### Research Repository: [macroadster/starlight-research](https://huggingface.co/macroadster/starlight-research)
-- **Purpose**: Experimental V3 model development
-- **Status**: Placeholder - under active development
-- **Warning**: Experimental results, not for production use
+**[macroadster/starlight-prod](https://huggingface.co/macroadster/starlight-prod)**
 
-## Try on Raspberry Pi
+| Artifact | Role |
+|----------|------|
+| `starlight.gguf` | **Primary** — F32 GGUF v3 weights (`BalancedStarlightDetector`) |
+| `starlight_gguf_map.json` | Sidecar — tensor names, shapes, skipped buffers |
+| `README.md` | Model card (from `models/model_card.md`) |
 
-The production model is optimized for CPU inference and can run on resource-constrained devices like Raspberry Pi:
+Optional secondary (uploaded only if present locally): `detector_balanced.onnx`, `detector_balanced.pth`.
+
+### Download URLs (for Stargate)
+
+```
+https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight.gguf
+https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight_gguf_map.json
+```
+
+Example:
 
 ```bash
-# Install dependencies
-pip install onnxruntime pillow numpy
-
-# Download model
-wget https://huggingface.co/macroadster/starlight-prod/resolve/main/detector_balanced.onnx
-
-# Run inference
-python3 -c "
-import onnxruntime as ort
-import numpy as np
-from PIL import Image
-
-# Load model
-session = ort.InferenceSession('detector_balanced.onnx')
-
-# Load and preprocess image
-img = Image.open('your_image.png').convert('RGB').resize((256, 256))
-arr = np.array(img).astype(np.float32) / 255.0
-arr = np.transpose(arr, (2, 0, 1))
-arr = np.expand_dims(arr, 0)
-
-# Run detection
-outputs = session.run(None, {'input': arr})
-prob = outputs[0][0]
-print(f'Steganography probability: {prob:.3f}')
-"
+wget https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight.gguf
+wget https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight_gguf_map.json
 ```
 
-## Usage
+## Inference path
 
-```python
-from inference import detect_steganography
+- **Primary**: load GGUF in **Stargate / Trin** (Go). This is the product inference path.
+- **Not primary**: Python ONNX Runtime on Raspberry Pi or a local FastAPI server in this repo.
+- **Local eval only**: `python3 scanner.py ...` during training development (not a product API).
 
-result = detect_steganography("image.png")
-print(f"Probability: {result['stego_probability']:.3f}")
+Tensor contract and export details: [GGUF_EXPORT.md](GGUF_EXPORT.md).
+
+## Research Repository
+
+**[macroadster/starlight-research](https://huggingface.co/macroadster/starlight-research)**
+
+- Experimental / placeholder work
+- Not for production Stargate deployments
+
+## How to publish
+
+From the starlight repo root, after train + export:
+
+```bash
+# Ensure artifacts exist
+ls -lh models/starlight.gguf models/starlight_gguf_map.json models/model_card.md
+
+# Publish (requires HF_TOKEN; never commit the token)
+export HF_TOKEN=hf_...
+./scripts/publish_to_hf.sh
+# or: make publish-hf
 ```
+
+### Environment overrides
+
+| Variable | Default |
+|----------|---------|
+| `HF_TOKEN` | *(required)* |
+| `HF_REPO` or `REPO_NAME` | `macroadster/starlight-prod` |
+| `GGUF_PATH` | `models/starlight.gguf` |
+| `MAP_PATH` | `models/starlight_gguf_map.json` |
+| `MODEL_CARD_PATH` | `models/model_card.md` |
+
+Requires: `pip install huggingface_hub` (and a write-capable HF token for the target repo).
+
+## Related docs
+
+- [USAGE.md](../USAGE.md) — full train → export → publish workflow
+- [GGUF_EXPORT.md](GGUF_EXPORT.md) — export + parity
+- [models/model_card.md](../models/model_card.md) — HF README source

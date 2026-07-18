@@ -1,17 +1,12 @@
-# ---- Builder Stage ----
+# Starlight training / export image (no API serve)
 FROM python:3.12-slim AS builder
 
-# Set working directory for the virtual environment
 WORKDIR /opt/venv
-
-# Create a virtual environment
 RUN python3 -m venv .
 
-# Activate the virtual environment
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     curl \
@@ -19,76 +14,39 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy the API-specific requirements file
-COPY requirements.api.txt .
+COPY requirements.txt .
 
-# Install CPU-only PyTorch (much smaller) and other dependencies
+# CPU-only PyTorch (smaller image) + training/export deps
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
     torch torchvision \
-    && pip install --no-cache-dir -r requirements.api.txt
+    && pip install --no-cache-dir -r requirements.txt
 
-
-# ---- Final Stage ----
+# ---- Final stage ----
 FROM python:3.12-slim
 
-# Set working directory in the final image
 WORKDIR /app
 
-# Copy the virtual environment from the builder stage
 COPY --from=builder /opt/venv /opt/venv
-
-# Activate the virtual environment
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install runtime system dependencies including nodejs for opencode
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
     ca-certificates \
-    gnupg \
-    build-essential \
-    git \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g npm@latest \
-    && npx playwright install-deps \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Install OpenCode
-RUN curl -fsSL https://opencode.ai/install | bash \
-    && mv /root/.opencode /opt/opencode \
-    && ln -s /opt/opencode/bin/opencode /usr/local/bin/opencode \
-    && chmod -R 755 /opt/opencode
-
-# Create non-root user
 RUN useradd -m -u 1000 starlight
 
-# Copy application code
-COPY *.py ./
+# Training / export surface
+COPY trainer.py data_generator.py diag.py scanner.py ./
 COPY scripts/ ./scripts/
 COPY starlight/ ./starlight/
+COPY models/ ./models/
+COPY requirements.txt ./
 
-# Copy models and metadata
-COPY models_dist/ ./models/
-
-# Copy agent documentation
-COPY AGENTS_WORKING_GUIDE.md ./
-COPY docs/agents/ ./docs/agents/
-
-# Ensure permissions for starlight user on home, app and opencode opts
-RUN chown -R starlight:starlight /app /home/starlight /opt/opencode
-
+RUN chown -R starlight:starlight /app
 USER starlight
 
-# Set home environment variable for opencode
-ENV HOME=/home/starlight
-
-# Expose port
-EXPOSE 8080
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
-
-# Run the application
-CMD ["python", "-m", "uvicorn", "bitcoin_api:app", "--host", "0.0.0.0", "--port", "8080"]
+# Neutral default: show GGUF export help (train/export via make or override CMD)
+CMD ["python", "scripts/export_starlight_gguf.py", "--help"]

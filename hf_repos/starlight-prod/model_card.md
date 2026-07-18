@@ -1,44 +1,46 @@
+---
+license: apache-2.0
+tags:
+- steganography
+- steganalysis
+- gguf
+- balanced-detector
+- image-classification
+---
+
 # Model Card: Starlight Production Detector
 
 ## Model Overview
-- **Task**: Steganography Detection
-- **Architecture**: CNN-based Encoder-Decoder with Residual Blocks
-- **Input**: 256x256 RGB
-- **Output**: Sigmoid probability (0-1)
 
-## Training
-- **Dataset**: Balanced dataset with clean and stego images
-- **Epochs**: 50
-- **Batch Size**: 4
-- **Optimizer**: Adam
-- **Loss**: BCE + MSE
+- **Task**: Steganography detection
+- **Architecture**: `BalancedStarlightDetector`
+- **Primary artifact**: `starlight.gguf` (GGUF v3 / F32)
+- **Sidecar**: `starlight_gguf_map.json`
 
-## Performance
-| Metric | Value |
-|--------|-------|
-| Accuracy | 98.7% |
-| AUC-ROC | 0.996 |
-| F1 Score | 0.982 |
-| False Positive Rate | 0.32% |
-| Extraction BER | 0.003 |
+## Inference
 
-## Steganography Coverage
-- `lsb`, `alpha_lsb`
-- `exif`, `eoi`
-- Custom: `sequential_lsb`
+Load via **Stargate / Trin** (Go) GGUF path. GGUF is the source of truth for production.
 
-## Inference Speed
-- CPU: 12 ms/image
-- GPU: 2.1 ms/image
+```
+https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight.gguf
+https://huggingface.co/macroadster/starlight-prod/resolve/main/starlight_gguf_map.json
+```
 
-## Usage
-```python
-from inference import detect_steganography
+ONNX/Python paths are optional/legacy only — not the primary product inference path.
 
-result = detect_steganography("image.png")
-print(f"Probability: {result['stego_probability']:.3f}")
+## Training source
+
+Train and export from the starlight training repo:
+
+```bash
+python3 trainer.py --out models/detector_balanced.pth
+python3 scripts/export_starlight_gguf.py \
+  --input models/detector_balanced.pth \
+  --output models/starlight.gguf \
+  --name-map models/starlight_gguf_map.json
+HF_TOKEN=... ./scripts/publish_to_hf.sh
 ```
 
 ## License
+
 - Model: Apache 2.0
-- Code: MIT

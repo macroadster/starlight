@@ -1,5 +1,8 @@
 # Starlight Sandbox Integration
 
+> **ARCHIVED — Bitcoin FastAPI removed; inference is Stargate. Training-only repo.**  
+> This document is retained for historical reference only. Do not implement or deploy from this guide. Production inference loads **GGUF** via Stargate/Trin; train/export/publish lives in this repo (see [USAGE.md](../../USAGE.md), [hf_guide.md](../hf_guide.md)).
+
 The Bitcoin API now includes **sandbox capabilities** that allow Starlight to autonomously enhance its own functionality by loading agent-developed functions at runtime.
 
 ## 🚀 **Sandbox Architecture**

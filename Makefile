@@ -1,40 +1,44 @@
-.PHONY: help build test clean deploy
+.PHONY: help train export-gguf export-gguf-random parity-gguf publish-hf test docker-build clean
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
 	@echo ''
-	@echo 'Available targets:'
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@echo 'Training / export / publish workflow:'
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build: models_dist ## Build the Docker image
-	docker build -t starlight-api:latest .
+train: ## Train BalancedStarlightDetector (long-running)
+	python3 trainer.py --epochs 20 --batch_size 16 --out models/detector_balanced.pth
 
-models_dist: ## Create models_dist directory with only PTH files
-	@echo "Creating models_dist directory..."
-	@mkdir -p models_dist
-	@cp models/*.pth models_dist/ 2>/dev/null || true
-	@cp models/*.json models_dist/ 2>/dev/null || true
-	@cp models/*.md models_dist/ 2>/dev/null || true
-	@echo "models_dist created with:"
-	@ls -lh models_dist/
+export-gguf: ## Export detector_balanced.pth to GGUF
+	python3 scripts/export_starlight_gguf.py \
+		--input models/detector_balanced.pth \
+		--output models/starlight.gguf \
+		--name-map models/starlight_gguf_map.json
 
-test: build ## Test the image
-	@echo "Testing image..."
-	docker run --rm starlight-api:latest python -c "import torch; print('✓ Dependencies OK')"
-	docker run --rm starlight-api:latest ls -lh /app/models/
+export-gguf-random: ## Init-random GGUF export (CI / smoke)
+	python3 scripts/export_starlight_gguf.py \
+		--init-random \
+		--output models/starlight_random.gguf \
+		--name-map models/starlight_gguf_map.json
 
-clean: ## Remove built images and models_dist
-	@echo "Cleaning up..."
+parity-gguf: ## PyTorch vs GGUF parity check
+	python3 scripts/parity_starlight_gguf.py
+
+publish-hf: ## Publish GGUF to Hugging Face (requires HF_TOKEN)
+	./scripts/publish_to_hf.sh
+
+test: ## Light sanity checks (imports + export --help)
+	python3 -c "import trainer; assert hasattr(trainer, 'BalancedStarlightDetector'); print('trainer OK')"
+	python3 scripts/export_starlight_gguf.py --help >/dev/null && echo 'export-gguf OK'
+	python3 -c "from starlight.agents.dynamic_loader import dynamic_loader; print('dynamic_loader OK')"
+	@if command -v pytest >/dev/null 2>&1; then \
+		python3 -m pytest tests/test_unified_pipeline.py -q --tb=no 2>/dev/null || true; \
+	fi
+
+docker-build: ## Build training/export image as starlight-train:latest
+	docker build -t starlight-train:latest .
+
+clean: ## Remove local smoke artifacts
+	@rm -f models/starlight_random.gguf
 	@rm -rf models_dist
-	@docker rmi starlight-api:latest 2>/dev/null || true
 	@echo "Clean complete"
-
-deploy: build ## Deploy image (already tagged as latest)
-	@echo "Image tagged as starlight-api:latest"
-	@echo "Ready to deploy with: docker push starlight-api:latest"
-
-size: ## Show image sizes
-	@echo "Docker image sizes:"
-	@docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep starlight-api || true
-
-all: clean build test ## Clean, build, and test

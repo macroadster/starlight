@@ -1,36 +1,47 @@
 #!/bin/bash
+# publish_to_hf.sh — Upload GGUF primary artifacts to Hugging Face Hub
+#
+# Primary path for Stargate/Trin: starlight.gguf + starlight_gguf_map.json
+# Optional secondary: .onnx / .pth if present (never required)
+#
+# Usage:
+#   HF_TOKEN=hf_... ./scripts/publish_to_hf.sh
+#   HF_REPO=macroadster/starlight-prod HF_TOKEN=... ./scripts/publish_to_hf.sh
+#
+# Never commit tokens.
 
-# publish_to_hf.sh - Automated script to scan datasets, update model card, and publish to Hugging Face Hub
+set -euo pipefail
 
-set -e
+# ---------------------------------------------------------------------------
+# Configuration (env overrides)
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
 
-# Configuration
-MODEL_PATH="models/detector_balanced.onnx"
-CONFIG_PATH="model/config.json"
-INFERENCE_PATH="scripts/inference.py"
-MODEL_CARD_PATH="models/model_card.md"
-REPO_NAME="macroadster/starlight"
-HF_TOKEN="${HF_TOKEN:-}"  # Set via environment variable
+GGUF_PATH="${GGUF_PATH:-models/starlight.gguf}"
+MAP_PATH="${MAP_PATH:-models/starlight_gguf_map.json}"
+MODEL_CARD_PATH="${MODEL_CARD_PATH:-models/model_card.md}"
+# HF_REPO preferred; REPO_NAME kept for backward compatibility
+HF_REPO="${HF_REPO:-${REPO_NAME:-macroadster/starlight-prod}}"
+REPO_NAME="$HF_REPO"
+HF_TOKEN="${HF_TOKEN:-}"
 
-# Colors for output
+# Optional secondary artifacts (uploaded only if present)
+ONNX_PATH="${ONNX_PATH:-models/detector_balanced.onnx}"
+PTH_PATH="${PTH_PATH:-models/detector_balanced.pth}"
+
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Check dependencies
+# ---------------------------------------------------------------------------
 check_dependencies() {
     log_info "Checking dependencies..."
 
@@ -46,203 +57,155 @@ check_dependencies() {
 
     if [[ -z "$HF_TOKEN" ]]; then
         log_error "HF_TOKEN environment variable not set"
+        log_error "  export HF_TOKEN=hf_...   # never commit this"
         exit 1
     fi
 
-    log_info "Dependencies OK"
+    log_info "Dependencies OK (huggingface_hub present, HF_TOKEN set)"
 }
 
-# Run dataset scan
-run_scan() {
-    log_info "Running dataset scan..."
+# ---------------------------------------------------------------------------
+check_primary_artifacts() {
+    log_info "Checking primary GGUF artifacts..."
+    local missing=0
 
-    if [[ ! -f "scan_datasets.sh" ]]; then
-        log_error "scan_datasets.sh not found"
-        exit 1
+    if [[ ! -f "$GGUF_PATH" ]]; then
+        log_error "Required GGUF not found: $GGUF_PATH"
+        log_error "  Export first: python3 scripts/export_starlight_gguf.py \\"
+        log_error "    --input models/detector_balanced.pth \\"
+        log_error "    --output models/starlight.gguf \\"
+        log_error "    --name-map models/starlight_gguf_map.json"
+        missing=1
+    else
+        log_info "  Found $GGUF_PATH ($(du -h "$GGUF_PATH" | awk '{print $1}'))"
     fi
 
-    # Run scan and capture output
-    SCAN_OUTPUT=$(bash scan_datasets.sh -m "$MODEL_PATH" 2>&1)
-    SCAN_EXIT_CODE=$?
-
-    if [[ $SCAN_EXIT_CODE -ne 0 ]]; then
-        log_error "Dataset scan failed"
-        echo "$SCAN_OUTPUT"
-        exit 1
+    if [[ ! -f "$MAP_PATH" ]]; then
+        log_error "Required name map not found: $MAP_PATH"
+        missing=1
+    else
+        log_info "  Found $MAP_PATH"
     fi
-
-    log_info "Dataset scan completed"
-    echo "$SCAN_OUTPUT"
-}
-
-# Parse scan results
-parse_results() {
-    log_info "Parsing scan results..."
-
-    # Extract overall metrics using Python
-    OVERALL_STATS=$(python3 -c "
-import re
-import sys
-
-output = sys.stdin.read()
-
-# Find overall performance section
-overall_match = re.search(r'OVERALL PERFORMANCE:(.*?)PERFORMANCE ASSESSMENT:', output, re.DOTALL)
-if not overall_match:
-    print('ERROR: Could not find overall performance section')
-    sys.exit(1)
-
-stats_text = overall_match.group(1)
-
-# Extract numbers
-fp_match = re.search(r'False Positives \(Clean\)\s*\│\s*(\d+)\s*│\s*([\d.]+)', stats_text)
-tp_match = re.search(r'True Positives \(Stego\)\s*\│\s*(\d+)\s*│\s*([\d.]+)', stats_text)
-
-if not fp_match or not tp_match:
-    print('ERROR: Could not parse metrics')
-    sys.exit(1)
-
-fp_count = fp_match.group(1)
-fp_rate = fp_match.group(2)
-tp_count = tp_match.group(1)
-detection_rate = tp_match.group(2)
-
-print(f'{fp_rate}:{detection_rate}')
-" <<< "$SCAN_OUTPUT")
-
-    if [[ "$OVERALL_STATS" == ERROR* ]]; then
-        log_error "$OVERALL_STATS"
-        exit 1
-    fi
-
-    IFS=':' read -r FP_RATE DETECTION_RATE <<< "$OVERALL_STATS"
-
-    log_info "Parsed metrics - FP Rate: ${FP_RATE}%, Detection Rate: ${DETECTION_RATE}%"
-}
-
-# Update model card
-update_model_card() {
-    log_info "Updating model card..."
 
     if [[ ! -f "$MODEL_CARD_PATH" ]]; then
-        log_error "Model card not found: $MODEL_CARD_PATH"
-        exit 1
+        log_error "Required model card not found: $MODEL_CARD_PATH"
+        missing=1
+    else
+        log_info "  Found $MODEL_CARD_PATH (→ README.md on HF)"
     fi
 
-    # Update performance section
-    python3 -c "
-import re
-
-with open('$MODEL_CARD_PATH', 'r') as f:
-    content = f.read()
-
-# Update metrics
-content = re.sub(
-    r'\\| Accuracy \\| [\\d.]+% \\|',
-    f'| Accuracy | ${DETECTION_RATE}% |',
-    content
-)
-
-content = re.sub(
-    r'\\| AUC-ROC \\| [\\d.]+ \\|',
-    f'| AUC-ROC | TBD |',
-    content
-)
-
-content = re.sub(
-    r'\\| F1 Score \\| [\\d.]+ \\|',
-    f'| F1 Score | TBD |',
-    content
-)
-
-content = re.sub(
-    r'\\| Extraction BER \\| [\\d.]+ \\|',
-    f'| Extraction BER | N/A |',
-    content
-)
-
-with open('$MODEL_CARD_PATH', 'w') as f:
-    f.write(content)
-
-print('Model card updated')
-" || {
-        log_error "Failed to update model card"
+    if [[ "$missing" -ne 0 ]]; then
         exit 1
-    }
-
-    log_info "Model card updated with latest metrics"
+    fi
 }
 
-# Publish to Hugging Face Hub
+# ---------------------------------------------------------------------------
 publish_to_hf() {
-    log_info "Publishing to Hugging Face Hub..."
+    log_info "Publishing to Hugging Face Hub: $HF_REPO"
+    log_info "  Primary: $GGUF_PATH → starlight.gguf"
+    log_info "  Sidecar: $MAP_PATH → starlight_gguf_map.json"
+    log_info "  Card:    $MODEL_CARD_PATH → README.md"
 
-    # Check if files exist
-    for file in "$MODEL_PATH" "$CONFIG_PATH" "$INFERENCE_PATH" "$MODEL_CARD_PATH"; do
-        if [[ ! -f "$file" ]]; then
-            log_error "Required file not found: $file"
-            exit 1
-        fi
-    done
+    if [[ -f "$ONNX_PATH" ]]; then
+        log_info "  Optional ONNX present: $ONNX_PATH (will upload as secondary)"
+    else
+        log_warn "  Optional ONNX not present — skipped (GGUF is primary)"
+    fi
+    if [[ -f "$PTH_PATH" ]]; then
+        log_info "  Optional PTH present: $PTH_PATH (will upload as secondary)"
+    else
+        log_warn "  Optional PTH not present — skipped"
+    fi
 
-    # Create/update repo
-    python3 -c "
-from huggingface_hub import HfApi, create_repo
+    # Pass paths via env to avoid shell-injection into Python; token only via env
+    GGUF_PATH="$GGUF_PATH" \
+    MAP_PATH="$MAP_PATH" \
+    MODEL_CARD_PATH="$MODEL_CARD_PATH" \
+    ONNX_PATH="$ONNX_PATH" \
+    PTH_PATH="$PTH_PATH" \
+    HF_REPO="$HF_REPO" \
+    HF_TOKEN="$HF_TOKEN" \
+    python3 << 'PY'
 import os
+import sys
+from pathlib import Path
 
-api = HfApi(token='$HF_TOKEN')
+from huggingface_hub import HfApi, create_repo
+
+token = os.environ["HF_TOKEN"]
+repo_id = os.environ["HF_REPO"]
+gguf = Path(os.environ["GGUF_PATH"])
+name_map = Path(os.environ["MAP_PATH"])
+card = Path(os.environ["MODEL_CARD_PATH"])
+onnx = Path(os.environ.get("ONNX_PATH", "models/detector_balanced.onnx"))
+pth = Path(os.environ.get("PTH_PATH", "models/detector_balanced.pth"))
+
+api = HfApi(token=token)
 
 try:
-    # Try to create repo (will succeed if it doesn't exist)
-    create_repo('$REPO_NAME', private=False, token='$HF_TOKEN')
-    print('Created new repo')
-except:
-    print('Repo already exists')
+    create_repo(repo_id, private=False, token=token, exist_ok=True)
+    print(f"Repo ready: {repo_id}")
+except Exception as e:
+    print(f"create_repo note: {e}", file=sys.stderr)
 
-# Upload files
-files_to_upload = [
-    ('$MODEL_PATH', 'model.onnx'),
-    ('$CONFIG_PATH', 'config.json'),
-    ('$INFERENCE_PATH', 'inference.py'),
-    ('$MODEL_CARD_PATH', 'README.md')
+# Required primary uploads
+uploads = [
+    (gguf, "starlight.gguf"),
+    (name_map, "starlight_gguf_map.json"),
+    (card, "README.md"),
 ]
 
-for local_path, repo_path in files_to_upload:
+# Optional secondary (do not require)
+if onnx.is_file():
+    uploads.append((onnx, "detector_balanced.onnx"))
+if pth.is_file():
+    uploads.append((pth, "detector_balanced.pth"))
+
+for local_path, repo_path in uploads:
+    if not local_path.is_file():
+        print(f"ERROR: missing {local_path}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Uploading {local_path} → {repo_path} ...")
     api.upload_file(
-        path_or_fileobj=local_path,
+        path_or_fileobj=str(local_path),
         path_in_repo=repo_path,
-        repo_id='$REPO_NAME',
-        token='$HF_TOKEN'
+        repo_id=repo_id,
+        token=token,
     )
-    print(f'Uploaded {local_path} to {repo_path}')
+    print(f"  OK: {repo_path}")
 
-print('All files uploaded successfully')
-" || {
-        log_error "Failed to publish to Hugging Face Hub"
-        exit 1
-    }
-
-    log_info "Successfully published to $REPO_NAME"
+print("All uploads completed successfully")
+print(f"Repository: https://huggingface.co/{repo_id}")
+print(f"GGUF URL:   https://huggingface.co/{repo_id}/resolve/main/starlight.gguf")
+print(f"Map URL:    https://huggingface.co/{repo_id}/resolve/main/starlight_gguf_map.json")
+PY
 }
 
-# Main execution
+# ---------------------------------------------------------------------------
 main() {
     echo "============================================================"
-    echo "🚀 Starlight HF Hub Publisher"
+    echo "Starlight HF Publisher (GGUF primary)"
+    echo "============================================================"
+    echo "Repo:  $HF_REPO"
+    echo "GGUF:  $GGUF_PATH"
+    echo "Map:   $MAP_PATH"
+    echo "Card:  $MODEL_CARD_PATH"
     echo "============================================================"
 
     check_dependencies
-    run_scan
-    parse_results
-    update_model_card
+    check_primary_artifacts
+    # Scan pipeline intentionally skipped — publish artifacts only.
+    # Optional offline eval: python3 scanner.py ... (not required for HF).
     publish_to_hf
 
     echo ""
     echo "============================================================"
-    log_info "✅ Publication completed successfully!"
-    log_info "Repository: https://huggingface.co/$REPO_NAME"
+    log_info "Publication completed successfully"
+    log_info "Repository: https://huggingface.co/$HF_REPO"
+    log_info "Stargate download:"
+    log_info "  https://huggingface.co/$HF_REPO/resolve/main/starlight.gguf"
+    log_info "  https://huggingface.co/$HF_REPO/resolve/main/starlight_gguf_map.json"
     echo "============================================================"
 }
 
-# Run main function
 main "$@"

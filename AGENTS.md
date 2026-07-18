@@ -23,6 +23,8 @@ This document provides the essential context for AI agents working on Project St
 ## 4. Core Development Workflow
 All commands are run from the project root unless specified.
 
+This repo is **training-only**. Product inference is **Stargate / Trin** (Go) loading **GGUF** from Hugging Face. GGUF is the source of truth (not ONNX-primary, not a local API on `:8080`).
+
 1.  **Generate Datasets**:
     ```bash
     cd datasets/<contributor_name>
@@ -37,16 +39,31 @@ All commands are run from the project root unless specified.
 3.  **Train Model**:
     Ask user to run the train command is preferred because training duration exceeds most command timeout limit.
     ```bash
-    python3 trainer.py
+    python3 trainer.py --epochs 20 --batch_size 16 --out models/detector_balanced.pth
+    # or: make train
     ```
-    *This saves `detector.onnx` and other model files to the `models/` subdirectory.*
+    *Saves `models/detector_balanced.pth`. Export to GGUF for Stargate (do not treat ONNX as primary).*
 
-4.  **Run Detection**:
+4.  **Export GGUF + parity**:
     ```bash
-    # Scan a single file with full details
-    python3 scanner.py /path/to/image.png --json
+    python3 scripts/export_starlight_gguf.py \
+      --input models/detector_balanced.pth \
+      --output models/starlight.gguf \
+      --name-map models/starlight_gguf_map.json
+    # or: make export-gguf
+    python3 scripts/parity_starlight_gguf.py \
+      --gguf models/starlight.gguf --input models/detector_balanced.pth
+    ```
 
-    # Scan a directory quickly
+5.  **Publish HF** (GGUF primary → `macroadster/starlight-prod`):
+    ```bash
+    HF_TOKEN=hf_... ./scripts/publish_to_hf.sh
+    # or: make publish-hf
+    ```
+
+6.  **Local eval only** (`scanner.py` is not a product API):
+    ```bash
+    python3 scanner.py /path/to/image.png --json
     python3 scanner.py /path/to/images/ --workers 4
     ```
 

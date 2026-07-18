@@ -1,5 +1,8 @@
 # Starlight Bitcoin Steganography Scanning API Specification
 
+> **ARCHIVED — Bitcoin FastAPI removed; inference is Stargate. Training-only repo.**  
+> This document is retained for historical reference only. Do not implement or deploy from this spec. Production inference loads **GGUF** via Stargate/Trin; train/export/publish lives in this repo (see [USAGE.md](../USAGE.md), [hf_guide.md](hf_guide.md)).
+
 **Version**: 1.1  
 **Format**: OpenAPI 3.0  
 **Updated**: December 1, 2025  
