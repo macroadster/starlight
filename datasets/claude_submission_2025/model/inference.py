@@ -207,8 +207,6 @@ class StarlightModel:
 
 def test_inference():
     """Test the inference pipeline"""
-    import sys
-
     print("=" * 60)
     print("Testing Starlight Inference Pipeline")
     print("=" * 60)

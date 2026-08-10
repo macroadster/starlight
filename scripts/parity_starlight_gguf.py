@@ -34,15 +34,10 @@ if str(_ROOT) not in sys.path:
 from scripts.export_starlight_gguf import (  # noqa: E402
     ALIGNMENT,
     GGUF_MAGIC,
-    GGUF_VERSION,
     GGML_F32,
     build_model,
     export_state_dict,
 )
-
-GGUF_TYPE_UINT32 = 4
-GGUF_TYPE_STRING = 8
-GGUF_TYPE_ARRAY = 9
 
 
 class GGUFReader:

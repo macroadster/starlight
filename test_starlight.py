@@ -7,7 +7,6 @@ Directly calls scanner functions to preserve progress bars and real-time output.
 
 import os
 import sys
-import json
 import argparse
 from pathlib import Path
 from collections import defaultdict

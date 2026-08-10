@@ -17,16 +17,14 @@ Features:
 - CLI options: --validate-only, --regen, --limit N
 """
 
-import os
 import io
 import re
-import sys
 import json
 import random
 import logging
 import argparse
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List
 from PIL import Image, ImageDraw
 
 try:

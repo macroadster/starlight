@@ -3,7 +3,6 @@ import numpy as np
 from PIL import Image
 import struct
 import torchvision.transforms as transforms
-import time
 from pathlib import Path
 
 
@@ -22,93 +21,6 @@ def get_submission_dirs(base_path="datasets"):
             submission_dirs.append(item)
 
     return sorted(submission_dirs)
-
-
-def _find_gif_end_pos(raw_bytes):
-    """
-    Parses a GIF file to find the offset of the byte AFTER the trailer (';').
-    Returns -1 if the file is not a valid GIF or is truncated.
-    """
-    if not (raw_bytes.startswith(b"GIF87a") or raw_bytes.startswith(b"GIF89a")):
-        return -1
-
-    pos = 6  # Start after header
-
-    try:
-        # --- Logical Screen Descriptor (7 bytes) ---
-        if pos + 7 > len(raw_bytes):
-            return -1
-        screen_descriptor = raw_bytes[pos : pos + 7]
-        pos += 7
-
-        # --- Global Color Table (if present) ---
-        flags = screen_descriptor[4]
-        if flags & 0x80:  # GCT flag is set
-            color_table_size = 1 << ((flags & 0x07) + 1)
-            if pos + 3 * color_table_size > len(raw_bytes):
-                return -1
-            pos += 3 * color_table_size
-
-        # --- Main loop for blocks ---
-        while pos < len(raw_bytes):
-            block_type = raw_bytes[pos : pos + 1]
-            if not block_type:
-                break
-            pos += 1
-
-            if block_type == b";":  # Trailer
-                return pos
-
-            elif block_type == b"!":  # Extension Block
-                if pos >= len(raw_bytes):
-                    return -1
-                pos += 1  # Skip extension label
-                while True:
-                    if pos >= len(raw_bytes):
-                        return -1
-                    block_size = raw_bytes[pos]
-                    pos += 1
-                    if block_size == 0:
-                        break
-                    if pos + block_size > len(raw_bytes):
-                        return -1
-                    pos += block_size
-
-            elif block_type == b",":  # Image Descriptor Block
-                if pos + 9 > len(raw_bytes):
-                    return -1
-                descriptor = raw_bytes[pos : pos + 9]
-                pos += 9
-
-                img_flags = descriptor[8]
-                if img_flags & 0x80:
-                    lct_size = 1 << ((img_flags & 0x07) + 1)
-                    if pos + 3 * lct_size > len(raw_bytes):
-                        return -1
-                    pos += 3 * lct_size
-
-                if pos >= len(raw_bytes):
-                    return -1
-                pos += 1  # Skip LZW Minimum Code Size
-
-                while True:
-                    if pos >= len(raw_bytes):
-                        return -1
-                    block_size = raw_bytes[pos]
-                    pos += 1
-                    if block_size == 0:
-                        break
-                    if pos + block_size > len(raw_bytes):
-                        return -1
-                    pos += block_size
-
-            else:
-                return -1  # Unknown block type, malformed GIF
-
-        return -1  # Trailer not found
-
-    except (IndexError, struct.error):
-        return -1  # Truncated or malformed
 
 
 def extract_post_tail(raw_bytes, format_hint="auto"):

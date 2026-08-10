@@ -1,3 +1,0 @@
-"""
-Starlight Agents Module
-"""

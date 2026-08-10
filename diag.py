@@ -13,7 +13,6 @@ from PIL import Image
 from pathlib import Path
 from tqdm import tqdm
 import json
-import os
 
 
 class AdvancedStegoChecker:

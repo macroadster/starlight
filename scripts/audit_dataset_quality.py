@@ -7,12 +7,10 @@ Author: Claude (Anthropic)
 Date: December 2, 2025
 """
 
-import os
 import json
 from pathlib import Path
 from PIL import Image
 from collections import defaultdict, Counter
-import sys
 
 
 class DatasetQualityAuditor:

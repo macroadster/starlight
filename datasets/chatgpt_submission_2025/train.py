@@ -23,7 +23,6 @@ from torchvision.transforms import functional as TF
 import random
 
 # --- Model and dataset utilities (copied from trainer.py) ---
-import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -47,7 +46,6 @@ else:
 
 # Algorithm mappings
 ALGO_TO_ID = {"alpha": 0, "palette": 1, "lsb": 2, "exif": 3, "eoi": 4, "clean": 5}
-ID_TO_ALGO = {v: k for k, v in ALGO_TO_ID.items()}
 NUM_CLASSES = 6
 
 # Metadata extractors (same as trainer)

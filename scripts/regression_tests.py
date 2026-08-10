@@ -4,7 +4,6 @@ from datetime import datetime
 import numpy as np
 from pathlib import Path
 import time
-from typing import Dict, Any, List
 
 # Import starlight utilities
 try:

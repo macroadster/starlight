@@ -20,7 +20,6 @@ from pathlib import Path
 from collections import defaultdict, Counter
 import time
 from datetime import datetime
-import numpy as np
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))

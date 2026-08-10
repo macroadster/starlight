@@ -91,29 +91,6 @@ def analyze_lsb(image_path):
     return stats, (lsb_r, lsb_g, lsb_b)
 
 
-def extract_lsb_message(image_path, msg_length=100):
-    """Extract potential hidden message from LSBs"""
-    img = cv2.imread(image_path)
-    if img is None:
-        raise ValueError(f"Cannot read image: {image_path}")
-
-    # Simple sequential LSB extraction
-    lsb_bits = []
-    for channel in range(3):  # RGB channels
-        for i in range(img.shape[0]):
-            for j in range(img.shape[1]):
-                if len(lsb_bits) < msg_length:
-                    lsb_bits.append(int((img[i, j, channel] >> 0) & 1))
-                else:
-                    break
-            if len(lsb_bits) >= msg_length:
-                break
-        if len(lsb_bits) >= msg_length:
-            break
-
-    return np.array(lsb_bits[:msg_length])
-
-
 # demo
 if __name__ == "__main__":
     msg = np.random.randint(0, 2, 100)

@@ -7,8 +7,7 @@ import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
-from scanner import _scan_logic, init_worker
-from scripts.starlight_utils import extract_post_tail
+from scanner import _scan_logic
 import onnxruntime
 
 

@@ -10,9 +10,6 @@ Key Format Rules:
 5. EOI: Raw append after JPEG EOI marker
 """
 
-import os
-import torch
-import torch.nn.functional as F
 from PIL import Image
 import numpy as np
 import argparse

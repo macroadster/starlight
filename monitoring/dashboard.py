@@ -3,7 +3,6 @@ Starlight Real-Time Dashboard Generator
 Generates and updates performance dashboards from metrics data.
 """
 
-import json
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any
@@ -165,12 +164,6 @@ class DashboardGenerator:
 
         print(f"✅ HTML dashboard generated: {output_path}")
         return True
-
-
-def update_dashboard_markdown(metrics: Dict[str, Any]) -> bool:
-    """Legacy function for backward compatibility"""
-    generator = DashboardGenerator()
-    return generator.update_dashboard(metrics)
 
 
 if __name__ == "__main__":

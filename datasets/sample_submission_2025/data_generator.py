@@ -10,8 +10,6 @@ Key Format Rules:
 5. EOI: Raw append after JPEG EOI marker
 """
 
-import os
-
 import io
 
 import sys
@@ -27,8 +25,6 @@ import json
 import warnings
 
 from pathlib import Path
-
-from typing import Callable
 
 from PIL import Image
 import numpy as np

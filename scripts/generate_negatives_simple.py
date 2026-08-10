@@ -11,9 +11,7 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 import random
-from typing import List, Tuple
 import json
-import datetime
 
 
 class SimpleNegativeGenerator:

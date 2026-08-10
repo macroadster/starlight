@@ -6,14 +6,12 @@ Validates that repaired dataset meets all quality requirements
 Run: python scripts/validate_repaired_dataset.py --dataset datasets/grok_submission_2025/training/v3_repaired --output docs/claude/validation_report.json
 """
 
-import os
 import json
 import argparse
 from pathlib import Path
-from collections import Counter, defaultdict
+from collections import Counter
 from PIL import Image
-import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List
 from dataclasses import dataclass, asdict
 
 

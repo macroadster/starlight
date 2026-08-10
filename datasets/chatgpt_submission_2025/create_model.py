@@ -6,7 +6,6 @@ Create and export a simple detector model for ChatGPT submission.
 import torch
 import torch.nn as nn
 import torch.onnx
-import numpy as np
 
 
 class SimpleStegoDetector(nn.Module):

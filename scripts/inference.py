@@ -1,6 +1,5 @@
 # inference.py
 import numpy as np
-from PIL import Image
 import os
 import sys
 import json
@@ -8,24 +7,12 @@ from typing import Dict, Any
 
 # Optional ONNX imports
 try:
-    import onnx
     import onnxruntime as ort
 
     ONNX_AVAILABLE = True
 except ImportError:
     ONNX_AVAILABLE = False
     print("Warning: ONNX not available. Neural network features disabled.")
-
-# Optional Hugging Face imports
-try:
-    from transformers import Pipeline
-
-    HF_AVAILABLE = True
-except ImportError:
-    HF_AVAILABLE = False
-    print(
-        "Warning: Hugging Face transformers not available. Pipeline features disabled."
-    )
 
 # Add scripts directory to import utilities
 scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")

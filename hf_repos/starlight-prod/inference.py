@@ -8,7 +8,6 @@ from typing import Dict, Any
 
 # Optional ONNX imports
 try:
-    import onnx
     import onnxruntime as ort
 
     ONNX_AVAILABLE = True

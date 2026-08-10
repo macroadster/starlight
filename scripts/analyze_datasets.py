@@ -6,13 +6,11 @@ Analyzes current datasets to identify fundamental quality issues
 Run: python scripts/analyze_datasets.py --output docs/claude/dataset_audit.json
 """
 
-import os
 import json
 import argparse
 from pathlib import Path
 from collections import defaultdict, Counter
 from PIL import Image
-import numpy as np
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 import sys

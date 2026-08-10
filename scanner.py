@@ -5,11 +5,9 @@ import argparse
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError
 import os
-import struct
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as transforms
 import time
 import json
 import multiprocessing as mp
@@ -269,10 +267,9 @@ class BalancedStarlightDetector(nn.Module):
 def init_worker(model_path):
     """Initializer for each worker process."""
     global SESSION, MODEL_TYPE, DEVICE
-    import piexif  # Re-import piexif in the worker process
-
-    # Preload commonly used modules to reduce import overhead
-    import PIL.Image
+    # Side-effect preloads for spawned workers (names unused on purpose).
+    import piexif  # noqa: F401
+    import PIL.Image  # noqa: F401
     import numpy as np
 
     # Determine model type and device
@@ -545,12 +542,6 @@ def _scan_logic(image_source, session, extract_message=False):
         return {"file_path": str(image_source) if not isinstance(image_source, bytes) else "memory", "error": error_message}
 
 
-def scan_image_worker(image_path):
-    """The actual scanning logic that runs in each worker process."""
-    global SESSION
-    return _scan_logic(image_path, SESSION, extract_message=False)
-
-
 def scan_batch_worker(image_paths):
     """Process a batch of images for better GPU utilization."""
     global SESSION, MODEL_TYPE, DEVICE
@@ -600,60 +591,6 @@ def _extract_message(image_source, stego_type, predicted_bit_order="none"):
         if message:
             return message
     return None
-
-
-def _process_inference_result(
-    image_source,
-    stego_logits,
-    method_id,
-    method_probs,
-    bit_order_id,
-    extract_message=False,
-):
-    """Process inference results into final result format."""
-    global METHOD_MAP, BIT_ORDER_MAP
-
-    # Use a numerically stable sigmoid to avoid overflow warnings
-    logit = stego_logits[0]
-    if logit >= 0:
-        stego_prob = 1 / (1 + np.exp(-logit))
-    else:
-        stego_prob = np.exp(logit) / (1 + np.exp(logit))
-
-    # Method-specific thresholds
-    thresholds = {0: 0.7, 1: 0.98, 2: 0.95, 3: 0.5, 4: 0.65}
-    threshold = thresholds.get(method_id[0], 0.8)
-    is_stego = stego_prob > threshold
-
-    bit_order_type = BIT_ORDER_MAP.get(bit_order_id[0], "none")
-
-    result = {
-        "file_path": str(image_source) if not isinstance(image_source, bytes) else "memory",
-        "is_stego": bool(is_stego),
-        "stego_probability": float(stego_prob),
-        "method_id": int(method_id[0]),
-        "bit_order": bit_order_type,
-    }
-
-    stego_type = METHOD_MAP.get(method_id[0], "unknown")
-    if is_stego:
-        result["stego_type"] = stego_type
-        result["confidence"] = float(np.max(method_probs))
-
-    if extract_message:
-        try:
-            message = _extract_message(image_source, stego_type, bit_order_type)
-            if message:
-                result["extracted_message"] = message
-                if not is_stego:
-                    result["is_stego"] = True
-                    result["stego_probability"] = max(result["stego_probability"], 0.99)
-                    result["stego_type"] = stego_type
-                    result["confidence"] = float(np.max(method_probs))
-        except Exception as e:
-            result["extraction_error"] = str(e)
-
-    return result
 
 
 class StarlightScanner:

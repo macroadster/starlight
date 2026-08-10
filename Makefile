@@ -30,7 +30,6 @@ publish-hf: ## Publish GGUF to Hugging Face (requires HF_TOKEN)
 test: ## Light sanity checks (imports + export --help)
 	python3 -c "import trainer; assert hasattr(trainer, 'BalancedStarlightDetector'); print('trainer OK')"
 	python3 scripts/export_starlight_gguf.py --help >/dev/null && echo 'export-gguf OK'
-	python3 -c "from starlight.agents.dynamic_loader import dynamic_loader; print('dynamic_loader OK')"
 	@if command -v pytest >/dev/null 2>&1; then \
 		python3 -m pytest tests/test_unified_pipeline.py -q --tb=no 2>/dev/null || true; \
 	fi

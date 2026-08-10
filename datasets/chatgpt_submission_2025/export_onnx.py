@@ -10,7 +10,6 @@ import torch.onnx
 import warnings
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-import os
 
 
 class SteganographyDetector(nn.Module):

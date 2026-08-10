@@ -6,7 +6,6 @@ Checks for impossible label assignments (e.g., alpha on RGB images)
 Run: python scripts/validate_labels.py --datasets "datasets/*_submission_*/stego" --report docs/claude/invalid_labels.md
 """
 
-import os
 import argparse
 from pathlib import Path
 from PIL import Image

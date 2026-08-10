@@ -17,7 +17,6 @@ CHANGES IN v7:
 ✓ All other v6 fixes retained
 """
 
-import sys
 import argparse
 import numpy as np
 from PIL import Image, ImageDraw

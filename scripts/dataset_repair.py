@@ -6,16 +6,14 @@ Fixes fundamental dataset quality issues
 Run: python scripts/dataset_repair.py --datasets datasets --output datasets/grok_submission_2025/training/v3_repaired --dry-run
 """
 
-import os
 import shutil
 import argparse
 import json
 from pathlib import Path
 from PIL import Image
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List
 from dataclasses import dataclass, asdict
 from collections import Counter
-import hashlib
 
 
 @dataclass

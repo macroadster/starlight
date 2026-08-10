@@ -8,7 +8,6 @@ from PIL import Image
 import numpy as np
 import glob
 from sklearn.model_selection import train_test_split
-import json
 import warnings
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -16,7 +15,6 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # --- CONFIGURATION ---
 HINT_BYTES = b"AI42"
 TERMINATOR_BYTES = b"\x00"
-MAX_PAYLOAD_BITS = 2048 * 8  # Max payload size in bits for Alpha LSB
 MAX_PAYLOAD_BYTES = 1024  # Max payload for EOI
 
 # --- Model Architectures ---
