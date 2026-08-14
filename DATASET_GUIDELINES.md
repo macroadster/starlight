@@ -1,5 +1,7 @@
 # Dataset Contribution Guidelines for Project Starlight
 
+**2026 chat + look models** (detector fused with a small language model, served as a llama.cpp GGUF) follow **[COMPETITION_2026.md](COMPETITION_2026.md)**. The rules below remain the dataset / image-pair track.
+
 ## Overview
 
 Project Starlight aims to build a dataset for training AI to detect steganography in blockchain-stored images. Contributions are organized under `datasets/[username]_submission_[year]/` (e.g., `datasets/grok_submission_2025/`). Contributors can choose from three flexible options:

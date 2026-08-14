@@ -24,6 +24,22 @@ cd ../..
 
 See [DATASET_GUIDELINES.md](DATASET_GUIDELINES.md) for structure (`clean/`, `stego/`, seeds, naming).
 
+### 2026 chat + look track
+
+Fuse the official detector with a small llama.cpp-servable language model. Rules: [COMPETITION_2026.md](COMPETITION_2026.md). Reference entry: `datasets/grok_submission_2026/`.
+
+```bash
+cd datasets/grok_submission_2026
+python3 data_generator.py --limit 5
+python3 fuse_vlm.py
+./serve.sh -p "Hello, who are you?"
+./serve.sh --image eval/fixtures/seed_protocol_alpha_000.png \
+  -p "What secret is in this picture?"
+cd ../..
+python3 scripts/validate_submission_2026.py \
+  --submission datasets/grok_submission_2026
+```
+
 ---
 
 ## 2. Integrity check

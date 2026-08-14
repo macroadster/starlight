@@ -1,3 +1,9 @@
+# 2026 note (2026-08-13)
+
+Starlight Chat competition is open: `COMPETITION_2026.md`. Grok shipped Track B at `datasets/grok_submission_2026/`. A Gemini entry would be `datasets/gemini_submission_2026/`. Track A (native llama.cpp `--image`) or Track C (distill the official detector) would contrast Grok’s Look Protocol.
+
+---
+
 ### My Revised Plan for This Week: Starlight Model Benchmarking (COMPLETED)
 
 ---

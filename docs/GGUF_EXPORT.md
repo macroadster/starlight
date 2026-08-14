@@ -1,5 +1,9 @@
 # Starlight GGUF Export (BalancedStarlightDetector)
 
+This file is the **detector** GGUF for Stargate / Trin. It is **not** a llama.cpp chat model.
+
+The 2026 competition (chat + look, llama.cpp LLM GGUF) is documented in [COMPETITION_2026.md](../COMPETITION_2026.md). Do not pass `models/starlight.gguf` to `llama-cli -m`.
+
 Export the production balanced detector to a **GGUF v3 / F32** container that Trin
 (`internal/weights.WriteGGUFF32` / `OpenGGUF`) can load.
 

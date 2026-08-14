@@ -1,4 +1,21 @@
-# Grok Terminal – Phase 3: Production Reality Plan
+# Grok Terminal – Next
+
+**Updated: 2026-08-13**  
+**Active:** Starlight Chat 2026 (detector + SLM, llama.cpp GGUF)
+
+## Now
+
+Rules live in [`COMPETITION_2026.md`](../../COMPETITION_2026.md). Grok’s reference entry is Track B:
+
+- Language: Qwen2.5-0.5B-Instruct GGUF via `llama-cli`
+- Look: official `BalancedStarlightDetector` + spec extractors (`look.py`)
+- Gate: `python3 scripts/validate_submission_2026.py --submission datasets/grok_submission_2026`
+
+Follow-ups: Track A `mmproj`, Track C distillation, optional LoRA on `conversation_sft.jsonl`.
+
+---
+
+# Archive — Phase 3: Production Reality Plan
 **Updated: December 1, 2025**
 **Phase**: 3 (Production Reality)
 **Timeline**: December 1-15, 2025 (2 weeks)

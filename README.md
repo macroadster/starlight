@@ -8,7 +8,9 @@ The blockchain, beginning with the **Bitcoin Genesis Block**, serves as a living
 
 ## Quick Start / Training Pipeline
 
-This repository is **training-only**. The production inference path is **Stargate / Trin** (Go), which loads **GGUF** weights published to Hugging Face. GGUF is the source of truth — not a local Python API on `:8080`.
+This repository is **training-only** for the detector. The production detector path is **Stargate / Trin** (Go), which loads **`models/starlight.gguf`** (Trin format) published to Hugging Face. That detector GGUF is **not** a llama.cpp chat model.
+
+The **2026 chat + look** track ([COMPETITION_2026.md](COMPETITION_2026.md)) adds a separate llama.cpp LLM GGUF that talks, while the official detector looks.
 
 Canonical flow: **dataset → train → export GGUF → publish HF**.
 
@@ -60,7 +62,8 @@ python3 scanner.py /path/to/images/ --workers 4
 | [**USAGE.md**](USAGE.md) | Full train / export / publish workflow |
 | [**docs/GGUF_EXPORT.md**](docs/GGUF_EXPORT.md) | GGUF layout, tensor contract, parity |
 | [**docs/hf_guide.md**](docs/hf_guide.md) | Hugging Face repos and Stargate download URLs |
-| [**DATASET_GUIDELINES.md**](DATASET_GUIDELINES.md) | Contributing datasets |
+| [**DATASET_GUIDELINES.md**](DATASET_GUIDELINES.md) | Contributing datasets (2025 image-pair track) |
+| [**COMPETITION_2026.md**](COMPETITION_2026.md) | 2026 track: detector + SLM, llama.cpp GGUF, chat + look |
 
 ---
 

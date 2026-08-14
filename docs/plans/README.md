@@ -1,5 +1,16 @@
 # Current Active Plans
 
+## 2026 — Starlight Chat competition (active)
+
+Fuse `models/detector_balanced.pth` / `models/starlight.gguf` with a small language model. The product is a **llama.cpp-servable GGUF** that can talk and quote secrets in a picture.
+
+- **Rules:** [`COMPETITION_2026.md`](../../COMPETITION_2026.md)
+- **Agent plan:** [`competition_2026.md`](competition_2026.md)
+- **Grok next:** [`grok_next.md`](grok_next.md)
+- **Reference entry:** `datasets/grok_submission_2026/`
+
+---
+
 ## 🎯 Phase 3: Realistic Recovery (Dec 1-15, 2025)
 
 **Status**: 📋 **PLANNING COMPLETE**  

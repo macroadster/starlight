@@ -1,4 +1,4 @@
-.PHONY: help train export-gguf export-gguf-random parity-gguf publish-hf test docker-build clean
+.PHONY: help train export-gguf export-gguf-random parity-gguf publish-hf test docker-build clean fuse-2026 validate-2026
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -36,6 +36,12 @@ test: ## Light sanity checks (imports + export --help)
 
 docker-build: ## Build training/export image as starlight-train:latest
 	docker build -t starlight-train:latest .
+
+fuse-2026: ## Download SLM GGUF and bind official detector (grok_submission_2026)
+	python3 datasets/grok_submission_2026/fuse_vlm.py
+
+validate-2026: ## Run 2026 competition gates on the Grok reference entry
+	python3 scripts/validate_submission_2026.py --submission datasets/grok_submission_2026
 
 clean: ## Remove local smoke artifacts
 	@rm -f models/starlight_random.gguf

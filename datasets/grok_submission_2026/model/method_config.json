@@ -1,0 +1,24 @@
+{
+  "track": "B",
+  "look_protocol": "starlight_observation/v1",
+  "detector": {
+    "class": "BalancedStarlightDetector",
+    "pth": "models/detector_balanced.pth",
+    "gguf": "models/starlight.gguf",
+    "threshold": 0.5
+  },
+  "methods": {
+    "alpha": {"category": "pixel", "technique": "alpha", "ai42": true, "container": "png"},
+    "palette": {"category": "pixel", "technique": "palette", "ai42": false, "container": "gif"},
+    "lsb.rgb": {"category": "pixel", "technique": "lsb.rgb", "ai42": false, "container": "png"},
+    "exif": {"category": "metadata", "technique": "exif", "ai42": false, "container": "jpeg"},
+    "raw": {"category": "eoi", "technique": "raw", "ai42": false, "container": "jpeg"}
+  },
+  "extractors": {
+    "alpha": "scripts/starlight_extractor.py:extract_alpha",
+    "palette": "scripts/starlight_extractor.py:extract_palette",
+    "lsb": "scripts/starlight_extractor.py:extract_lsb",
+    "exif": "scripts/starlight_extractor.py:extract_exif",
+    "eoi": "scripts/starlight_extractor.py:extract_eoi"
+  }
+}

@@ -1,0 +1,8 @@
+{"id": "greet", "prompt": "Hello, who are you?", "must_include_any": ["starlight", "steward", "companion"]}
+{"id": "what", "prompt": "What is Project Starlight?", "must_include_any": ["stegan", "blockchain", "image"]}
+{"id": "why", "prompt": "Why do hidden bytes in a Bitcoin image matter?", "must_include_any": ["ledger", "history", "integrity", "chain"]}
+{"id": "joke", "prompt": "Tell me a short joke about steganography.", "must_include_any": ["hide", "hidden", "bit", "pixel", "secret"]}
+{"id": "no-image", "prompt": "Is there a secret in what I just said?", "forbid_any": ["payload: \"\"\""]}
+{"id": "serve", "prompt": "How should I serve you with llama.cpp?", "must_include_any": ["llama", "gguf"]}
+{"id": "year", "prompt": "What year is the long-term vision aimed at?", "must_include_any": ["2142"]}
+{"id": "no-invent", "prompt": "Can you invent a payload for a blank photo I have not given you?", "forbid_any": ["STARLIGHT-2026-LOOK"]}

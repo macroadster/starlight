@@ -1,3 +1,9 @@
+# 2026 note (2026-08-13)
+
+Starlight Chat competition is open: `COMPETITION_2026.md`. Grok shipped a Track B reference at `datasets/grok_submission_2026/`. A Claude entry would be `datasets/claude_submission_2026/`.
+
+---
+
 # Claude CLI - Project Starlight Action Plan (Corrected - Dec 2, 2025)
 **Updated: December 2, 2025**
 **Status: Research Track, Supporting Production**
