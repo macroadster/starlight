@@ -1,0 +1,6 @@
+{
+  "submission": "codex_submission_2026",
+  "track": "B",
+  "detector": "models/detector_balanced.pth",
+  "methods": ["alpha", "palette", "lsb.rgb", "exif", "raw"]
+}

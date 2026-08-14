@@ -1,0 +1,21 @@
+{
+  "track": "B",
+  "llm_gguf": "model/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+  "mmproj_gguf": null,
+  "detector": "models/detector_balanced.pth",
+  "detector_gguf": "models/starlight.gguf",
+  "hf_repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+  "hf_file": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+  "arch": "qwen2",
+  "params": "0.5B",
+  "quant": "Q4_K_M",
+  "chat_template": "chatml",
+  "system_prompt": "model/system_prompt.txt",
+  "look": "look.py",
+  "fuse": "fuse_vlm.py",
+  "serve": {
+    "cli": "llama-cli -m {llm_gguf} -sys \"$(python3 look.py {image} --block)\" -p {prompt}",
+    "chat": "llama-cli -m {llm_gguf} --system-prompt-file model/system_prompt.txt -p {prompt}",
+    "server": "llama-server -m {llm_gguf} --port 8081"
+  }
+}
