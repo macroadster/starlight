@@ -1,0 +1,25 @@
+{
+  "track": "B",
+  "llm_gguf": "model/qwen2.5-0.5b-instruct-q8_0.gguf",
+  "mmproj_gguf": null,
+  "detector": "models/detector_balanced.pth",
+  "detector_gguf": "models/starlight.gguf",
+  "hf_repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+  "hf_file": "qwen2.5-0.5b-instruct-q8_0.gguf",
+  "llm_sha256": "ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e",
+  "arch": "qwen2",
+  "params": "0.5B",
+  "quant": "Q8_0",
+  "chat_template": "chatml",
+  "system_prompt": "model/system_prompt.txt",
+  "look": "look.py",
+  "fuse": "fuse_vlm.py",
+  "quote_lock": "look.py --gbnf (llama.cpp GBNF grammar)",
+  "sampling": {"temp": 0.3, "seed": 2142},
+  "serve": {
+    "product": "./serve.sh --image {image} -p {prompt}",
+    "cli": "llama-cli -m {llm_gguf} -sys \"$(python3 look.py {image} --block)\" --grammar \"$(python3 look.py {image} --gbnf)\" -p {prompt} --temp 0.3 --single-turn --no-conversation",
+    "chat": "llama-cli -m {llm_gguf} --system-prompt-file model/system_prompt.txt -p {prompt} --temp 0.3 --single-turn --no-conversation",
+    "server": "llama-server -m {llm_gguf} --port 8081"
+  }
+}

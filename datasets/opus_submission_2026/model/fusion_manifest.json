@@ -1,0 +1,19 @@
+{
+  "track": "B",
+  "created_utc": "2026-10-13T21:14:48Z",
+  "llm_gguf": "model/qwen2.5-0.5b-instruct-q8_0.gguf",
+  "llm_bytes": 675710816,
+  "llm_sha256": "ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e",
+  "hf_repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+  "hf_file": "qwen2.5-0.5b-instruct-q8_0.gguf",
+  "arch": "qwen2",
+  "quant": "Q8_0",
+  "detector": "models/detector_balanced.pth",
+  "detector_sha256": "54b4cccdcba6a2b41f71efeb0715bcdd68ea462b52c822e38901e61d434488be",
+  "detector_gguf": "models/starlight.gguf",
+  "detector_gguf_sha256": "1243579c3482d621923c065b8016a0caa5c0764436fbe8c9a8b29fb2eb423dc4",
+  "llama_cpp": "10150 (dee2a846b)",
+  "look": "look.py",
+  "system_prompt": "model/system_prompt.txt",
+  "note": "Track B: llama.cpp loads only the SLM GGUF. look.py runs the official BalancedStarlightDetector plus spec extractors, injects the observation block, and emits a GBNF grammar that pins the verbatim payload in the reply."
+}

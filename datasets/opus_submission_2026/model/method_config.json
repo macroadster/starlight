@@ -1,0 +1,21 @@
+{
+  "track": "B",
+  "look_protocol": "starlight_observation/v1",
+  "quote_lock": "GBNF grammar from look.py --gbnf; pins the verbatim payload, frees one trailing sentence",
+  "detector": {
+    "class": "BalancedStarlightDetector",
+    "pth": "models/detector_balanced.pth",
+    "gguf": "models/starlight.gguf",
+    "threshold": 0.5,
+    "heuristics": "disabled (raw network output; extraction is done by look.py)"
+  },
+  "methods": {
+    "alpha": {"category": "pixel", "technique": "alpha", "ai42": true, "container": "png, webp", "bit_order": ["lsb-first", "msb-first"]},
+    "palette": {"category": "pixel", "technique": "palette", "ai42": false, "container": "gif, indexed png", "bit_order": ["lsb-first", "msb-first"]},
+    "lsb.rgb": {"category": "pixel", "technique": "lsb.rgb", "ai42": false, "container": "png, bmp, webp (rgb or rgba)", "bit_order": ["lsb-first", "msb-first"]},
+    "exif": {"category": "metadata", "technique": "exif", "ai42": false, "container": "jpeg, png, webp", "encodings": ["ASCII", "UNICODE", "JIS", "undefined", "bare utf-8"]},
+    "raw": {"category": "eoi", "technique": "raw", "ai42": false, "container": "jpeg (also png, gif, webp, bmp tails)", "prefix": "optional AI42"}
+  },
+  "selection": "AI42 marker > container field (exif, raw) > bare pixel stream; ties prefer the detector's predicted method",
+  "bare_stream_filter": "null terminator, strict UTF-8, printable, >=4 chars, >=3 distinct, letters+spaces >= 60%"
+}
