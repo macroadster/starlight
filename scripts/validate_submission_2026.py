@@ -24,6 +24,8 @@ REQUIRED_FILES = [
     "eval/stego_qa.jsonl",
 ]
 TRACK_B_FILES = ["look.py", "serve.sh", "fuse_vlm.py"]
+# v1.1: the observation is a hint. A payload field means the secret was
+# handed to the model, so the block is not a legal scored prompt.
 OBS_RE = re.compile(
     r"<starlight_observation>\s*"
     r"status:\s*(stego|clean|unknown)\s*"
@@ -31,11 +33,11 @@ OBS_RE = re.compile(
     r"confidence:\s*([0-9]*\.?[0-9]+)\s*"
     r"bit_order:\s*(lsb-first|msb-first|none)\s*"
     r"detector:\s*(\S+)\s*"
-    r'payload:\s*"""(.*?)"""\s*'
     r"(?:notes:\s*(.*?)\s*)?"
     r"</starlight_observation>",
     re.DOTALL,
 )
+PAYLOAD_FIELD_RE = re.compile(r'payload:\s*"""')
 SIZE_CAP = 2 * 1024**3
 LIGHT_CAP = 800 * 1024**2
 
@@ -104,6 +106,12 @@ def check_look_schema(submission: Path, fixture: Optional[Path]) -> Dict[str, An
             "look_schema",
             False,
             f"exit {proc.returncode}: {(proc.stderr or '')[-300:]}",
+        )
+    if PAYLOAD_FIELD_RE.search(text):
+        return _ok(
+            "look_schema",
+            False,
+            "payload field in the observation block (v1.1: the prompt must not carry the secret)",
         )
     match = OBS_RE.search(text)
     return _ok(
@@ -210,12 +218,29 @@ def check_stego_qa(submission: Path) -> Dict[str, Any]:
     )
 
 
-def check_look_eval(submission: Path) -> Dict[str, Any]:
-    """Run look.py against public stego_qa fixtures when they exist on disk."""
+def _secret_fragments(payload: str) -> List[str]:
+    """Contiguous slices a prompt must not contain. Short secrets use the whole line."""
+    text = payload.strip()
+    if not text:
+        return []
+    if len(text) <= 12:
+        return [text]
+    return [text[i : i + 8] for i in range(0, len(text) - 7, 8)]
+
+
+def _leaks(haystack: str, payload: str) -> Optional[str]:
+    for frag in _secret_fragments(payload):
+        if frag and frag in haystack:
+            return frag
+    return None
+
+
+def check_look_leak(submission: Path) -> Dict[str, Any]:
+    """v1.1: look.py may hint status and method. It must not reveal the secret."""
     look = submission / "look.py"
     qa_path = submission / "eval" / "stego_qa.jsonl"
     if not look.is_file() or not qa_path.is_file():
-        return _ok("look_eval", False, "look.py or stego_qa.jsonl missing")
+        return _ok("look_leak", False, "look.py or stego_qa.jsonl missing")
     rows = []
     for line in qa_path.read_text(encoding="utf-8").splitlines():
         if line.strip():
@@ -230,43 +255,55 @@ def check_look_eval(submission: Path) -> Dict[str, Any]:
         if not img.is_file():
             failed.append(f"{rec.get('id')}: missing {rel}")
             continue
-        try:
-            proc = subprocess.run(
-                [sys.executable, str(look), str(img), "--json"],
-                cwd=str(ROOT),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired:
-            failed.append(f"{rec.get('id')}: look timeout")
+        outputs: List[str] = []
+        timed_out = False
+        for flag in ("--json", "--block"):
+            try:
+                proc = subprocess.run(
+                    [sys.executable, str(look), str(img), flag],
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                failed.append(f"{rec.get('id')}: look {flag} timeout")
+                timed_out = True
+                break
+            if proc.returncode != 0:
+                failed.append(f"{rec.get('id')}: look {flag} exit {proc.returncode}")
+                timed_out = True
+                break
+            outputs.append(proc.stdout or "")
+        if timed_out:
             continue
-        if proc.returncode != 0:
-            failed.append(f"{rec.get('id')}: look exit {proc.returncode}")
-            continue
+        json_text, block_text = outputs
         try:
-            obs = json.loads(proc.stdout)
+            obs = json.loads(json_text)
         except json.JSONDecodeError:
             failed.append(f"{rec.get('id')}: look not JSON")
             continue
         tested += 1
         payload = rec.get("payload") or ""
         clean = bool(rec.get("clean"))
-        got = (obs.get("payload") or "").strip()
         status = obs.get("status")
+        if "payload" in obs:
+            failed.append(f"{rec.get('id')}: JSON still has a payload field")
+        if PAYLOAD_FIELD_RE.search(block_text):
+            failed.append(f"{rec.get('id')}: block still has a payload field")
         if clean:
-            if status == "stego" and got:
-                failed.append(f"{rec.get('id')}: invented payload {got!r}")
-        elif payload and payload not in got:
-            failed.append(
-                f"{rec.get('id')}: expected payload missing (got {got[:80]!r})"
-            )
+            if status == "stego":
+                failed.append(f"{rec.get('id')}: clean image reported as stego")
+            continue
+        leaked = _leaks(json_text, payload) or _leaks(block_text, payload)
+        if leaked:
+            failed.append(f"{rec.get('id')}: prompt leaks secret fragment {leaked!r}")
     if tested == 0:
-        return _ok("look_eval", False, "no on-disk fixtures to score")
+        return _ok("look_leak", False, "no on-disk fixtures to score")
     return _ok(
-        "look_eval",
+        "look_leak",
         not failed,
-        f"{tested} fixtures ok" if not failed else f"{tested} tested; {failed}",
+        f"{tested} fixtures told the model nothing" if not failed else f"{tested} tested; {failed}",
     )
 
 
@@ -316,7 +353,7 @@ def run(submission: Path, skip_llama: bool) -> Tuple[List[Dict[str, Any]], bool]
         check_stego_qa(submission),
         check_detector(serve),
         check_look_schema(submission, fixture),
-        check_look_eval(submission),
+        check_look_leak(submission),
         lightweight_note(gguf, required=not skip_llama),
     ]
     if skip_llama:

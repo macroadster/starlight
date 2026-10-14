@@ -8,6 +8,8 @@
 
 These rules define how a 2026 submission is built, served, and scored. The 2025 dataset track remains valid for labeled image pairs. 2026 is a **new product track**: a lightweight conversational model that can look at a picture and tell the secrets hidden in it.
 
+**Amendment (2026-10-14, v1.1).** Secret-recovery points belong to the model that was not handed the secret. A Look preprocessor may say that a payload seems present and name a method. It must not put the decoded text in the prompt, and a grammar or template must not pin that text into the reply. v1.0 scored the reply for containing a substring the preprocessor had already written down. That measured the extractor, not the model. Entries merged before this amendment are not rescored, and they are not a template for a new entry.
+
 ---
 
 ## 1. Mission
@@ -60,7 +62,7 @@ There are **two different GGUF files** in this project. Do not mix them up:
 | **B — Detector-conditioned SLM** (reference) | `model.gguf` + Look Protocol | `llama-cli -m model.gguf -sys "$(python3 look.py pic.png --block)" -p "What secret is in this picture?"` |
 | **C — Distilled VLM** | `model.gguf` [+ `mmproj.gguf`] | Same as A, but the vision tower is a distillation of the official detector |
 
-Track B is legal because llama.cpp does not load Starlight’s Trin-format `starlight.gguf` as a CLIP `mmproj`. Track B still uses llama.cpp as the **only** language engine. The Look preprocessor may run the official detector and the spec extractors; it must not call a cloud API or a second LLM.
+Track B is legal because llama.cpp does not load Starlight’s Trin-format `starlight.gguf` as a CLIP `mmproj`. Track B still uses llama.cpp as the **only** language engine. The Look preprocessor may run the official detector. It must not call a cloud API or a second LLM. It also must not hand the model the decoded secret: see §3.3. Extractors may run, but their output stays out of the prompt that the secret-recovery score is measured on.
 
 A submission may ship **one** LLM GGUF that also stores extra `starlight.*` tensors or metadata. llama.cpp must still load the language tensors. Extra tensors that break `llama-cli -m` fail the serve gate.
 
@@ -112,29 +114,29 @@ status: stego|clean|unknown
 method: alpha|palette|lsb.rgb|exif|raw|none
 confidence: 0.000-1.000
 bit_order: lsb-first|msb-first|none
-detector: detector_balanced.pth|starlight.gguf|<distillation-id>
-payload: """<exact extracted text or empty>"""
-notes: <one line, optional>
+detector: starlight.gguf|detector_balanced.pth|<distillation-id>
 </starlight_observation>
 ```
 
-Rules for the block:
+The block is a hint, not the answer.
 
-- `payload` is empty when nothing decodes.
-- `payload` must be the extractor output, not a paraphrase.
-- Public seeds **must not** contain the three-quote delimiter `"""` or raw newlines inside `payload` (keep secrets to one UTF-8 line).
-- The language model is instructed to quote `payload` exactly when it is non-empty.
-- The preprocessor uses `models/detector_balanced.pth` at look time. `models/starlight.gguf` is the same weights in the Trin container; a Python Track B `look.py` may load the `.pth` when the Trin file cannot be executed in-process. A Track C distillation must still name the teacher.
+- It has no `payload` field. The decoded secret must not appear in this block, in the system prompt, or anywhere else in the llama.cpp prompt for a scored look.
+- `status: stego` means the detector thinks a payload is present. It does not mean the bytes were decoded, and it must not be followed by those bytes.
+- `notes` may name a failure ("extract failed", "low confidence"). Notes must not contain the secret or a distinctive fragment of it (any contiguous 8 characters of the labeled payload).
+- Public seeds stay one UTF-8 line. That is so a quote is unambiguous, not so the line can be pasted into the prompt.
+- The language model has to recover the text from the picture. Repeating a string the preprocessor supplied does not count.
+- A grammar, logit bias, or template that pins the labeled payload (or those same 8-character fragments) into the reply scores 0 for secret recovery on that image. A grammar may still force the shape of the reply ("quote, then one sentence") as long as the quoted span is not fixed by the grammar.
+- The scored look runs the official detector as `models/starlight.gguf` through Trin (`pkg/starlight`) or Stargate. `models/detector_balanced.pth` is the same weights and may be used to debug. A secret-recovery run that only loads the `.pth` is not the product path. A Track C distillation must still name the teacher.
 
 **Who is scored for the secret?**
 
 | Gate | What is graded | Track |
 |------|----------------|-------|
-| Look preprocessor (must-pass) | `look.py --json` payload is an exact substring of the labeled secret (or empty on clean) | B, C |
-| Generation quote (scored, §6.2) | `llama-cli --single-turn` reply contains that same substring | A, B, C |
-| Native `--image` (must-pass on A) | `llama-cli --mmproj --image` reply contains the secret | A |
+| Look hint (must-pass) | `look.py --json` has a legal status and method, and neither the block nor the JSON contains the labeled secret | B, C |
+| Blind quote (scored, §6.2) | With the hint and **without** the payload in the prompt, the `llama-cli --single-turn` reply contains the secret as a contiguous substring | A, B, C |
+| Native `--image` (must-pass on A) | `llama-cli --mmproj --image` reply contains the secret, and no preprocessor wrote it into the prompt | A |
 
-Track B is **LLM GGUF + Look preprocessor**, not a vision-capable standalone GGUF. The talk engine is still only llama.cpp.
+Track B is **LLM GGUF + detector hint**, not a vision-capable standalone GGUF, and not an extractor with a grammar. The talk engine is still only llama.cpp. The seeing is the official detector. The quote has to be the model's.
 
 ### 3.4 Methods that must be attempted
 
@@ -201,7 +203,8 @@ datasets/<handle>_submission_2026/
   "look": "look.py",
   "serve": {
     "cli": "llama-cli -m {llm_gguf} -sys \"$(python3 look.py {image} --block)\" -p {prompt}",
-    "server": "llama-server -m {llm_gguf} --port 8081"
+    "server": "llama-server -m {llm_gguf} --port 8081",
+    "note": "look.py --block must not contain the decoded payload; see §3.3"
   }
 }
 ```
@@ -226,6 +229,9 @@ Forbidden:
 - Shipping only a Python `scanner.py` wrapper with no llama.cpp GGUF.
 - Shipping the Trin `starlight.gguf` alone and claiming it is llama.cpp-servable. It is not. That file is the **detector** container for Stargate / Trin.
 - Fine-tuning that discards the detector without a distillation report.
+- Putting the decoded payload in the prompt, then scoring the model for repeating it.
+- A grammar, logit bias, or chat template that contains the labeled secret or forces it into the reply.
+- Counting a PyTorch-only `look.py` as the scored look. The product path runs `models/starlight.gguf`.
 - Encrypted, illegal, or non-synthetic payloads in public seeds.
 
 ---
@@ -245,11 +251,11 @@ python3 scripts/validate_submission_2026.py \
 |------|----------------|
 | **Layout** | Required files in §4 exist; `serve.json` parses. |
 | **Serve** | `llama-cli -m <gguf> -p "Hi" -n 32 --single-turn --no-conversation` exits 0 and prints tokens. |
-| **Look schema** | Track B/C: `look.py <stego fixture> --block` matches §3.3. |
-| **Look recovery** | Track B/C: `look.py --json` recovers each public stego payload and invents none on public cleans. |
+| **Look schema** | Track B/C: `look.py <stego fixture> --block` matches §3.3 and does not contain a `payload` field. |
+| **Look leak** | Track B/C: on every public fixture, `look.py --json` and `look.py --block` do not contain the labeled secret or any contiguous 8-character fragment of it. A clean fixture must not come back `status: stego`. |
 | **License** | Model card states Apache-2.0 or MIT (or compatible) for weights the submitter owns, plus base-model license. |
 
-Generation quote and clean-honesty of the **LLM reply** are scored in §6.2 (not an automatic disqualification if `look.py` is correct). A fabricated secret is any quoted string presented as a payload that does not appear in the observation `payload` field.
+The blind quote and clean-honesty of the **LLM reply** are scored in §6.2. Failing the leak gate is a failed submission, not a partial score. A fabricated secret is any quoted string presented as a payload that was not in the picture.
 
 ### 6.2 Scoring (100 points)
 
@@ -257,9 +263,9 @@ Generation quote and clean-honesty of the **LLM reply** are scored in §6.2 (not
 |----------|--------|-------|
 | Serve / GGUF compliance | 15 | llama.cpp load, documented recipe, size cap |
 | Casual conversation | 20 | 8 public prompts; judged coherent and on-mission |
-| Secret recovery | 30 | Exact payload substring; all five methods on hidden set |
+| Secret recovery | 30 | Exact payload substring in the reply; the prompt did not contain it; no pinning grammar; all five methods on the hidden set |
 | Clean-image honesty | 15 | No invented payloads |
-| Detector integration | 10 | Official weights or proven distillation |
+| Detector integration | 10 | Scored look ran `models/starlight.gguf` through Trin or Stargate, or a distillation with a parity table |
 | Lightweight | 10 | Full points if combined GGUF ≤ 800 MiB; linear fade to 0 at 2.0 GiB |
 
 Ties break on secret-recovery, then size.
@@ -344,10 +350,10 @@ Maintainers run the public gate, then the hidden look/chat set. Results go on `m
 `datasets/grok_submission_2026/` is Track B:
 
 - Language: a small instruct GGUF (Qwen2.5-0.5B-Instruct class) served only by llama.cpp.
-- Vision / secrets: official `BalancedStarlightDetector` + spec extractors via `look.py`.
+- Hint: official `BalancedStarlightDetector` via `look.py`, status and method only.
 - Product command: `serve.sh` (wraps `llama-cli`).
 
-That entry exists to make the rules executable, not to freeze the architecture. Tracks A and C are welcome and will outscore B on “native look” if they keep recovery and honesty.
+That entry was written against v1.0, which let the preprocessor hand the model the decoded text. It is still the layout reference. It is not a solved secret-recovery entry under v1.1, and neither is any other submission that quotes by repeating `look.py`. Tracks A and C remain welcome. They outscore B on native look only when the reply contains a secret the prompt did not already hold.
 
 ---
 
@@ -355,8 +361,8 @@ That entry exists to make the rules executable, not to freeze the architecture. 
 
 | Field | Value |
 |-------|--------|
-| Version | 1.0 |
-| Date | 2026-08-13 |
-| Author | Grok (xAI), Project Starlight |
-| Supersedes | none (new track) |
+| Version | 1.1 |
+| Date | 2026-10-14 |
+| Author | Grok (xAI), Project Starlight; v1.1 amendment after the blind-quote review |
+| Supersedes | 1.0 (2026-08-13) on secret recovery only; layout, tracks, and size caps are unchanged |
 | Related | [DATASET_GUIDELINES.md](DATASET_GUIDELINES.md), [docs/STEGO_FORMAT_SPEC.md](docs/STEGO_FORMAT_SPEC.md), [docs/GGUF_EXPORT.md](docs/GGUF_EXPORT.md) |
