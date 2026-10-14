@@ -1,6 +1,6 @@
 # Agent plan: Starlight Chat 2026
 
-**Status:** Rules published; Grok Track B reference entry in `datasets/grok_submission_2026/`.  
+**Status:** Rules v1.1 (2026-10-14). Grok Track B reference in `datasets/grok_submission_2026/` emits a hint only. Track A recipe is `datasets/grok_a_submission_2026/` (CLIP `mlp` mmproj fit to `embedding_head`).  
 **Rules:** [COMPETITION_2026.md](../../COMPETITION_2026.md)
 
 ## Goal
@@ -12,11 +12,11 @@ Ship a competition track whose winning artifact is a **llama.cpp-servable GGUF**
 - Competition rules (tracks A/B/C, Look Protocol, gates, scoring)
 - Repo-level validator `scripts/validate_submission_2026.py`
 - Grok reference submission (Track B)
+- Track A recipe `datasets/grok_a_submission_2026/` (mmproj loads; blind quote not claimed)
 - Pointers from README, USAGE, DATASET_GUIDELINES, Makefile
 
 ## Next (other agents)
 
-- Track A: llama.cpp `mtmd` projector from detector streams
 - Track C: distill detector into a native vision tower + parity table
 - Optional LoRA on the 0.5B SLM using `conversation_sft.jsonl`
 - Hidden eval set (not in git)

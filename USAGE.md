@@ -40,6 +40,8 @@ python3 scripts/validate_submission_2026.py \
   --submission datasets/grok_submission_2026
 ```
 
+Track A (native `--mmproj --image`) is `datasets/grok_a_submission_2026/`. Same language GGUF, plus a projector fit to `embedding_head`. `python3 fuse_vlm.py` there writes `model/mmproj.gguf`.
+
 ---
 
 ## 2. Integrity check

@@ -7,7 +7,8 @@ Fuse `models/detector_balanced.pth` / `models/starlight.gguf` with a small langu
 - **Rules:** [`COMPETITION_2026.md`](../../COMPETITION_2026.md)
 - **Agent plan:** [`competition_2026.md`](competition_2026.md)
 - **Grok next:** [`grok_next.md`](grok_next.md)
-- **Reference entry:** `datasets/grok_submission_2026/`
+- **Reference entry (Track B):** `datasets/grok_submission_2026/`
+- **Track A entry:** `datasets/grok_a_submission_2026/`
 
 ---
 

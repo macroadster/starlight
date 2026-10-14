@@ -1,0 +1,29 @@
+{
+  "track": "A",
+  "llm_gguf": "model/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+  "mmproj_gguf": "model/mmproj.gguf",
+  "detector": "models/detector_balanced.pth",
+  "detector_gguf": "models/starlight.gguf",
+  "hf_repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+  "hf_file": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+  "arch": "qwen2",
+  "params": "0.5B",
+  "quant": "Q4_K_M",
+  "chat_template": "chatml",
+  "system_prompt": "model/system_prompt.txt",
+  "fuse": "fuse_vlm.py",
+  "vision": {
+    "projector": "mlp",
+    "image_size": 32,
+    "patch_size": 32,
+    "embedding_length": 64,
+    "source": "BalancedStarlightDetector.embedding_head",
+    "llama_cpp": "b10150"
+  },
+  "serve": {
+    "cli": "llama-cli -m {llm_gguf} --mmproj {mmproj_gguf} --image {image} -p {prompt} -n 128 --single-turn --no-conversation",
+    "chat": "llama-cli -m {llm_gguf} --mmproj {mmproj_gguf} --system-prompt-file model/system_prompt.txt -p {prompt} -n 128 --single-turn --no-conversation",
+    "server": "llama-server -m {llm_gguf} --mmproj {mmproj_gguf} --port 8081",
+    "note": "Track A native --image. The mmproj is a linear fit to embedding_head. It does not contain the decoded payload."
+  }
+}

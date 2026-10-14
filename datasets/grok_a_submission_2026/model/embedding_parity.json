@@ -1,0 +1,63 @@
+{
+  "track": "A",
+  "teacher": "models/detector_balanced.pth",
+  "teacher_tensor": "embedding_head",
+  "image_size": 32,
+  "patch_size": 32,
+  "pool": 4,
+  "ridge_lambda": 10.0,
+  "n_train": 72,
+  "train_cosine_mean": 0.7075,
+  "train_cosine_min": 0.1467,
+  "heldout_cosine_mean": 0.54,
+  "heldout": [
+    {
+      "image": "clean_seed_common_sense_lsb_rgb_000.png",
+      "cosine": 0.9171,
+      "target_l2": 5.6469,
+      "pred_l2": 3.4256
+    },
+    {
+      "image": "clean_seed_protocol_alpha_000.png",
+      "cosine": 0.9251,
+      "target_l2": 5.7621,
+      "pred_l2": 3.4315
+    },
+    {
+      "image": "sample_seed_raw_000.jpg",
+      "cosine": 0.3015,
+      "target_l2": 3.2762,
+      "pred_l2": 3.3225
+    },
+    {
+      "image": "seed_2142_exif_000.jpg",
+      "cosine": 0.1254,
+      "target_l2": 5.7136,
+      "pred_l2": 3.3952
+    },
+    {
+      "image": "seed_common_sense_lsb_rgb_000.png",
+      "cosine": 0.9184,
+      "target_l2": 4.2698,
+      "pred_l2": 3.4255
+    },
+    {
+      "image": "seed_hidden_history_palette_000.gif",
+      "cosine": 0.7268,
+      "target_l2": 3.8407,
+      "pred_l2": 3.4556
+    },
+    {
+      "image": "seed_protocol_alpha_000.png",
+      "cosine": -0.1343,
+      "target_l2": 5.9427,
+      "pred_l2": 3.4315
+    }
+  ],
+  "gelu_shift": 32.0,
+  "gelu_tanh_recon_max_abs": 0.0,
+  "gelu_erf_recon_max_abs": 0.0,
+  "lift_identity_max_abs": 0.0,
+  "conv_weight_max_abs": 0.0013025380903854966,
+  "note": "Cosine is embedding_head versus the mmproj's linear patch on mtmd RGB. Clean covers track the teacher when the look is in the pixels. Alpha mismatches the clean twin because mtmd drops the alpha plane. EXIF and EOI live outside the pixels. The projector does not store payload text."
+}

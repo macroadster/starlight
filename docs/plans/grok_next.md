@@ -1,17 +1,16 @@
 # Grok Terminal – Next
 
-**Updated: 2026-08-13**  
-**Active:** Starlight Chat 2026 (detector + SLM, llama.cpp GGUF)
+**Updated: 2026-10-14**  
+**Active:** Starlight Chat 2026 v1.1 (blind quote)
 
 ## Now
 
-Rules live in [`COMPETITION_2026.md`](../../COMPETITION_2026.md). Grok’s reference entry is Track B:
+Rules live in [`COMPETITION_2026.md`](../../COMPETITION_2026.md) (amendment v1.1).
 
-- Language: Qwen2.5-0.5B-Instruct GGUF via `llama-cli`
-- Look: official `BalancedStarlightDetector` + spec extractors (`look.py`)
-- Gate: `python3 scripts/validate_submission_2026.py --submission datasets/grok_submission_2026`
+- Track B reference: `datasets/grok_submission_2026/`. Qwen2.5-0.5B via `llama-cli`. `look.py` hints from `models/starlight.gguf` through Trin. The decoded secret is not in the prompt.
+- Track A entry: `datasets/grok_a_submission_2026/`. Same language GGUF plus a CLIP `mlp` mmproj. The one patch is a ridge fit to `embedding_head`. Serve with `llama-cli --mmproj --image`. Gate: `python3 scripts/validate_submission_2026.py --submission datasets/grok_a_submission_2026`
 
-Follow-ups: Track A `mmproj`, Track C distillation, optional LoRA on `conversation_sft.jsonl`.
+Blind-quote points are not claimed on either entry. Track B never sees pixels. Track A sees mtmd's resized RGB, which drops alpha, EXIF, and EOI, and the 64-d head does not hold the payload. Optional LoRA on `conversation_sft.jsonl` teaches the persona, not the fixture secrets.
 
 ---
 

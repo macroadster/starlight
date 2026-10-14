@@ -24,6 +24,7 @@ REQUIRED_FILES = [
     "eval/stego_qa.jsonl",
 ]
 TRACK_B_FILES = ["look.py", "serve.sh", "fuse_vlm.py"]
+TRACK_A_FILES = ["serve.sh", "fuse_vlm.py"]
 # v1.1: the observation is a hint. A payload field means the secret was
 # handed to the model, so the block is not a legal scored prompt.
 OBS_RE = re.compile(
@@ -70,11 +71,32 @@ def resolve_gguf(submission: Path, serve: Dict[str, Any]) -> Optional[Path]:
     return None
 
 
+def resolve_mmproj(submission: Path, serve: Dict[str, Any]) -> Optional[Path]:
+    raw = serve.get("mmproj_gguf") or ""
+    if not raw or raw == "null":
+        return None
+    candidates = [
+        Path(raw),
+        submission / raw,
+        ROOT / raw,
+        submission / "model" / Path(raw).name,
+    ]
+    env = os.environ.get("STARLIGHT_MMPROJ_GGUF")
+    if env:
+        candidates.insert(0, Path(env))
+    for c in candidates:
+        if c.is_file():
+            return c.resolve()
+    return None
+
+
 def check_layout(submission: Path, serve: Dict[str, Any]) -> Dict[str, Any]:
     missing = [rel for rel in REQUIRED_FILES if not (submission / rel).is_file()]
     track = str(serve.get("track", "B")).upper()
     if track in {"B", "C"}:
         missing.extend(rel for rel in TRACK_B_FILES if not (submission / rel).is_file())
+    elif track == "A":
+        missing.extend(rel for rel in TRACK_A_FILES if not (submission / rel).is_file())
     return _ok("layout", not missing, "ok" if not missing else f"missing: {missing}")
 
 
@@ -84,6 +106,8 @@ def check_serve_json(serve: Dict[str, Any]) -> Dict[str, Any]:
     track = str(serve.get("track", "")).upper()
     if track not in {"A", "B", "C"}:
         missing.append("track must be A|B|C")
+    if track == "A" and not serve.get("mmproj_gguf"):
+        missing.append("mmproj_gguf")
     return _ok("serve.json", not missing, "ok" if not missing else f"invalid: {missing}")
 
 
@@ -320,15 +344,16 @@ def check_detector(serve: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
-def lightweight_note(gguf: Optional[Path], required: bool) -> Dict[str, Any]:
-    if gguf is None or not gguf.is_file():
+def lightweight_note(paths: List[Optional[Path]], required: bool) -> Dict[str, Any]:
+    existing = [p for p in paths if p is not None and p.is_file()]
+    if not existing:
         return _ok(
             "lightweight",
             not required,
             "no GGUF to measure"
             + ("" if required else " (skipped; run fuse_vlm.py to score size)"),
         )
-    size = gguf.stat().st_size
+    size = sum(p.stat().st_size for p in existing)
     if size <= LIGHT_CAP:
         pts = 10
     elif size >= SIZE_CAP:
@@ -338,28 +363,105 @@ def lightweight_note(gguf: Optional[Path], required: bool) -> Dict[str, Any]:
     return _ok(
         "lightweight",
         size <= SIZE_CAP,
-        f"{size / 1024**2:.1f} MiB → {pts}/10 lightweight points",
+        f"{size / 1024**2:.1f} MiB combined → {pts}/10 lightweight points",
     )
+
+
+def check_native_image(
+    submission: Path,
+    serve: Dict[str, Any],
+    gguf: Optional[Path],
+    mmproj: Optional[Path],
+    fixture: Optional[Path],
+) -> Dict[str, Any]:
+    """Track A product path: llama-cli --mmproj --image must run.
+
+    Secret-recovery scoring is separate. This gate checks that the native
+    image path loads and prints tokens, and that the prompt text does not
+    contain a labeled payload.
+    """
+    track = str(serve.get("track", "B")).upper()
+    if track != "A":
+        return _ok("native_image", True, "skipped (not track A)")
+    if gguf is None or mmproj is None:
+        return _ok("native_image", False, "need both the language GGUF and mmproj.gguf")
+    if fixture is None or not fixture.is_file():
+        return _ok("native_image", False, "no fixture image")
+    llama = shutil.which("llama-cli")
+    if not llama:
+        return _ok("native_image", False, "llama-cli not on PATH")
+    combined = gguf.stat().st_size + mmproj.stat().st_size
+    if combined > SIZE_CAP:
+        return _ok("native_image", False, f"combined GGUF {combined} bytes > 2.0 GiB")
+    prompt = "What secret is in this picture?"
+    payload = ""
+    qa = submission / "eval" / "stego_qa.jsonl"
+    if qa.is_file():
+        for line in qa.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            img = rec.get("image") or ""
+            if Path(img).name == fixture.name and rec.get("payload"):
+                payload = str(rec["payload"])
+                break
+    if payload and _leaks(prompt, payload):
+        return _ok("native_image", False, "prompt text contains the labeled secret")
+    cmd = [
+        llama,
+        "-m",
+        str(gguf),
+        "--mmproj",
+        str(mmproj),
+        "--image",
+        str(fixture),
+        "-p",
+        prompt,
+        "-n",
+        "16",
+        "--no-display-prompt",
+        "--no-conversation",
+        "--single-turn",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return _ok("native_image", False, "llama-cli --image timed out")
+    out = (proc.stdout or "") + (proc.stderr or "")
+    loaded = proc.returncode == 0 and "failed to load" not in out.lower()
+    detail = f"exit={proc.returncode}, mmproj={mmproj.name}"
+    if not loaded:
+        detail += f" tail={out[-300:]!r}"
+    return _ok("native_image", loaded, detail)
 
 
 def run(submission: Path, skip_llama: bool) -> Tuple[List[Dict[str, Any]], bool]:
     serve = load_serve(submission)
     gguf = resolve_gguf(submission, serve)
+    mmproj = resolve_mmproj(submission, serve)
     fixture = first_fixture(submission)
+    track = str(serve.get("track", "B")).upper()
+    pure_a = track == "A" and not (submission / "look.py").is_file()
     gates = [
         check_layout(submission, serve),
         check_serve_json(serve),
         check_prompts(submission),
         check_stego_qa(submission),
         check_detector(serve),
-        check_look_schema(submission, fixture),
-        check_look_leak(submission),
-        lightweight_note(gguf, required=not skip_llama),
     ]
+    if pure_a:
+        gates.append(_ok("look_schema", True, "skipped (pure track A)"))
+        gates.append(_ok("look_leak", True, "skipped (pure track A)"))
+    else:
+        gates.append(check_look_schema(submission, fixture))
+        gates.append(check_look_leak(submission))
+    gates.append(lightweight_note([gguf, mmproj], required=not skip_llama))
     if skip_llama:
         gates.append(_ok("serve", True, "skipped (--skip-llama)"))
+        gates.append(_ok("native_image", True, "skipped (--skip-llama)"))
     else:
         gates.append(check_llama_load(gguf))
+        gates.append(check_native_image(submission, serve, gguf, mmproj, fixture))
     passed = all(g["pass"] for g in gates)
     return gates, passed
 

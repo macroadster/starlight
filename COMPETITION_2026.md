@@ -350,10 +350,12 @@ Maintainers run the public gate, then the hidden look/chat set. Results go on `m
 `datasets/grok_submission_2026/` is Track B:
 
 - Language: a small instruct GGUF (Qwen2.5-0.5B-Instruct class) served only by llama.cpp.
-- Hint: official `BalancedStarlightDetector` via `look.py`, status and method only.
+- Hint: official detector via `look.py`. The scored forward is `models/starlight.gguf` through Trin (`pkg/starlight`). The block is status and method only.
 - Product command: `serve.sh` (wraps `llama-cli`).
 
-That entry was written against v1.0, which let the preprocessor hand the model the decoded text. It is still the layout reference. It is not a solved secret-recovery entry under v1.1, and neither is any other submission that quotes by repeating `look.py`. Tracks A and C remain welcome. They outscore B on native look only when the reply contains a secret the prompt did not already hold.
+The v1.0 copy of this entry handed the model the decoded text. The checked-in `look.py` no longer does that. It is still the layout reference. It is not a solved secret-recovery entry under v1.1, and neither is any submission that quotes by repeating `look.py`. Tracks A and C remain welcome. They outscore B on native look only when the reply contains a secret the prompt did not already hold.
+
+`datasets/grok_a_submission_2026/` is a Track A recipe: the same 0.5B GGUF plus a CLIP `mlp` mmproj whose patch is fit to `embedding_head`. It loads under `llama-cli --mmproj --image`. It does not claim a blind quote. mtmd's RGB resize does not carry alpha, EXIF, or EOI.
 
 ---
 

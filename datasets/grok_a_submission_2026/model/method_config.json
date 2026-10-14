@@ -1,0 +1,35 @@
+{
+  "track": "A",
+  "look_protocol": null,
+  "payload_in_prompt": false,
+  "payload_in_mmproj": false,
+  "product_detector": "models/starlight.gguf",
+  "product_runtime": "llama-cli --mmproj --image",
+  "projector": {
+    "type": "mlp",
+    "llama_cpp": "b10150",
+    "image_size": 32,
+    "patch_size": 32,
+    "vision_dim": 64,
+    "source": "embedding_head",
+    "fit": "ridge regression on mtmd RGB, piecewise-constant 8x8 kernel"
+  },
+  "detector": {
+    "class": "BalancedStarlightDetector",
+    "pth": "models/detector_balanced.pth",
+    "gguf": "models/starlight.gguf",
+    "teacher_tensor": "embedding_head"
+  },
+  "methods": {
+    "alpha": {"category": "pixel", "technique": "alpha", "visible_to_mtmd_rgb": false},
+    "palette": {"category": "pixel", "technique": "palette", "visible_to_mtmd_rgb": false},
+    "lsb.rgb": {"category": "pixel", "technique": "lsb.rgb", "visible_to_mtmd_rgb": false},
+    "exif": {"category": "metadata", "technique": "exif", "visible_to_mtmd_rgb": false},
+    "raw": {"category": "eoi", "technique": "raw", "visible_to_mtmd_rgb": false}
+  },
+  "limits": [
+    "mtmd decodes to RGB and resizes, so alpha, palette indices, EXIF, and EOI bytes never enter the projector",
+    "a 32x32 bicubic grid destroys LSB",
+    "embedding_head is 64 classification features, not the payload bytes"
+  ]
+}
