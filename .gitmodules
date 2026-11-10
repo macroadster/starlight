@@ -1,0 +1,12 @@
+[submodule "stargate"]
+	path = stargate
+	url = git@github.com:macroadster/stargate.git
+[submodule "starlight-ai"]
+	path = starlight-ai
+	url = git@github.com:macroadster/starlight-ai.git
+[submodule "starlight-helm"]
+	path = starlight-helm
+	url = git@github.com:macroadster/starlight-helm.git
+[submodule "trin"]
+	path = trin
+	url = git@github.com:macroadster/trin.git
