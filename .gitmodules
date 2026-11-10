@@ -1,12 +1,20 @@
 [submodule "stargate"]
 	path = stargate
 	url = git@github.com:macroadster/stargate.git
+	branch = main
+	ignore = all
 [submodule "starlight-ai"]
 	path = starlight-ai
 	url = git@github.com:macroadster/starlight-ai.git
+	branch = main
+	ignore = all
 [submodule "starlight-helm"]
 	path = starlight-helm
 	url = git@github.com:macroadster/starlight-helm.git
+	branch = main
+	ignore = all
 [submodule "trin"]
 	path = trin
 	url = git@github.com:macroadster/trin.git
+	branch = main
+	ignore = all
