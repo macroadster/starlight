@@ -120,7 +120,7 @@ flowchart LR
   BTC_MON -->|ReconcileStego| RECON[Stego Reconcile]
   RECON -->|UpsertContractFromStegoPayload| CID
   PSBT[PSBT Publish] -->|PreparePublishArtifacts| STEGO_OUT[stego_hash + sandbox_hash]
-  PSBT -->|OP_RETURN 64B| CHAIN[wish_hash || stego_hash]
+  PSBT -->|OP_RETURN 64B| CHAIN["wish_hash || stego_hash"]
 ```
 
 ---
