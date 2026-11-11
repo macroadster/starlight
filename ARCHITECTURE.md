@@ -1,6 +1,6 @@
 # Starlight Architecture
 
-Starlight is a monorepo: **Stargate** (Bitcoin-native coordination node), **Starlight** (stego ML/scanner), **Trin** (in-process GGUF inference), and **Helm** for deploy.
+Starlight is a **decentralized AI marketplace** — people and AI agents share digital goods via Bitcoin trades. This monorepo holds the marketplace node (**Stargate**, a Bitcoin-native single binary), the stego-detection research/training repo (**Starlight-AI**), the in-process GGUF inference runtime (**Trin**), and the Kubernetes deploy chart (**starlight-helm**).
 
 ---
 
@@ -14,7 +14,7 @@ flowchart TB
     SDK[starlight_sdk.sh]
   end
 
-  subgraph StarlightNode["Starlight Node (Stargate single binary)"]
+  subgraph StargateNode["Stargate node (single binary)"]
     FE[React Frontend]
     API["/api REST"]
     MCP["/mcp Tools + SSE Chat"]
@@ -22,7 +22,7 @@ flowchart TB
     Domain[Domain: Contracts · Stego · Bitcoin]
     Store[(SQLite / Postgres)]
     Files[UPLOADS_DIR<br/>hash-named files]
-    Scanner[Starlight Scanner<br/>Trin GGUF → Alpha → Mock]
+    Scanner[In-process Scanner<br/>Trin GGUF → Alpha → Mock]
   end
 
   subgraph External
@@ -170,15 +170,18 @@ flowchart TB
   ROOT --> STG[stargate/<br/>Go node + React UI]
   ROOT --> SL[starlight-ai/<br/>Python steganalysis · trainer · datasets]
   ROOT --> TR[trin/<br/>ternary / GGUF inference runtime]
-  ROOT --> HELM[starlight-helm/<br/>K8s: stargate · IPFS · Postgres]
-  ROOT --> TLS[tls/ certs]
+  ROOT --> HELM[starlight-helm/<br/>Helm: stargate · IPFS · optional Postgres]
+  HF[Hugging Face<br/>starlight.gguf]
 
   STG --> BE[backend: handlers · mcp · app · bitcoin · stego · storage]
   STG --> FE[frontend: Vite/React]
   SL --> SCAN[scanner · trainer · GGUF export]
-  SL -.->|optional HTTP/model weights| BE
+  SL -.->|publishes starlight.gguf| HF
+  BE -.->|auto-downloads starlight.gguf at runtime| HF
   TR -.->|in-process Path A neural scan| BE
 ```
+
+There is no top-level `tls/` directory; local dev certs ship inside `starlight-helm/`. Starlight-AI is not a production service: it trains and exports the GGUF, and Stargate downloads it from Hugging Face (`macroadster/starlight-prod`) at runtime.
 
 ---
 
@@ -196,8 +199,10 @@ flowchart LR
   Client --> ING --> SG
   SG --> IPFS_P
   SG --> PG
-  SG --> BTC_RPC[Bitcoin / block source]
+  SG --> BTC_RPC[Managed btcd in-pod<br/>or external Bitcoin source]
 ```
+
+The Helm chart runs a managed `btcd` inside the Stargate container by default (mode `managed`; SQLite on the data PVC, no in-cluster Postgres unless `postgres.enabled=true`).
 
 ---
 
@@ -205,8 +210,9 @@ flowchart LR
 
 | Piece | Role |
 |--------|------|
-| **Stargate** | Coordination node: wishes, proposals, tasks, PSBT, stego publish/reconcile, MCP |
-| **Starlight ML** | Ensemble steganalysis (alpha/LSB/palette/EXIF/EOI + GGUF via Trin) |
+| **Stargate** | Marketplace node: wishes, proposals, tasks, PSBT settlement, stego publish/reconcile, MCP/REST for AI agents |
+| **Starlight-AI** | Stego detector training/export: ensemble steganalysis (alpha/LSB/palette/EXIF/EOI) + BalancedStarlightDetector → GGUF on Hugging Face |
+| **Trin** | In-process GGUF inference runtime (Path A neural scan inside Stargate); also a ternary/native compiler |
 | **Bitcoin** | Settlement + 64-byte OP_RETURN (`wish_hash ‖ stego_hash`) |
 | **Files + IPFS** | Content-addressed artifacts; chain announces, nodes reconstruct |
 | **Identity** | `visible_pixel_hash` joins wishes, contracts, proposals, and stego |
@@ -216,4 +222,6 @@ flowchart LR
 - `stargate/README.md` — product overview and OP_RETURN / stego v2 flow
 - `stargate/docs/arch/PACKAGE_BOUNDARIES.md` — Go package layers
 - `stargate/docs/arch/DOMAIN_SEAMS.md` — stego · ingestion · bitcoin · contracts seams
-- `stargate/docs/arch/TRIN_STARLIGHT_SCANNER.md` — in-process scanner selection
+- `stargate/docs/arch/TRIN_STARLIGHT_SCANNER.md` — in-process scanner selection (Trin GGUF → Alpha → Mock)
+- `stargate/docs/arch/starlight_contracts.md` — Bitcoin-backed AI task marketplace contracts
+- `starlight-ai/README.md` — detector training pipeline (dataset → train → GGUF → Hugging Face)
