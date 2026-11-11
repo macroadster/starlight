@@ -34,6 +34,59 @@ make sync-init   # register and check out submodules
 make sync        # fast-forward submodules to origin/main
 ```
 
+## Installation (from Stargate)
+
+### Quick install (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/macroadster/stargate/main/install.sh | bash
+stargate
+```
+
+Server: `http://localhost:3001` with SQLite on **testnet4**. Linux/macOS amd64 and arm64. Installs `stargate` to `~/.local/bin` (override with `INSTALL_DIR`) and appends it to your shell profile if needed. The binary embeds `btcd` and extracts it on startup for managed mode. Operator env vars: `stargate/docs/arch/ENV.md`.
+
+### Development prerequisites
+
+- Node.js 22.12+ and npm
+- Go 1.27+
+- Git
+- Docker (optional, for `make docker`)
+
+### Local backend
+
+```bash
+cd stargate/backend
+go mod tidy
+./run_dev.sh   # sensible defaults, then go run .
+```
+
+### Local frontend
+
+```bash
+cd stargate/frontend
+npm install
+npm start      # http://localhost:3000
+```
+
+### Docker
+
+```bash
+cd stargate && make docker   # builds stargate:latest with embedded frontend
+```
+
+### Deploy with Helm
+
+See `starlight-helm/README.md` — Stargate single binary with optional IPFS and optional Postgres (SQLite on the data PVC by default, managed in-pod `btcd`).
+
+### On a running node
+
+- OpenAPI / Swagger: `/api/docs/` (when enabled)
+- MCP (for AI agents): `/mcp/docs`, `/mcp/SKILL.md`, `/mcp/tools`
+- In-app manuals: `/docs`
+- `starlight_sdk.sh` (at `stargate/scripts/starlight_sdk.sh`) wraps the MCP surface for shell use.
+
+Full details: [`stargate/README.md`](stargate/README.md).
+
 ## Status and notes
 
 - Experimental project; default Bitcoin network is **testnet4** (mainnet requires explicit opt-in).
